@@ -91,6 +91,7 @@ export class ReactPreset extends Preset {
       dependencies['react-refresh'] = '^0.11.0';
     }
     dependencies['core-js'] = '3.22.7';
+    dependencies['react-error-boundary'] = '^6.1.0';
     return dependencies;
   }
 }
