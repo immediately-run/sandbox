@@ -11,25 +11,50 @@ export class IFrameParentMessageBus {
   private messageEmitter = new Emitter();
   onMessage = this.messageEmitter.event;
 
+  private fsPort: MessagePort | null = null;
+  private fsPortResolvers: Array<(port: MessagePort) => void> = [];
+
   constructor() {
     this._messageListener = this._messageListener.bind(this);
 
     window.addEventListener('message', this._messageListener);
   }
 
-  private _messageListener(evt: any) {
+  private _messageListener(evt: MessageEvent) {
     const data = evt.data;
 
-    if (data.type === 'register-frame') {
+    if (data && data.type === 'register-frame') {
       this.parentId = data.id;
+      const port = evt.ports && evt.ports[0];
+      if (port) {
+        this.fsPort = port;
+        const resolvers = this.fsPortResolvers;
+        this.fsPortResolvers = [];
+        for (const resolve of resolvers) {
+          resolve(port);
+        }
+      }
       return;
     }
 
-    if (!data.codesandbox) {
+    if (!data || !data.codesandbox) {
       return;
     }
 
     this.messageEmitter.fire(data);
+  }
+
+  /**
+   * Resolves with the `MessagePort` transferred by the parent during `register-frame`.
+   * The parent side is expected to have called zenfs's `RPC.attach` / `attachFS` on this port.
+   */
+  getFsPort(): Promise<MessagePort> {
+    if (this.fsPort) {
+      return Promise.resolve(this.fsPort);
+    }
+    return new Promise((resolve) => {
+      this.fsPortResolvers.push(resolve);
+    });
   }
 
   _postMessage(message: any) {

@@ -1,3 +1,6 @@
+import { configureSingle } from '@zenfs/core';
+import { Port } from '@zenfs/core/backends/port.js';
+
 import { Bundler } from './bundler/bundler';
 import { ErrorRecord, listenToRuntimeErrors } from './error-listener';
 import { BundlerError } from './errors/BundlerError';
@@ -18,13 +21,30 @@ const bundlerStartTime = Date.now();
 class SandpackInstance {
   private messageBus: IFrameParentMessageBus;
   private disposableStore = new DisposableStore();
-  private bundler;
+  private bundler!: Bundler;
   private compileDebouncer = new Debouncer(50);
   private lastHeight: number = 0;
   private resizePollingTimer: NodeJS.Timer | undefined;
+  private readyPromise: Promise<void>;
 
   constructor() {
     this.messageBus = new IFrameParentMessageBus();
+
+    this.readyPromise = this.bootstrap().catch((err) => {
+      logger.error('Failed to bootstrap sandpack instance', err);
+      throw err;
+    });
+  }
+
+  private async bootstrap() {
+    // Mount the parent's zenfs instance over the MessagePort transferred in
+    // the `register-frame` handshake. Any `fs.promises.*` call in the iframe
+    // will be forwarded to the parent via zenfs's Port RPC.
+    const fsPort = await this.messageBus.getFsPort();
+    // The zenfs `Port` backend accepts any WebMessagePort-shaped object; the
+    // DOM `MessagePort` satisfies this structurally even though TS's union
+    // also includes `WebSocket`.
+    await configureSingle({ backend: Port, port: fsPort as any });
 
     this.bundler = new Bundler({ messageBus: this.messageBus });
 
@@ -68,7 +88,11 @@ class SandpackInstance {
   handleParentMessage(message: any) {
     switch (message.type) {
       case 'compile':
-        this.compileDebouncer.debounce(() => this.handleCompile(message).catch(logger.error));
+        this.compileDebouncer.debounce(() =>
+          this.readyPromise
+            .then(() => this.handleCompile(message))
+            .catch(logger.error)
+        );
         break;
       case 'refresh':
         window.location.reload();
@@ -137,9 +161,6 @@ class SandpackInstance {
     // -- FileSystem
     const initStartTimeFileSystem = Date.now();
     logger.debug(logger.logFactory('FileSystem'));
-    this.bundler.configureFS({
-      hasAsyncFileResolver: compileRequest.hasFileResolver,
-    });
 
     this.messageBus.sendMessage('start', {
       firstLoad: this.bundler.isFirstLoad,
@@ -162,9 +183,8 @@ class SandpackInstance {
     // --- Bundling / Compiling
     logger.groupCollapsed(logger.logFactory('Bundling'));
     const bundlingStartTime = Date.now();
-    const files = Object.values(compileRequest.modules);
     const evaluate = await this.bundler
-      .compile(files)
+      .compile()
       .then((val) => {
         this.messageBus.sendMessage('done', {
           compilatonError: false,

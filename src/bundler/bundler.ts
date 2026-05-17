@@ -1,8 +1,8 @@
 import { BundlerError } from '../errors/BundlerError';
 import { FileSystem } from '../FileSystem';
-import { IFrameFSLayer } from '../FileSystem/layers/IFrameFSLayer';
 import { MemoryFSLayer } from '../FileSystem/layers/MemoryFSLayer';
 import { NodeModuleFSLayer } from '../FileSystem/layers/NodeModuleFSLayer';
+import { ZenFSLayer } from '../FileSystem/layers/ZenFSLayer';
 import { IFrameParentMessageBus } from '../protocol/iframe';
 import { BundlerStatus } from '../protocol/message-types';
 import { ResolverCache, resolveAsync } from '../resolver/resolver';
@@ -37,10 +37,6 @@ Object.defineProperty(exports, "__esModule", {
 
 interface IBundlerOpts {
   messageBus: IFrameParentMessageBus;
-}
-
-interface IFSOptions {
-  hasAsyncFileResolver?: boolean;
 }
 
 const extractMetadata = (file: ISandboxFile):(FrontmatterParseResult|null) => {
@@ -84,15 +80,16 @@ export class Bundler {
   onStatusChange = this.onStatusChangeEmitter.event;
 
   private _previousDepString: string | null = null;
-  private iFrameFsLayer: IFrameFSLayer;
+  private zenFsLayer: ZenFSLayer;
+  private lastMetadata: Map<string, Record<string, any>> = new Map();
 
   constructor(options: IBundlerOpts) {
     this.transformationQueue = new NamedPromiseQueue(true, 50);
     this.moduleRegistry = new ModuleRegistry(this);
     const memoryFS = new MemoryFSLayer();
     memoryFS.writeFile('//empty.js', 'module.exports = () => {};');
-    this.iFrameFsLayer = new IFrameFSLayer(memoryFS, options.messageBus);
-    this.fs = new FileSystem([memoryFS, this.iFrameFsLayer, new NodeModuleFSLayer(this.moduleRegistry)]);
+    this.zenFsLayer = new ZenFSLayer(memoryFS);
+    this.fs = new FileSystem([memoryFS, this.zenFsLayer, new NodeModuleFSLayer(this.moduleRegistry)]);
     this.messageBus = options.messageBus;
   }
 
@@ -101,12 +98,6 @@ export class Bundler {
     this.preset = undefined;
     this.modules = new Map();
     this.resolverCache = new Map();
-  }
-
-  configureFS(opts: IFSOptions): void {
-    if (opts.hasAsyncFileResolver) {
-      this.iFrameFsLayer.enableIFrameFS();
-    }
   }
 
   async initPreset(preset: string): Promise<void> {
@@ -250,6 +241,7 @@ export class Bundler {
       module = new Module(path, content, false, this);
       this.modules.set(path, module);
     }
+    this.refreshMetadata(path, module.source);
     await module.compile();
     for (let dep of module.dependencies) {
       const resolvedDependency = await this.resolveAsync(dep, module.filepath);
@@ -363,34 +355,43 @@ export class Bundler {
   }
 
 
-  /** writes any new files and returns a list of updated modules */
-  writeNewFiles(files: ISandboxFile[]): string[] {
-    const res: string[] = [];
-    const changedMetadata: MetadataChange["update"] = {}
-    for (let file of files) {
-      try {
-        const content = this.fs.readFileSync(file.path);
-        if (content == file.code) {
-          // no code change for the given file
-          continue
-        }
-      } catch (err) {
-        // file does not exist
-      }
-      const metadata = extractMetadata(file);
-      if (metadata) {
-        changedMetadata[file.path] = metadata.data;
-      }
-      res.push(file.path);
-      this.fs.writeFile(file.path, file.code);
+  /**
+   * Lazily extracts MDX frontmatter metadata when a file is (re-)read during
+   * compilation. Fires `onMetadataChange` if the parsed metadata differs from
+   * the last value observed for the same path.
+   */
+  private refreshMetadata(path: string, source: string): void {
+    const parsed = extractMetadata({ path, code: source });
+    const next = parsed ? parsed.data : undefined;
+    const prev = this.lastMetadata.get(path);
+
+    const prevKey = prev ? JSON.stringify(prev) : undefined;
+    const nextKey = next ? JSON.stringify(next) : undefined;
+    if (prevKey === nextKey) {
+      return;
     }
-    if (Object.keys(changedMetadata).length > 0) {
-      this.onMetadataChangeEmitter.fire({type: "metadata-update", update: changedMetadata});
+
+    if (next) {
+      this.lastMetadata.set(path, next);
+    } else {
+      this.lastMetadata.delete(path);
     }
-    return res;
+    this.onMetadataChangeEmitter.fire({
+      type: 'metadata-update',
+      update: { [path]: next ?? {} },
+    });
   }
 
-  async compile(files: ISandboxFile[]): Promise<() => any> {
+  /**
+   * Returns the set of paths that changed since the last compile (as reported
+   * by the zenfs watcher). Also invalidates the corresponding modules so the
+   * transform queue re-reads them.
+   */
+  private collectChangedFiles(): string[] {
+    return this.zenFsLayer.drainPendingChanges();
+  }
+
+  async compile(): Promise<() => any> {
     if (!this.preset) {
       throw new BundlerError('Cannot compile before preset has been initialized');
     }
@@ -406,7 +407,7 @@ export class Bundler {
     if (!this.isFirstLoad) {
       logger.debug('Started incremental compilation');
 
-      changedFiles = this.writeNewFiles(files);
+      changedFiles = this.collectChangedFiles();
 
       if (!changedFiles.length) {
         logger.debug('Skipping compilation, no changes detected');
@@ -419,20 +420,15 @@ export class Bundler {
         window.location.reload();
         return () => { };
       }
-    } else { // initial load: process all files
-      const changedMetadata: MetadataChange["update"] = {}
-      for (let file of files) {
-        const metadata = extractMetadata(file);
-        if (metadata) {
-          changedMetadata[file.path] = metadata.data;
-        }
-        this.fs.writeFile(file.path, file.code);
-        await this.preloadModules();
-        await this.addLocalModules();
-      }
-      if (Object.keys(changedMetadata).length > 0) {
-        this.onMetadataChangeEmitter.fire({type: 'metadata-update', update: changedMetadata});
-      }
+    } else {
+      // First load: files are read lazily from zenfs as the bundler traverses
+      // from the entrypoint. Only preloaded/local node_modules are written up
+      // front here.
+      await this.preloadModules();
+      await this.addLocalModules();
+      // Drain any spurious watcher events that fired during bootstrap so they
+      // aren't interpreted as user-driven changes later.
+      this.zenFsLayer.drainPendingChanges();
     }
 
     if (changedFiles.length) {
@@ -547,7 +543,7 @@ export class Bundler {
         });
 
         if (invalidatedModules.length > 0) {
-          return this.compile(files);
+          return this.compile();
         }
       }
     };
