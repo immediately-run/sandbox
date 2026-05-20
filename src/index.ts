@@ -37,23 +37,36 @@ class SandpackInstance {
   }
 
   private async bootstrap() {
-    // Mount the parent's zenfs instance over the MessagePort transferred in
-    // the `register-frame` handshake. Any `fs.promises.*` call in the iframe
-    // will be forwarded to the parent via zenfs's Port RPC.
-    const fsPort = await this.messageBus.getFsPort();
-    // The zenfs `Port` backend accepts any WebMessagePort-shaped object; the
-    // DOM `MessagePort` satisfies this structurally even though TS's union
-    // also includes `WebSocket`.
-    await configureSingle({ backend: Port, port: fsPort as any });
-
-    this.bundler = new Bundler({ messageBus: this.messageBus });
-
+    // Set up the compile/refresh handler immediately so any 'compile' message
+    // that arrives while we wait for the port is queued, not dropped.
     const disposeOnMessage = this.messageBus.onMessage((msg) => {
       this.handleParentMessage(msg);
     });
     this.disposableStore.add(disposeOnMessage);
 
-    this.init().catch(logger.error);
+    // Send 'initialized' now — the parent waits for this before it sends
+    // 'register-frame' with the MessagePort in the transferable list.
+    this.messageBus.sendMessage('initialized');
+    for (let url of cachedRequestInfo.locations) {
+      await loadCachedResponses(url);
+    }
+
+    // Wait for the MessagePort transferred in the 'register-frame' handshake.
+    // Any `fs.promises.*` call in the iframe will be forwarded to the parent
+    // via zenfs's Port RPC.
+    const fsPort = await this.messageBus.getFsPort();
+    // The zenfs `Port` backend accepts any WebMessagePort-shaped object; the
+    // DOM `MessagePort` satisfies this structurally even though TS's union
+    // also includes `WebSocket`.
+    await configureSingle({ backend: Port, port: fsPort as any, disableAsyncCache: true, timeout: 500 });
+
+    // Zenfs is ready — safe to create the bundler (ZenFSLayer starts a
+    // filesystem watcher that requires zenfs to be configured).
+    this.bundler = new Bundler({ messageBus: this.messageBus });
+
+    this.bundler.onStatusChange((newStatus) => {
+      this.messageBus.sendMessage('status', { status: newStatus });
+    });
 
     listenToRuntimeErrors(this.bundler, (runtimeError: ErrorRecord) => {
       const stackFrame = runtimeError.stackFrames[0] ?? {};
@@ -137,18 +150,6 @@ class SandpackInstance {
       }
     });
     observer.observe(document, { attributes: true, childList: true, subtree: true });
-  }
-
-  async init() {
-    this.messageBus.sendMessage('initialized');
-
-    for (let url of cachedRequestInfo.locations) {
-      loadCachedResponses(url)
-    }
-
-    this.bundler.onStatusChange((newStatus) => {
-      this.messageBus.sendMessage('status', { status: newStatus });
-    });
   }
 
   async handleCompile(compileRequest: ICompileRequest) {

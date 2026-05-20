@@ -27,6 +27,7 @@ export class IFrameParentMessageBus {
       this.parentId = data.id;
       const port = evt.ports && evt.ports[0];
       if (port) {
+        port.start();
         this.fsPort = port;
         const resolvers = this.fsPortResolvers;
         this.fsPortResolvers = [];
