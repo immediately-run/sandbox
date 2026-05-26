@@ -30,7 +30,7 @@ export class ZenFSLayer extends FSLayer {
   onFileChanged = this.onFileChangedEmitter.event;
   private watcherStarted = false;
 
-  constructor(private boundContext: BoundContext) {
+  constructor(public boundContext: BoundContext) {
     super('zenfs');
     this.startWatcher().catch((err) => {
       logger.error('ZenFSLayer: failed to start filesystem watcher', err);

@@ -20,7 +20,7 @@ import localModulesInfo from '../config/local_modules.json'
 import { retryFetch } from '../utils/fetch'
 import { basename } from '../utils/path'
 import { FrontmatterParseResult, parseFrontmatter } from './frontmatter';
-import { bindContext } from '@zenfs/core';
+import { bindContext, globToRegex } from '@zenfs/core';
 
 export type TransformationQueue = NamedPromiseQueue<Module>;
 export type MetadataChange = {
@@ -358,6 +358,17 @@ export class Bundler {
     }
   }
 
+  async preloadMDXMetadata(): Promise<void> {
+    const re = globToRegex('/**/*.mdx');
+    const zenFsLayer = this.fs.layers[1] as ZenFSLayer;
+    const mdxFiles = (await zenFsLayer.boundContext.fs.promises.readdir('/', {recursive: true})).map(
+      i => '/' + i).filter(p => p.match(re));
+    await Promise.all(mdxFiles.map(async (filepath) => {
+      const source = await zenFsLayer.readFileAsync(filepath);
+      this.refreshMetadata(filepath, source);
+    }));
+  }
+
 
   /**
    * Lazily extracts MDX frontmatter metadata when a file is (re-)read during
@@ -433,6 +444,9 @@ export class Bundler {
       // Drain any spurious watcher events that fired during bootstrap so they
       // aren't interpreted as user-driven changes later.
       this.zenFsLayer.drainPendingChanges();
+      // update MDX metadata for files which need to be picked up on startup
+      // TODO: make this glob pattern overridable from package.json
+      await this.preloadMDXMetadata();
     }
 
     if (changedFiles.length) {
