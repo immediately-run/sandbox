@@ -42,15 +42,6 @@ export class NodeModuleFSLayer extends FSLayer {
     return promise;
   }
 
-  getUnpkgFile(moduleName: string, moduleVersion: string, path: string): string {
-    const specifier = getUnpkgSpecifier(moduleName, moduleVersion, path);
-    const cachedContent = this.unpkgCache.get(specifier);
-    if (typeof cachedContent === 'string') {
-      return cachedContent;
-    }
-    throw new Error(`File not found in unpkg cache: ${moduleName}@${moduleVersion} - ${path}`);
-  }
-
   /** Turns a path into [moduleName, relativePath] */
   private getModuleFromPath(path: string): [string, string] {
     const parts = path.match(MODULE_PATH_RE);
@@ -60,22 +51,6 @@ export class NodeModuleFSLayer extends FSLayer {
     const moduleName = parts[1];
     const modulePath: string = parts[2] ?? '';
     return [moduleName, modulePath.substring(1)];
-  }
-
-  readFileSync(path: string): string {
-    const [moduleName, modulePath] = this.getModuleFromPath(path);
-    const module = this.registry.modules.get(moduleName);
-    if (module) {
-      const foundFile = module.files[modulePath];
-      if (foundFile) {
-        if (typeof foundFile === 'object') {
-          return foundFile.c;
-        } else {
-          return this.getUnpkgFile(moduleName, module.version, modulePath);
-        }
-      }
-    }
-    throw new Error(`Module ${path} not found`);
   }
 
   async readFileAsync(path: string): Promise<string> {
@@ -94,20 +69,16 @@ export class NodeModuleFSLayer extends FSLayer {
     throw new Error(`Module ${path} not found`);
   }
 
-  isFileSync(path: string): boolean {
+  isFileAsync(path: string): Promise<boolean> {
     try {
       const [moduleName, modulePath] = this.getModuleFromPath(path);
       const module = this.registry.modules.get(moduleName);
       if (module) {
-        return module.files[modulePath] != null;
+        return Promise.resolve(module.files[modulePath] != null);
       }
     } catch (err) {
       // do nothing...
     }
-    return false;
-  }
-
-  isFileAsync(path: string): Promise<boolean> {
-    return Promise.resolve(this.isFileSync(path));
+    return Promise.resolve(false);
   }
 }

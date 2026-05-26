@@ -20,6 +20,7 @@ import localModulesInfo from '../config/local_modules.json'
 import { retryFetch } from '../utils/fetch'
 import { basename } from '../utils/path'
 import { FrontmatterParseResult, parseFrontmatter } from './frontmatter';
+import { bindContext } from '@zenfs/core';
 
 export type TransformationQueue = NamedPromiseQueue<Module>;
 export type MetadataChange = {
@@ -87,8 +88,9 @@ export class Bundler {
     this.transformationQueue = new NamedPromiseQueue(true, 50);
     this.moduleRegistry = new ModuleRegistry(this);
     const memoryFS = new MemoryFSLayer();
-    memoryFS.writeFile('//empty.js', 'module.exports = () => {};');
-    this.zenFsLayer = new ZenFSLayer(memoryFS);
+    // In-memory write resolves synchronously, so we don't need to await it here.
+    void memoryFS.writeFile('//empty.js', 'module.exports = () => {};');
+    this.zenFsLayer = new ZenFSLayer(bindContext({'root': '/remote', 'pwd': '/remote'}), memoryFS);
     this.fs = new FileSystem([memoryFS, this.zenFsLayer, new NodeModuleFSLayer(this.moduleRegistry)]);
     this.messageBus = options.messageBus;
   }
@@ -107,9 +109,9 @@ export class Bundler {
     }
   }
 
-  registerRuntime(id: string, code: string): void {
+  async registerRuntime(id: string, code: string): Promise<void> {
     const filepath = `/node_modules/__csb_runtimes/${id}.js`;
-    this.fs.writeFile(filepath, code);
+    await this.fs.writeFile(filepath, code);
     const module = new Module(filepath, code, false, this);
     this.modules.set(filepath, module);
     this.runtimes.push(filepath);
@@ -313,7 +315,7 @@ export class Bundler {
     }
     const parsedPackageJSON: any = JSON.parse(manifest[0][1]);
     for (let [filepath, contents] of files) {
-      this.fs.writeFile(filepath, contents);
+      await this.fs.writeFile(filepath, contents);
       if (filepath.endsWith('.js')) {
         const module = new Module(filepath, contents, false, this);
         this.modules.set(filepath, module);
@@ -322,13 +324,15 @@ export class Bundler {
   }
 
   async preloadModules(): Promise<void> {
-    this.addPreloadedModule("path");
-    this.addPreloadedModule("fs");
-    this.addPreloadedModule("util");
-    this.addPreloadedModule("assert");
-    this.addPreloadedModule("module");
-    this.addPreloadedModule("os");
-    // this.addPreloadedModule("@internationalized/date");
+    await Promise.all([
+      this.addPreloadedModule("path"),
+      this.addPreloadedModule("fs"),
+      this.addPreloadedModule("util"),
+      this.addPreloadedModule("assert"),
+      this.addPreloadedModule("module"),
+      this.addPreloadedModule("os"),
+      // this.addPreloadedModule("@internationalized/date"),
+    ]);
   }
 
   async fetchSource(url: string): Promise<string> {
@@ -345,7 +349,7 @@ export class Bundler {
       const codeContents = await Promise.all(moduleSources.map(([_name, url]) => this.fetchSource(url)))
       for (let ix = 0; ix < moduleSources.length; ix++) {
         const filepath = this.getModuleRelativePath(moduleName, moduleSources[ix][0]);
-        this.fs.writeFile(filepath, codeContents[ix]);
+        await this.fs.writeFile(filepath, codeContents[ix]);
         if (filepath.endsWith('.js')) {
           const module = new Module(filepath, codeContents[ix], false, this);
           this.modules.set(filepath, module);
@@ -551,9 +555,14 @@ export class Bundler {
 
   // TODO: Support template languages...
   async getHTMLEntry(): Promise<string> {
+    let content = undefined;
     for (const filepath of ['/index.html', '/public/index.html']) {
-      if (await this.fs.isFileAsync(filepath)) {
-        return await this.fs.readFileAsync(filepath);
+      try {
+        content = await this.fs.readFileAsync(filepath);
+      } catch (err) {
+      }
+      if (content) {
+        return content;
       }
     }
     // fall back to preset default

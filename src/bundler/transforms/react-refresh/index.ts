@@ -200,15 +200,15 @@ export class ReactRefreshTransformer extends Transformer {
   }
 
   async init(bundler: Bundler): Promise<void> {
-    bundler.registerRuntime(this.id, REACT_REFRESH_RUNTIME);
+    await bundler.registerRuntime(this.id, REACT_REFRESH_RUNTIME);
   }
 
   async transform(ctx: ITranspilationContext, config: any): Promise<ITranspilationResult> {
     // TODO: Detect if we need to add react-refresh to this file...
 
     // Write helper to memory-fs
-    if (!ctx.module.bundler.fs.isFileSync(HELPER_PATH)) {
-      ctx.module.bundler.fs.writeFile(HELPER_PATH, HELPER_CODE);
+    if (!(await ctx.module.bundler.fs.isFileAsync(HELPER_PATH))) {
+      await ctx.module.bundler.fs.writeFile(HELPER_PATH, HELPER_CODE);
     }
 
     const newCode = getWrapperCode(ctx.code);
