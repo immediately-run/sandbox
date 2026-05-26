@@ -1,4 +1,4 @@
-import { configureSingle } from '@zenfs/core';
+import { mount, configure, resolveMountConfig } from '@zenfs/core';
 import { Port } from '@zenfs/core/backends/port.js';
 
 import { Bundler } from './bundler/bundler';
@@ -58,7 +58,22 @@ class SandpackInstance {
     // The zenfs `Port` backend accepts any WebMessagePort-shaped object; the
     // DOM `MessagePort` satisfies this structurally even though TS's union
     // also includes `WebSocket`.
-    await configureSingle({ backend: Port, port: fsPort as any, disableAsyncCache: true, timeout: 500 });
+
+
+    await configure({
+      onlySyncOnClose: true,
+      disableAccessChecks: true,
+      disableAsyncCache: true,
+      log: {
+        enabled: true,
+        level: "debug",
+        dumpBacklog: true,
+        output: console.debug
+      }
+    });
+    const portfs = await resolveMountConfig({ backend: Port, port: fsPort as any, disableAsyncCache: true, timeout: 500 });
+    portfs.attributes.set('no_atime', true);
+    mount('/remote', portfs);
 
     // Zenfs is ready — safe to create the bundler (ZenFSLayer starts a
     // filesystem watcher that requires zenfs to be configured).
@@ -208,7 +223,7 @@ class SandpackInstance {
       });
 
     // --- Replace HTML
-    this.bundler.replaceHTML();
+    await this.bundler.replaceHTML();
 
     // --- Evaluation
     if (evaluate) {

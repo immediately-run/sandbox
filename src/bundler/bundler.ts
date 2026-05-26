@@ -550,21 +550,21 @@ export class Bundler {
   }
 
   // TODO: Support template languages...
-  getHTMLEntry(): string {
-    const foundHTMLFilepath = ['/index.html', '/public/index.html'].find((filepath) => this.fs.isFileSync(filepath));
-
-    if (foundHTMLFilepath) {
-      return this.fs.readFileSync(foundHTMLFilepath);
-    } else {
-      if (!this.preset) {
-        throw new BundlerError('Bundler has not been initialized with a preset');
+  async getHTMLEntry(): Promise<string> {
+    for (const filepath of ['/index.html', '/public/index.html']) {
+      if (await this.fs.isFileAsync(filepath)) {
+        return await this.fs.readFileAsync(filepath);
       }
-      return this.preset.defaultHtmlBody;
     }
+    // fall back to preset default
+    if (!this.preset) {
+      throw new BundlerError('Bundler has not been initialized with a preset');
+    }
+    return this.preset.defaultHtmlBody;
   }
 
-  replaceHTML() {
-    const html = this.getHTMLEntry() ?? '<div id="root"></div>';
+  async replaceHTML() {
+    const html = (await this.getHTMLEntry()) ?? '<div id="root"></div>';
     if (this.lastHTML) {
       if (this.lastHTML !== html) {
         window.location.reload();
