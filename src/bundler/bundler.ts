@@ -90,7 +90,7 @@ export class Bundler {
     const memoryFS = new MemoryFSLayer();
     // In-memory write resolves synchronously, so we don't need to await it here.
     void memoryFS.writeFile('//empty.js', 'module.exports = () => {};');
-    this.zenFsLayer = new ZenFSLayer(bindContext({'root': '/remote', 'pwd': '/remote'}), memoryFS);
+    this.zenFsLayer = new ZenFSLayer(bindContext({'root': '/remote', 'pwd': '/remote'}));
     this.fs = new FileSystem([memoryFS, this.zenFsLayer, new NodeModuleFSLayer(this.moduleRegistry)]);
     this.messageBus = options.messageBus;
   }

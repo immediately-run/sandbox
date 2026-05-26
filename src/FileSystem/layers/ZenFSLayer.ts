@@ -3,7 +3,6 @@ import { BoundContext, fs } from '@zenfs/core';
 import * as logger from '../../utils/logger';
 import { Emitter } from '../../utils/emitter';
 import { FSLayer } from '../FSLayer';
-import { MemoryFSLayer } from './MemoryFSLayer';
 
 export interface ZenFSChangeEvent {
   path: string;
@@ -19,18 +18,19 @@ export interface ZenFSChangeEvent {
  * instantiated, so `fs.promises.*` calls here are transparently forwarded to the
  * parent.
  *
- * To keep the existing sync read path working (the resolver uses `gensync`), every
- * successful async read is mirrored into `MemoryFSLayer`, which serves as the sync
- * cache.
+ * Successful reads are memoized in an in-memory `fileCache` so repeated reads of the
+ * same path (e.g. `package.json` lookups during resolution) avoid extra round-trips to
+ * the parent. The watcher invalidates cache entries when the underlying file changes.
  */
 export class ZenFSLayer extends FSLayer {
+  private fileCache: Map<string, string> = new Map();
   private isFileCache: Map<string, boolean> = new Map();
   private pendingChanges: Set<string> = new Set();
   private onFileChangedEmitter = new Emitter<ZenFSChangeEvent>();
   onFileChanged = this.onFileChangedEmitter.event;
   private watcherStarted = false;
 
-  constructor(private boundContext:BoundContext, private memoryFS: MemoryFSLayer) {
+  constructor(private boundContext: BoundContext) {
     super('zenfs');
     this.startWatcher().catch((err) => {
       logger.error('ZenFSLayer: failed to start filesystem watcher', err);
@@ -51,7 +51,7 @@ export class ZenFSLayer extends FSLayer {
 
         if (normalized.includes('node_modules')) continue;
 
-        this.memoryFS.files.delete(normalized);
+        this.fileCache.delete(normalized);
         this.isFileCache.delete(normalized);
         this.pendingChanges.add(normalized);
         this.onFileChangedEmitter.fire({
@@ -80,14 +80,14 @@ export class ZenFSLayer extends FSLayer {
   }
 
   writeFile(path: string, content: string): Promise<void> {
-    return this.memoryFS.writeFile(path, content);
+    this.fileCache.set(path, content);
+    return Promise.resolve();
   }
 
   async readFileAsync(path: string): Promise<string> {
-    try {
-      return await this.memoryFS.readFileAsync(path);
-    } catch {
-      // not cached; fall through to zenfs
+    const cached = this.fileCache.get(path);
+    if (cached !== undefined) {
+      return cached;
     }
 
     if (this.isFileCache.get(path) === false) {
@@ -97,7 +97,7 @@ export class ZenFSLayer extends FSLayer {
     try {
       const content = await this.boundContext.fs.promises.readFile(path, 'utf8');
       const str = content as unknown as string;
-      await this.memoryFS.writeFile(path, str);
+      this.fileCache.set(path, str);
       this.isFileCache.set(path, true);
       return str;
     } catch (err) {
@@ -107,7 +107,7 @@ export class ZenFSLayer extends FSLayer {
   }
 
   async isFileAsync(path: string): Promise<boolean> {
-    if (await this.memoryFS.isFileAsync(path)) {
+    if (this.fileCache.has(path)) {
       return true;
     }
 
