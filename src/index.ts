@@ -1,4 +1,4 @@
-import { mount, configure, resolveMountConfig } from '@zenfs/core';
+import { mount, configure, resolveMountConfig, bindContext } from '@zenfs/core';
 import { Port } from '@zenfs/core/backends/port.js';
 
 import { Bundler } from './bundler/bundler';
@@ -80,6 +80,17 @@ class SandpackInstance {
     const portfs = await resolveMountConfig({ backend: Port, port: fsPort as any, disableAsyncCache: true, timeout: 30000 });
     portfs.attributes.set('no_atime', true);
     mount('/remote', portfs);
+
+    // Expose the shared filesystem to code running in the sandbox, rooted at the
+    // project root (so `/src/App.tsx` maps to the parent's `/src/App.tsx`). The
+    // preloaded `fs` module re-exports this, so an app's `fs.promises.writeFile`
+    // goes to the parent over the Port — which the parent observes at its
+    // `attachFS` hook and reflects in the editor. Async APIs only: the Port
+    // bridge is request/response and can't service synchronous fs calls.
+    (globalThis as any).__sandpackSharedFs = bindContext({
+      root: '/remote',
+      pwd: '/remote',
+    }).fs;
 
     // Zenfs is ready — safe to create the bundler (ZenFSLayer starts a
     // filesystem watcher that requires zenfs to be configured).

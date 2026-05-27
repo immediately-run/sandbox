@@ -36,6 +36,23 @@ Object.defineProperty(exports, "__esModule", {
 });
 `.trim()
 
+/**
+ * Source for the sandbox's `fs` module. It re-exports the shared filesystem the
+ * bundler exposes on the global (rooted at the project root, backed by the
+ * parent window over the ZenFS Port). App-code writes via `fs` therefore land
+ * in the parent filesystem and are reflected back into the editor. Async APIs
+ * (\`fs.promises.*\`, callback style) are supported; synchronous APIs are not,
+ * since the Port bridge cannot service synchronous calls.
+ */
+export const SHARED_FS_MODULE_CODE = `
+"use strict";
+var __fs = (typeof globalThis !== "undefined" && globalThis.__sandpackSharedFs) || null;
+if (!__fs) {
+  throw new Error("[sandpack] shared filesystem is unavailable");
+}
+module.exports = __fs;
+`.trim()
+
 interface IBundlerOpts {
   messageBus: IFrameParentMessageBus;
 }
@@ -337,7 +354,10 @@ export class Bundler {
   async preloadModules(): Promise<void> {
     await Promise.all([
       this.addPreloadedModule("path"),
-      this.addPreloadedModule("fs"),
+      // `fs` is backed by the shared filesystem (parent window over the Port),
+      // not a CDN polyfill — so app-code writes reach the parent and reflect in
+      // the editor.
+      this.addPreloadedModule("fs", SHARED_FS_MODULE_CODE),
       this.addPreloadedModule("util"),
       this.addPreloadedModule("assert"),
       this.addPreloadedModule("module"),
