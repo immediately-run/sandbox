@@ -84,6 +84,17 @@ export class Bundler {
   private zenFsLayer: ZenFSLayer;
   private lastMetadata: Map<string, Record<string, any>> = new Map();
 
+  /**
+   * Records files the parent reported as changed. ZenFS's `Port` backend does
+   * not forward watch events across the iframe boundary, so the bundler cannot
+   * observe parent-side writes on its own — the parent relays the changed paths
+   * (see the `fs-change` handler in `index.ts`). This invalidates the cached
+   * contents and queues the paths for the next incremental compile.
+   */
+  markFilesChanged(paths: string[]): void {
+    this.zenFsLayer.markChanged(paths);
+  }
+
   constructor(options: IBundlerOpts) {
     this.transformationQueue = new NamedPromiseQueue(true, 50);
     this.moduleRegistry = new ModuleRegistry(this);

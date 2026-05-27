@@ -8,7 +8,6 @@ import { CompilationError } from './errors/CompilationError';
 import { errorMessage } from './errors/util';
 import { handleEvaluate, hookConsole } from './integrations/console';
 import { IFrameParentMessageBus } from './protocol/iframe';
-import { ICompileRequest } from './protocol/message-types';
 import { Debouncer } from './utils/Debouncer';
 import { DisposableStore } from './utils/Disposable';
 import { getDocumentHeight } from './utils/document';
@@ -23,6 +22,7 @@ class SandpackInstance {
   private disposableStore = new DisposableStore();
   private bundler!: Bundler;
   private compileDebouncer = new Debouncer(50);
+  private template!: string;
   private lastHeight: number = 0;
   private resizePollingTimer: NodeJS.Timer | undefined;
   private readyPromise: Promise<void>;
@@ -71,7 +71,13 @@ class SandpackInstance {
         output: console.debug
       }
     });
-    const portfs = await resolveMountConfig({ backend: Port, port: fsPort as any, disableAsyncCache: true, timeout: 500 });
+    // Generous RPC timeout: each `fs.*` call here is an RPC round-trip to the
+    // parent, served on the parent's main thread. During rapid edits the parent
+    // is busy (React re-renders, editor work), so a tight timeout makes reads
+    // spuriously time out — and the late response then throws "Invalid RPC id"
+    // (a timed-out request is removed before its response arrives), breaking the
+    // preview. 30s is a safety net for genuinely lost messages, not normal load.
+    const portfs = await resolveMountConfig({ backend: Port, port: fsPort as any, disableAsyncCache: true, timeout: 30000 });
     portfs.attributes.set('no_atime', true);
     mount('/remote', portfs);
 
@@ -111,16 +117,35 @@ class SandpackInstance {
         }
       }
     });
+
+    // Bootstrap config (template/logLevel) was delivered on the same
+    // `register-frame` message that gave us the fs port, so this resolves
+    // immediately. There is no `compile` message anymore — the bundler drives
+    // its own initial build and rebuilds when the parent relays an `fs-change`.
+    const initConfig = await this.messageBus.getInitConfig();
+    if (initConfig.logLevel != null) {
+      logger.setLogLevel(initConfig.logLevel);
+    }
+    this.template = initConfig.template;
+
+    // Kick off the initial compile.
+    this.compileDebouncer.debounce(() => this.runCompile());
   }
 
   handleParentMessage(message: any) {
     switch (message.type) {
-      case 'compile':
-        this.compileDebouncer.debounce(() =>
-          this.readyPromise
-            .then(() => this.handleCompile(message))
-            .catch(logger.error)
-        );
+      case 'fs-change':
+        // The parent observed writes to the shared filesystem and relayed the
+        // changed paths (zenfs's Port backend can't forward watch events, so we
+        // can't see them ourselves). Invalidate them and re-bundle. Gate on
+        // `readyPromise` so changes relayed during bootstrap (before the bundler
+        // exists) are applied once it's ready rather than throwing.
+        this.readyPromise
+          .then(() => {
+            this.bundler.markFilesChanged(message.paths ?? []);
+            this.compileDebouncer.debounce(() => this.runCompile());
+          })
+          .catch(logger.error);
         break;
       case 'refresh':
         window.location.reload();
@@ -167,11 +192,7 @@ class SandpackInstance {
     observer.observe(document, { attributes: true, childList: true, subtree: true });
   }
 
-  async handleCompile(compileRequest: ICompileRequest) {
-    if (compileRequest.logLevel != null) {
-      logger.setLogLevel(compileRequest.logLevel);
-    }
-
+  private async runCompile() {
     logger.debug(logger.logFactory('Init'));
 
     // -- FileSystem
@@ -192,7 +213,7 @@ class SandpackInstance {
     // --- Load preset
     logger.groupCollapsed(logger.logFactory('Preset and transformers'));
     const initStartTime = Date.now();
-    await this.bundler.initPreset(compileRequest.template);
+    await this.bundler.initPreset(this.template);
     logger.debug(logger.logFactory('Preset and transformers', `finished in ${Date.now() - initStartTime}ms`));
     logger.groupEnd();
 

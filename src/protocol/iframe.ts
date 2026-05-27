@@ -1,4 +1,5 @@
 import { Emitter } from '../utils/emitter';
+import { IInitConfig } from './message-types';
 
 /**
  * A message bus to handle messaging with the parent
@@ -14,6 +15,9 @@ export class IFrameParentMessageBus {
   private fsPort: MessagePort | null = null;
   private fsPortResolvers: Array<(port: MessagePort) => void> = [];
 
+  private initConfig: IInitConfig | null = null;
+  private initConfigResolvers: Array<(config: IInitConfig) => void> = [];
+
   constructor() {
     this._messageListener = this._messageListener.bind(this);
 
@@ -25,6 +29,21 @@ export class IFrameParentMessageBus {
 
     if (data && data.type === 'register-frame') {
       this.parentId = data.id;
+
+      // Bootstrap config rides on the same handshake message that transfers the
+      // fs port. `register-frame` is handled before the `data.codesandbox` guard
+      // and the parent omits that flag here, so read the fields directly.
+      const config: IInitConfig = {
+        template: data.template,
+        logLevel: data.logLevel,
+      };
+      this.initConfig = config;
+      const configResolvers = this.initConfigResolvers;
+      this.initConfigResolvers = [];
+      for (const resolve of configResolvers) {
+        resolve(config);
+      }
+
       const port = evt.ports && evt.ports[0];
       if (port) {
         port.start();
@@ -55,6 +74,19 @@ export class IFrameParentMessageBus {
     }
     return new Promise((resolve) => {
       this.fsPortResolvers.push(resolve);
+    });
+  }
+
+  /**
+   * Resolves with the bootstrap config (template/logLevel/recompileDelay)
+   * delivered by the parent during `register-frame`.
+   */
+  getInitConfig(): Promise<IInitConfig> {
+    if (this.initConfig) {
+      return Promise.resolve(this.initConfig);
+    }
+    return new Promise((resolve) => {
+      this.initConfigResolvers.push(resolve);
     });
   }
 

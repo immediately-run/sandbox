@@ -64,6 +64,24 @@ export class ZenFSLayer extends FSLayer {
     }
   }
 
+  /**
+   * Records externally-reported changes (relayed from the parent, which is the
+   * only side that can observe writes to the shared filesystem). Mirrors what
+   * the local watcher would do: invalidate caches and queue the paths so the
+   * next compile re-reads and re-transforms them.
+   */
+  markChanged(paths: string[]): void {
+    for (const path of paths) {
+      const normalized = path.startsWith('/') ? path : `/${path}`;
+      if (normalized.includes('node_modules')) continue;
+
+      this.fileCache.delete(normalized);
+      this.isFileCache.delete(normalized);
+      this.pendingChanges.add(normalized);
+      this.onFileChangedEmitter.fire({ path: normalized, eventType: 'change' });
+    }
+  }
+
   /** Drains and returns the set of paths that changed since the last call. */
   drainPendingChanges(): string[] {
     const changes = Array.from(this.pendingChanges);
