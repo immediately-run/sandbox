@@ -73,7 +73,9 @@ const extractMetadata = (file: ISandboxFile):(FrontmatterParseResult|null) => {
 
 export class Bundler {
   private lastHTML: string | null = null;
-  private messageBus: IFrameParentMessageBus;
+  // Public so transformers reached via `Transformer#init(bundler)` can use the
+  // parent handshake — the `BabelTransformer` needs `getBabelPort()`.
+  messageBus: IFrameParentMessageBus;
 
   fs: FileSystem;
   moduleRegistry: ModuleRegistry;

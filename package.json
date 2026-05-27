@@ -14,8 +14,10 @@
     "prepare": "husky install",
     "dev": "parcel ./src/index.html",
     "start": "node ./server.js",
-    "build": "npm run build:tinkerable-internal && npm run build:parcel",
+    "build": "npm run build:tinkerable-internal && npm run build:babel-worker && npm run sync:babel-worker && npm run build:parcel",
     "build:parcel": "parcel build ./src/index.html --no-scope-hoist",
+    "build:babel-worker": "parcel build --target babelWorker --no-scope-hoist --cache-dir .parcel-cache-worker",
+    "sync:babel-worker": "./scripts/sync-babel-worker.sh",
     "build:tinkerable-internal": "./scripts/build-tinkerable-internal.sh",
     "test": "jest",
     "typecheck": "tsc --noEmit",
@@ -35,6 +37,18 @@
     ]
   },
   "browserslist": "> 2.5%, not ie 11, not dead, not op_mini all",
+  "targets": {
+    "babelWorker": {
+      "source": "src/bundler/transforms/babel/babel-worker.ts",
+      "distDir": "dist-worker",
+      "context": "web-worker",
+      "outputFormat": "global",
+      "isLibrary": false,
+      "optimize": true,
+      "sourceMap": false,
+      "includeNodeModules": true
+    }
+  },
   "dependencies": {
     "@babel/plugin-proposal-explicit-resource-management": "7.25.9",
     "@babel/standalone": "7.27.0",

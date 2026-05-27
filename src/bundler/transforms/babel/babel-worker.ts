@@ -108,21 +108,41 @@ async function transform({ code, filepath, config }: ITransformData): Promise<IT
   };
 }
 
-new WorkerMessageBus({
-  channel: 'sandpack-babel',
-  endpoint: self,
-  handleNotification: () => Promise.resolve(),
-  handleRequest: (method, data) => {
-    switch (method) {
-      case 'transform':
-        return transform(data);
-      default:
-        return Promise.reject(new Error('Unknown method'));
+function bindMessageBus(endpoint: MessagePort | Worker | typeof self) {
+  // eslint-disable-next-line no-new
+  new WorkerMessageBus({
+    channel: 'sandpack-babel',
+    endpoint,
+    handleNotification: () => Promise.resolve(),
+    handleRequest: (method, data) => {
+      switch (method) {
+        case 'transform':
+          return transform(data);
+        default:
+          return Promise.reject(new Error('Unknown method'));
+      }
+    },
+    handleError: (err) => {
+      logger.error(err);
+      return Promise.resolve();
+    },
+    timeoutMs: 30000,
+  });
+}
+
+// This worker is created by the *parent* page (not the sandboxed iframe) so the
+// iframe can drop `allow-same-origin`. The parent hands us a `MessagePort` that
+// is entangled with one transferred into the iframe, so transform requests flow
+// directly between the iframe and this worker without the parent relaying them.
+// Wait for that one-time `{ type: 'connect' }` handshake, then talk over the
+// port instead of `self`.
+self.addEventListener('message', function onConnect(evt: MessageEvent) {
+  if (evt.data && evt.data.type === 'connect') {
+    const port = evt.ports && evt.ports[0];
+    if (port) {
+      self.removeEventListener('message', onConnect);
+      port.start();
+      bindMessageBus(port);
     }
-  },
-  handleError: (err) => {
-    logger.error(err);
-    return Promise.resolve();
-  },
-  timeoutMs: 30000,
+  }
 });

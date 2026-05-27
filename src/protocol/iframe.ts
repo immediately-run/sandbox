@@ -15,6 +15,9 @@ export class IFrameParentMessageBus {
   private fsPort: MessagePort | null = null;
   private fsPortResolvers: Array<(port: MessagePort) => void> = [];
 
+  private babelPort: MessagePort | null = null;
+  private babelPortResolvers: Array<(port: MessagePort) => void> = [];
+
   private initConfig: IInitConfig | null = null;
   private initConfigResolvers: Array<(config: IInitConfig) => void> = [];
 
@@ -44,6 +47,11 @@ export class IFrameParentMessageBus {
         resolve(config);
       }
 
+      // The parent transfers two ports on this handshake: ports[0] is the fs
+      // RPC port, ports[1] (when present) connects to the parent-owned Babel
+      // worker. The Babel worker moved to the parent so the iframe sandbox can
+      // drop `allow-same-origin` (a same-origin worker could no longer load
+      // from an opaque-origin iframe).
       const port = evt.ports && evt.ports[0];
       if (port) {
         port.start();
@@ -52,6 +60,17 @@ export class IFrameParentMessageBus {
         this.fsPortResolvers = [];
         for (const resolve of resolvers) {
           resolve(port);
+        }
+      }
+
+      const babelPort = evt.ports && evt.ports[1];
+      if (babelPort) {
+        babelPort.start();
+        this.babelPort = babelPort;
+        const resolvers = this.babelPortResolvers;
+        this.babelPortResolvers = [];
+        for (const resolve of resolvers) {
+          resolve(babelPort);
         }
       }
       return;
@@ -74,6 +93,21 @@ export class IFrameParentMessageBus {
     }
     return new Promise((resolve) => {
       this.fsPortResolvers.push(resolve);
+    });
+  }
+
+  /**
+   * Resolves with the `MessagePort` transferred by the parent during
+   * `register-frame` that connects to the parent-owned Babel worker. The
+   * `BabelTransformer` uses it as its `WorkerMessageBus` endpoint instead of
+   * constructing its own `Worker` (which it can't, on an opaque origin).
+   */
+  getBabelPort(): Promise<MessagePort> {
+    if (this.babelPort) {
+      return Promise.resolve(this.babelPort);
+    }
+    return new Promise((resolve) => {
+      this.babelPortResolvers.push(resolve);
     });
   }
 
