@@ -7,4 +7,4 @@ dist-worker
 .DS_Store
 .firebase
 static/cached_node_module_requests.tar.gz
-static/tinkerable-internal
+static/tinkerable-sdk

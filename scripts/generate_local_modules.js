@@ -1,5 +1,6 @@
-// run as:
-// node scripts/generate_local_modules.js > src/config/local_modules.json
+// Regenerates src/config/local_modules.json from the vendored SDK files.
+// Run AFTER scripts/copy-sdk.sh has populated static/tinkerable-sdk/:
+//   node scripts/generate_local_modules.js > src/config/local_modules.json
 const path = require('path')
 const glob = require('glob')
 
@@ -7,35 +8,24 @@ const rootdir = path.join(
     __dirname,
     '..')
 
-const subdir = 'tinkerable-internal/src/'
+const baseDir = path.join(rootdir, 'static/tinkerable-sdk')
 
-const files = glob.sync(
-    path.join(
-        rootdir,
-        `${subdir}/**`))
-
-
+const files = glob.sync(path.join(baseDir, '**'))
 
 const urls = Object.fromEntries(
         files.sort()
-            .map(f => {
-                const relpath = f.substring(rootdir.length + subdir.length + 1);
-                if (relpath.endsWith('.ts') || relpath.endsWith('.tsx')) {
-                    return relpath.replace(/\.tsx?$/, '.js')
-                }
-                return null;
-            })
-            .filter(f => f)
-            .map(f => [f, `/tinkerable-internal/${f}`])
+            .map(f => path.relative(baseDir, f))
+            .filter(rel => rel.endsWith('.js'))
+            .map(rel => [rel, `/tinkerable-sdk/${rel}`])
         )
 
 console.log(
     JSON.stringify({
   "modules": {
-    "@tinkerable/internal": {
+    "@tinkerable/sdk": {
       "urls": {
         ...urls,
-        "package.json": "/tinkerable-internal/package.json",
+        "package.json": "/tinkerable-sdk/package.json",
       }
     }
   }
