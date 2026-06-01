@@ -1,27 +1,27 @@
 {
   "modules": {
-    "@tinkerable/sdk": {
+    "@immediately-run/sdk": {
       "urls": {
-        "MDXProvider.js": "/tinkerable-sdk/MDXProvider.js",
-        "RoutingSpec.js": "/tinkerable-sdk/RoutingSpec.js",
-        "TinkerableContext.js": "/tinkerable-sdk/TinkerableContext.js",
-        "boot.js": "/tinkerable-sdk/boot.js",
-        "components/FileRouter.js": "/tinkerable-sdk/components/FileRouter.js",
-        "components/Include.js": "/tinkerable-sdk/components/Include.js",
-        "components/MDXComponents.js": "/tinkerable-sdk/components/MDXComponents.js",
-        "components/MainContent.js": "/tinkerable-sdk/components/MainContent.js",
-        "components/defaults.js": "/tinkerable-sdk/components/defaults.js",
-        "components/errors.js": "/tinkerable-sdk/components/errors.js",
-        "contextUtils.js": "/tinkerable-sdk/contextUtils.js",
-        "hooks.js": "/tinkerable-sdk/hooks.js",
-        "index.js": "/tinkerable-sdk/index.js",
-        "moduleCache.js": "/tinkerable-sdk/moduleCache.js",
-        "pathUtils.js": "/tinkerable-sdk/pathUtils.js",
-        "routing.js": "/tinkerable-sdk/routing.js",
-        "sandboxTypes.js": "/tinkerable-sdk/sandboxTypes.js",
-        "sandboxUtils.js": "/tinkerable-sdk/sandboxUtils.js",
-        "urlUtils.js": "/tinkerable-sdk/urlUtils.js",
-        "package.json": "/tinkerable-sdk/package.json"
+        "MDXProvider.js": "/immediately-run-sdk/MDXProvider.js",
+        "RoutingSpec.js": "/immediately-run-sdk/RoutingSpec.js",
+        "TinkerableContext.js": "/immediately-run-sdk/TinkerableContext.js",
+        "boot.js": "/immediately-run-sdk/boot.js",
+        "components/FileRouter.js": "/immediately-run-sdk/components/FileRouter.js",
+        "components/Include.js": "/immediately-run-sdk/components/Include.js",
+        "components/MDXComponents.js": "/immediately-run-sdk/components/MDXComponents.js",
+        "components/MainContent.js": "/immediately-run-sdk/components/MainContent.js",
+        "components/defaults.js": "/immediately-run-sdk/components/defaults.js",
+        "components/errors.js": "/immediately-run-sdk/components/errors.js",
+        "contextUtils.js": "/immediately-run-sdk/contextUtils.js",
+        "hooks.js": "/immediately-run-sdk/hooks.js",
+        "index.js": "/immediately-run-sdk/index.js",
+        "moduleCache.js": "/immediately-run-sdk/moduleCache.js",
+        "pathUtils.js": "/immediately-run-sdk/pathUtils.js",
+        "routing.js": "/immediately-run-sdk/routing.js",
+        "sandboxTypes.js": "/immediately-run-sdk/sandboxTypes.js",
+        "sandboxUtils.js": "/immediately-run-sdk/sandboxUtils.js",
+        "urlUtils.js": "/immediately-run-sdk/urlUtils.js",
+        "package.json": "/immediately-run-sdk/package.json"
       }
     }
   }

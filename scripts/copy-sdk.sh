@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Vendors the published @tinkerable/sdk build into static/ so it can be injected
+# Vendors the published @immediately-run/sdk build into static/ so it can be injected
 # into the sandbox iframe at runtime (the iframe cannot reach npmjs). The SDK is
 # installed as a devDependency; here we copy its prebuilt dist/ into
-# static/tinkerable-sdk/, which parcel then copies into the served dist/ root.
+# static/immediately-run-sdk/, which parcel then copies into the served dist/ root.
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 ROOT="$SCRIPT_DIR/.."
-SRC="$ROOT/node_modules/@tinkerable/sdk/dist"
-DEST="$ROOT/static/tinkerable-sdk"
+SRC="$ROOT/node_modules/@immediately-run/sdk/dist"
+DEST="$ROOT/static/immediately-run-sdk"
 
 if [ ! -d "$SRC" ]; then
-  echo "error: $SRC not found — run 'npm install' to install @tinkerable/sdk first." >&2
+  echo "error: $SRC not found — run 'npm install' to install @immediately-run/sdk first." >&2
   exit 1
 fi
 
@@ -28,14 +28,14 @@ mkdir -p "$DEST"
     done )
 
 # Minimal package.json so the in-sandbox resolver can resolve the bare
-# "@tinkerable/sdk" specifier to the flattened ESM entrypoint.
+# "@immediately-run/sdk" specifier to the flattened ESM entrypoint.
 cat > "$DEST/package.json" <<'JSON'
 {
-  "name": "@tinkerable/sdk",
+  "name": "@immediately-run/sdk",
   "main": "./index.js",
   "module": "./index.js",
   "types": "./index.d.ts"
 }
 JSON
 
-echo "Copied @tinkerable/sdk -> static/tinkerable-sdk/"
+echo "Copied @immediately-run/sdk -> static/immediately-run-sdk/"

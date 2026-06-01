@@ -82,7 +82,7 @@
   "devDependencies": {
     "@octokit/rest": "^18.12.0",
     "@swc-node/jest": "^1.4.3",
-    "@tinkerable/sdk": "^0.1.0",
+    "@immediately-run/sdk": "^0.1.0",
     "@types/jest": "^27.4.1",
     "@types/micromatch": "^4.0.2",
     "@types/pako": "^2.0.3",
