@@ -11,11 +11,19 @@ export class FileSystem {
   constructor(layers: FSLayer[]) {
     this.layers = layers;
     this.readFile = gensync({
-      sync: this.readFileSync.bind(this),
+      // File reads are async-only; gensync still requires a sync handler, but it
+      // is never invoked because the resolver always runs via `resolveAsync`.
+      sync: (path: string): string => {
+        throw new Error(`Synchronous file reads are not supported (path: ${path})`);
+      },
       async: this.readFileAsync.bind(this),
     });
     this.isFile = gensync({
-      sync: this.isFileSync.bind(this),
+      // Existence checks are async-only; gensync still requires a sync handler, but
+      // it is never invoked because the resolver always runs via `resolveAsync`.
+      sync: (path: string): boolean => {
+        throw new Error(`Synchronous file existence checks are not supported (path: ${path})`);
+      },
       async: this.isFileAsync.bind(this),
     });
   }
@@ -26,32 +34,12 @@ export class FileSystem {
     }
   }
 
-  writeFile(path: string, content: string): void {
+  async writeFile(path: string, content: string): Promise<void> {
     for (let layer of this.layers) {
       if (layer.shouldSkipLayer(path)) continue;
 
-      layer.writeFile(path, content);
+      await layer.writeFile(path, content);
     }
-  }
-
-  readFileSync(path: string): string {
-    let lastError = null;
-    for (let layer of this.layers) {
-      if (layer.shouldSkipLayer(path)) continue;
-
-      try {
-        const result = layer.readFileSync(path);
-        return result;
-      } catch (err) {
-        lastError = err;
-      }
-    }
-
-    if (!lastError) {
-      lastError = new Error(`File ${path} not found`);
-    }
-
-    throw lastError;
   }
 
   async readFileAsync(path: string): Promise<string> {
@@ -63,6 +51,7 @@ export class FileSystem {
         const result = await layer.readFileAsync(path);
         return result;
       } catch (err) {
+        // console.log(`Error reading file ${path} from layer ${layer.name}:`, err);
         lastError = err;
       }
     }
@@ -72,21 +61,6 @@ export class FileSystem {
     }
 
     throw lastError;
-  }
-
-  isFileSync(path: string): boolean {
-    for (let layer of this.layers) {
-      if (layer.shouldSkipLayer(path)) continue;
-
-      try {
-        if (layer.isFileSync(path)) {
-          return true;
-        }
-      } catch (err) {
-        // console.error(err);
-      }
-    }
-    return false;
   }
 
   async isFileAsync(path: string): Promise<boolean> {

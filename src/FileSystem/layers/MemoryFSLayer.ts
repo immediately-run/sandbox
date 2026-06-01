@@ -7,16 +7,9 @@ export class MemoryFSLayer extends FSLayer {
     super('memory-fs');
   }
 
-  writeFile(path: string, content: string): void {
+  writeFile(path: string, content: string): Promise<void> {
     this.files.set(path, content);
-  }
-
-  readFileSync(path: string): string {
-    const content = this.files.get(path);
-    if (content == null) {
-      throw new Error(`File ${path} not found`);
-    }
-    return content;
+    return Promise.resolve();
   }
 
   readFileAsync(path: string): Promise<string> {
@@ -25,10 +18,6 @@ export class MemoryFSLayer extends FSLayer {
       return Promise.reject(new Error(`File ${path} not found`));
     }
     return Promise.resolve(content);
-  }
-
-  isFileSync(path: string): boolean {
-    return this.files.has(path);
   }
 
   isFileAsync(path: string): Promise<boolean> {

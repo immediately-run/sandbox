@@ -1,25 +1,29 @@
+import type { Bundler } from '../../bundler';
 import { CompilationError } from '../../../errors/CompilationError';
 import * as logger from '../../../utils/logger';
 import { WorkerMessageBus } from '../../../utils/WorkerMessageBus';
 import { ITranspilationContext, ITranspilationResult, Transformer } from '../Transformer';
-import { ITransformData } from './babel-worker';
+import type { ITransformData } from './babel-worker';
 
 export class BabelTransformer extends Transformer {
-  private worker: null | Worker = null;
   private messageBus: null | WorkerMessageBus = null;
 
   constructor() {
     super('babel-transformer');
   }
 
-  async init() {
-    this.worker = new Worker(new URL('./babel-worker', import.meta.url), {
-      type: 'module',
-    });
+  async init(bundler: Bundler) {
+    // The Babel worker runs in the *parent* page, not this (now opaque-origin)
+    // iframe — an opaque origin can't load a same-origin worker script. The
+    // parent transfers a `MessagePort` connected to that worker via the
+    // `register-frame` handshake; we drive it with the same `WorkerMessageBus`
+    // protocol the worker speaks, since a `MessagePort` is a valid endpoint.
+    const port = await bundler.messageBus.getBabelPort();
+    port.start();
 
     this.messageBus = new WorkerMessageBus({
       channel: 'sandpack-babel',
-      endpoint: this.worker,
+      endpoint: port,
       handleNotification: () => Promise.resolve(),
       handleRequest: () => Promise.reject(new Error('Unknown method')),
       handleError: (err) => {

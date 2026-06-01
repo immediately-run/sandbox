@@ -8,11 +8,12 @@
     "esModuleInterop": true,
     "sourceMap": true,
     "allowJs": true,
-    "lib": ["es6", "dom"],
+    "lib": ["esnext", "dom"],
     "rootDir": "src",
     "moduleResolution": "bundler",
     "downlevelIteration": true,
-    "strictNullChecks": true
+    "strictNullChecks": true,
+    "skipLibCheck": true
   },
   "include": ["src"],
   "exclude": ["node_modules", "dist", "fixture"]

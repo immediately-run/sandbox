@@ -1,3 +1,6 @@
+import { mount, configure, resolveMountConfig, bindContext } from '@zenfs/core';
+import { Port } from '@zenfs/core/backends/port.js';
+
 import { Bundler } from './bundler/bundler';
 import { ErrorRecord, listenToRuntimeErrors } from './error-listener';
 import { BundlerError } from './errors/BundlerError';
@@ -5,7 +8,6 @@ import { CompilationError } from './errors/CompilationError';
 import { errorMessage } from './errors/util';
 import { handleEvaluate, hookConsole } from './integrations/console';
 import { IFrameParentMessageBus } from './protocol/iframe';
-import { ICompileRequest } from './protocol/message-types';
 import { Debouncer } from './utils/Debouncer';
 import { DisposableStore } from './utils/Disposable';
 import { getDocumentHeight } from './utils/document';
@@ -18,22 +20,85 @@ const bundlerStartTime = Date.now();
 class SandpackInstance {
   private messageBus: IFrameParentMessageBus;
   private disposableStore = new DisposableStore();
-  private bundler;
+  private bundler!: Bundler;
   private compileDebouncer = new Debouncer(50);
+  private template!: string;
   private lastHeight: number = 0;
   private resizePollingTimer: NodeJS.Timer | undefined;
+  private readyPromise: Promise<void>;
 
   constructor() {
     this.messageBus = new IFrameParentMessageBus();
 
-    this.bundler = new Bundler({ messageBus: this.messageBus });
+    this.readyPromise = this.bootstrap().catch((err) => {
+      logger.error('Failed to bootstrap sandpack instance', err);
+      throw err;
+    });
+  }
 
+  private async bootstrap() {
+    // Set up the compile/refresh handler immediately so any 'compile' message
+    // that arrives while we wait for the port is queued, not dropped.
     const disposeOnMessage = this.messageBus.onMessage((msg) => {
       this.handleParentMessage(msg);
     });
     this.disposableStore.add(disposeOnMessage);
 
-    this.init().catch(logger.error);
+    // Send 'initialized' now — the parent waits for this before it sends
+    // 'register-frame' with the MessagePort in the transferable list.
+    this.messageBus.sendMessage('initialized');
+    for (let url of cachedRequestInfo.locations) {
+      await loadCachedResponses(url);
+    }
+
+    // Wait for the MessagePort transferred in the 'register-frame' handshake.
+    // Any `fs.promises.*` call in the iframe will be forwarded to the parent
+    // via zenfs's Port RPC.
+    const fsPort = await this.messageBus.getFsPort();
+    // The zenfs `Port` backend accepts any WebMessagePort-shaped object; the
+    // DOM `MessagePort` satisfies this structurally even though TS's union
+    // also includes `WebSocket`.
+
+
+    await configure({
+      onlySyncOnClose: true,
+      disableAccessChecks: true,
+      disableAsyncCache: true,
+      log: {
+        enabled: true,
+        level: "debug",
+        dumpBacklog: true,
+        output: console.debug
+      }
+    });
+    // Generous RPC timeout: each `fs.*` call here is an RPC round-trip to the
+    // parent, served on the parent's main thread. During rapid edits the parent
+    // is busy (React re-renders, editor work), so a tight timeout makes reads
+    // spuriously time out — and the late response then throws "Invalid RPC id"
+    // (a timed-out request is removed before its response arrives), breaking the
+    // preview. 30s is a safety net for genuinely lost messages, not normal load.
+    const portfs = await resolveMountConfig({ backend: Port, port: fsPort as any, disableAsyncCache: true, timeout: 30000 });
+    portfs.attributes.set('no_atime', true);
+    mount('/remote', portfs);
+
+    // Expose the shared filesystem to code running in the sandbox, rooted at the
+    // project root (so `/src/App.tsx` maps to the parent's `/src/App.tsx`). The
+    // preloaded `fs` module re-exports this, so an app's `fs.promises.writeFile`
+    // goes to the parent over the Port — which the parent observes at its
+    // `attachFS` hook and reflects in the editor. Async APIs only: the Port
+    // bridge is request/response and can't service synchronous fs calls.
+    (globalThis as any).__sandpackSharedFs = bindContext({
+      root: '/remote',
+      pwd: '/remote',
+    }).fs;
+
+    // Zenfs is ready — safe to create the bundler (ZenFSLayer starts a
+    // filesystem watcher that requires zenfs to be configured).
+    this.bundler = new Bundler({ messageBus: this.messageBus });
+
+    this.bundler.onStatusChange((newStatus) => {
+      this.messageBus.sendMessage('status', { status: newStatus });
+    });
 
     listenToRuntimeErrors(this.bundler, (runtimeError: ErrorRecord) => {
       const stackFrame = runtimeError.stackFrames[0] ?? {};
@@ -63,12 +128,35 @@ class SandpackInstance {
         }
       }
     });
+
+    // Bootstrap config (template/logLevel) was delivered on the same
+    // `register-frame` message that gave us the fs port, so this resolves
+    // immediately. There is no `compile` message anymore — the bundler drives
+    // its own initial build and rebuilds when the parent relays an `fs-change`.
+    const initConfig = await this.messageBus.getInitConfig();
+    if (initConfig.logLevel != null) {
+      logger.setLogLevel(initConfig.logLevel);
+    }
+    this.template = initConfig.template;
+
+    // Kick off the initial compile.
+    this.compileDebouncer.debounce(() => this.runCompile());
   }
 
   handleParentMessage(message: any) {
     switch (message.type) {
-      case 'compile':
-        this.compileDebouncer.debounce(() => this.handleCompile(message).catch(logger.error));
+      case 'fs-change':
+        // The parent observed writes to the shared filesystem and relayed the
+        // changed paths (zenfs's Port backend can't forward watch events, so we
+        // can't see them ourselves). Invalidate them and re-bundle. Gate on
+        // `readyPromise` so changes relayed during bootstrap (before the bundler
+        // exists) are applied once it's ready rather than throwing.
+        this.readyPromise
+          .then(() => {
+            this.bundler.markFilesChanged(message.paths ?? []);
+            this.compileDebouncer.debounce(() => this.runCompile());
+          })
+          .catch(logger.error);
         break;
       case 'refresh':
         window.location.reload();
@@ -115,31 +203,12 @@ class SandpackInstance {
     observer.observe(document, { attributes: true, childList: true, subtree: true });
   }
 
-  async init() {
-    this.messageBus.sendMessage('initialized');
-
-    for (let url of cachedRequestInfo.locations) {
-      loadCachedResponses(url)
-    }
-
-    this.bundler.onStatusChange((newStatus) => {
-      this.messageBus.sendMessage('status', { status: newStatus });
-    });
-  }
-
-  async handleCompile(compileRequest: ICompileRequest) {
-    if (compileRequest.logLevel != null) {
-      logger.setLogLevel(compileRequest.logLevel);
-    }
-
+  private async runCompile() {
     logger.debug(logger.logFactory('Init'));
 
     // -- FileSystem
     const initStartTimeFileSystem = Date.now();
     logger.debug(logger.logFactory('FileSystem'));
-    this.bundler.configureFS({
-      hasAsyncFileResolver: compileRequest.hasFileResolver,
-    });
 
     this.messageBus.sendMessage('start', {
       firstLoad: this.bundler.isFirstLoad,
@@ -155,16 +224,15 @@ class SandpackInstance {
     // --- Load preset
     logger.groupCollapsed(logger.logFactory('Preset and transformers'));
     const initStartTime = Date.now();
-    await this.bundler.initPreset(compileRequest.template);
+    await this.bundler.initPreset(this.template);
     logger.debug(logger.logFactory('Preset and transformers', `finished in ${Date.now() - initStartTime}ms`));
     logger.groupEnd();
 
     // --- Bundling / Compiling
     logger.groupCollapsed(logger.logFactory('Bundling'));
     const bundlingStartTime = Date.now();
-    const files = Object.values(compileRequest.modules);
     const evaluate = await this.bundler
-      .compile(files)
+      .compile()
       .then((val) => {
         this.messageBus.sendMessage('done', {
           compilatonError: false,
@@ -187,7 +255,7 @@ class SandpackInstance {
       });
 
     // --- Replace HTML
-    this.bundler.replaceHTML();
+    await this.bundler.replaceHTML();
 
     // --- Evaluation
     if (evaluate) {

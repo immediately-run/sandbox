@@ -1,8 +1,8 @@
 import { BundlerError } from '../errors/BundlerError';
 import { FileSystem } from '../FileSystem';
-import { IFrameFSLayer } from '../FileSystem/layers/IFrameFSLayer';
 import { MemoryFSLayer } from '../FileSystem/layers/MemoryFSLayer';
 import { NodeModuleFSLayer } from '../FileSystem/layers/NodeModuleFSLayer';
+import { ZenFSLayer } from '../FileSystem/layers/ZenFSLayer';
 import { IFrameParentMessageBus } from '../protocol/iframe';
 import { BundlerStatus } from '../protocol/message-types';
 import { ResolverCache, resolveAsync } from '../resolver/resolver';
@@ -20,6 +20,7 @@ import localModulesInfo from '../config/local_modules.json'
 import { retryFetch } from '../utils/fetch'
 import { basename } from '../utils/path'
 import { FrontmatterParseResult, parseFrontmatter } from './frontmatter';
+import { bindContext, globToRegex } from '@zenfs/core';
 
 export type TransformationQueue = NamedPromiseQueue<Module>;
 export type MetadataChange = {
@@ -35,12 +36,25 @@ Object.defineProperty(exports, "__esModule", {
 });
 `.trim()
 
+/**
+ * Source for the sandbox's `fs` module. It re-exports the shared filesystem the
+ * bundler exposes on the global (rooted at the project root, backed by the
+ * parent window over the ZenFS Port). App-code writes via `fs` therefore land
+ * in the parent filesystem and are reflected back into the editor. Async APIs
+ * (\`fs.promises.*\`, callback style) are supported; synchronous APIs are not,
+ * since the Port bridge cannot service synchronous calls.
+ */
+export const SHARED_FS_MODULE_CODE = `
+"use strict";
+var __fs = (typeof globalThis !== "undefined" && globalThis.__sandpackSharedFs) || null;
+if (!__fs) {
+  throw new Error("[sandpack] shared filesystem is unavailable");
+}
+module.exports = __fs;
+`.trim()
+
 interface IBundlerOpts {
   messageBus: IFrameParentMessageBus;
-}
-
-interface IFSOptions {
-  hasAsyncFileResolver?: boolean;
 }
 
 const extractMetadata = (file: ISandboxFile):(FrontmatterParseResult|null) => {
@@ -59,7 +73,9 @@ const extractMetadata = (file: ISandboxFile):(FrontmatterParseResult|null) => {
 
 export class Bundler {
   private lastHTML: string | null = null;
-  private messageBus: IFrameParentMessageBus;
+  // Public so transformers reached via `Transformer#init(bundler)` can use the
+  // parent handshake — the `BabelTransformer` needs `getBabelPort()`.
+  messageBus: IFrameParentMessageBus;
 
   fs: FileSystem;
   moduleRegistry: ModuleRegistry;
@@ -84,15 +100,28 @@ export class Bundler {
   onStatusChange = this.onStatusChangeEmitter.event;
 
   private _previousDepString: string | null = null;
-  private iFrameFsLayer: IFrameFSLayer;
+  private zenFsLayer: ZenFSLayer;
+  private lastMetadata: Map<string, Record<string, any>> = new Map();
+
+  /**
+   * Records files the parent reported as changed. ZenFS's `Port` backend does
+   * not forward watch events across the iframe boundary, so the bundler cannot
+   * observe parent-side writes on its own — the parent relays the changed paths
+   * (see the `fs-change` handler in `index.ts`). This invalidates the cached
+   * contents and queues the paths for the next incremental compile.
+   */
+  markFilesChanged(paths: string[]): void {
+    this.zenFsLayer.markChanged(paths);
+  }
 
   constructor(options: IBundlerOpts) {
     this.transformationQueue = new NamedPromiseQueue(true, 50);
     this.moduleRegistry = new ModuleRegistry(this);
     const memoryFS = new MemoryFSLayer();
-    memoryFS.writeFile('//empty.js', 'module.exports = () => {};');
-    this.iFrameFsLayer = new IFrameFSLayer(memoryFS, options.messageBus);
-    this.fs = new FileSystem([memoryFS, this.iFrameFsLayer, new NodeModuleFSLayer(this.moduleRegistry)]);
+    // In-memory write resolves synchronously, so we don't need to await it here.
+    void memoryFS.writeFile('//empty.js', 'module.exports = () => {};');
+    this.zenFsLayer = new ZenFSLayer(bindContext({'root': '/remote', 'pwd': '/remote'}));
+    this.fs = new FileSystem([memoryFS, this.zenFsLayer, new NodeModuleFSLayer(this.moduleRegistry)]);
     this.messageBus = options.messageBus;
   }
 
@@ -103,12 +132,6 @@ export class Bundler {
     this.resolverCache = new Map();
   }
 
-  configureFS(opts: IFSOptions): void {
-    if (opts.hasAsyncFileResolver) {
-      this.iFrameFsLayer.enableIFrameFS();
-    }
-  }
-
   async initPreset(preset: string): Promise<void> {
     if (!this.preset) {
       this.preset = getPreset(preset);
@@ -116,9 +139,9 @@ export class Bundler {
     }
   }
 
-  registerRuntime(id: string, code: string): void {
+  async registerRuntime(id: string, code: string): Promise<void> {
     const filepath = `/node_modules/__csb_runtimes/${id}.js`;
-    this.fs.writeFile(filepath, code);
+    await this.fs.writeFile(filepath, code);
     const module = new Module(filepath, code, false, this);
     this.modules.set(filepath, module);
     this.runtimes.push(filepath);
@@ -250,6 +273,7 @@ export class Bundler {
       module = new Module(path, content, false, this);
       this.modules.set(path, module);
     }
+    this.refreshMetadata(path, module.source);
     await module.compile();
     for (let dep of module.dependencies) {
       const resolvedDependency = await this.resolveAsync(dep, module.filepath);
@@ -321,7 +345,7 @@ export class Bundler {
     }
     const parsedPackageJSON: any = JSON.parse(manifest[0][1]);
     for (let [filepath, contents] of files) {
-      this.fs.writeFile(filepath, contents);
+      await this.fs.writeFile(filepath, contents);
       if (filepath.endsWith('.js')) {
         const module = new Module(filepath, contents, false, this);
         this.modules.set(filepath, module);
@@ -330,13 +354,18 @@ export class Bundler {
   }
 
   async preloadModules(): Promise<void> {
-    this.addPreloadedModule("path");
-    this.addPreloadedModule("fs");
-    this.addPreloadedModule("util");
-    this.addPreloadedModule("assert");
-    this.addPreloadedModule("module");
-    this.addPreloadedModule("os");
-    // this.addPreloadedModule("@internationalized/date");
+    await Promise.all([
+      this.addPreloadedModule("path"),
+      // `fs` is backed by the shared filesystem (parent window over the Port),
+      // not a CDN polyfill — so app-code writes reach the parent and reflect in
+      // the editor.
+      this.addPreloadedModule("fs", SHARED_FS_MODULE_CODE),
+      this.addPreloadedModule("util"),
+      this.addPreloadedModule("assert"),
+      this.addPreloadedModule("module"),
+      this.addPreloadedModule("os"),
+      // this.addPreloadedModule("@internationalized/date"),
+    ]);
   }
 
   async fetchSource(url: string): Promise<string> {
@@ -353,7 +382,7 @@ export class Bundler {
       const codeContents = await Promise.all(moduleSources.map(([_name, url]) => this.fetchSource(url)))
       for (let ix = 0; ix < moduleSources.length; ix++) {
         const filepath = this.getModuleRelativePath(moduleName, moduleSources[ix][0]);
-        this.fs.writeFile(filepath, codeContents[ix]);
+        await this.fs.writeFile(filepath, codeContents[ix]);
         if (filepath.endsWith('.js')) {
           const module = new Module(filepath, codeContents[ix], false, this);
           this.modules.set(filepath, module);
@@ -362,35 +391,55 @@ export class Bundler {
     }
   }
 
-
-  /** writes any new files and returns a list of updated modules */
-  writeNewFiles(files: ISandboxFile[]): string[] {
-    const res: string[] = [];
-    const changedMetadata: MetadataChange["update"] = {}
-    for (let file of files) {
-      try {
-        const content = this.fs.readFileSync(file.path);
-        if (content == file.code) {
-          // no code change for the given file
-          continue
-        }
-      } catch (err) {
-        // file does not exist
-      }
-      const metadata = extractMetadata(file);
-      if (metadata) {
-        changedMetadata[file.path] = metadata.data;
-      }
-      res.push(file.path);
-      this.fs.writeFile(file.path, file.code);
-    }
-    if (Object.keys(changedMetadata).length > 0) {
-      this.onMetadataChangeEmitter.fire({type: "metadata-update", update: changedMetadata});
-    }
-    return res;
+  async preloadMDXMetadata(): Promise<void> {
+    const re = globToRegex('/**/*.mdx');
+    const zenFsLayer = this.fs.layers[1] as ZenFSLayer;
+    const mdxFiles = (await zenFsLayer.boundContext.fs.promises.readdir('/', {recursive: true})).map(
+      i => '/' + i).filter(p => p.match(re));
+    await Promise.all(mdxFiles.map(async (filepath) => {
+      const source = await zenFsLayer.readFileAsync(filepath);
+      this.refreshMetadata(filepath, source);
+    }));
   }
 
-  async compile(files: ISandboxFile[]): Promise<() => any> {
+
+  /**
+   * Lazily extracts MDX frontmatter metadata when a file is (re-)read during
+   * compilation. Fires `onMetadataChange` if the parsed metadata differs from
+   * the last value observed for the same path.
+   */
+  private refreshMetadata(path: string, source: string): void {
+    const parsed = extractMetadata({ path, code: source });
+    const next = parsed ? parsed.data : undefined;
+    const prev = this.lastMetadata.get(path);
+
+    const prevKey = prev ? JSON.stringify(prev) : undefined;
+    const nextKey = next ? JSON.stringify(next) : undefined;
+    if (prevKey === nextKey) {
+      return;
+    }
+
+    if (next) {
+      this.lastMetadata.set(path, next);
+    } else {
+      this.lastMetadata.delete(path);
+    }
+    this.onMetadataChangeEmitter.fire({
+      type: 'metadata-update',
+      update: { [path]: next ?? {} },
+    });
+  }
+
+  /**
+   * Returns the set of paths that changed since the last compile (as reported
+   * by the zenfs watcher). Also invalidates the corresponding modules so the
+   * transform queue re-reads them.
+   */
+  private collectChangedFiles(): string[] {
+    return this.zenFsLayer.drainPendingChanges();
+  }
+
+  async compile(): Promise<() => any> {
     if (!this.preset) {
       throw new BundlerError('Cannot compile before preset has been initialized');
     }
@@ -406,7 +455,7 @@ export class Bundler {
     if (!this.isFirstLoad) {
       logger.debug('Started incremental compilation');
 
-      changedFiles = this.writeNewFiles(files);
+      changedFiles = this.collectChangedFiles();
 
       if (!changedFiles.length) {
         logger.debug('Skipping compilation, no changes detected');
@@ -419,20 +468,18 @@ export class Bundler {
         window.location.reload();
         return () => { };
       }
-    } else { // initial load: process all files
-      const changedMetadata: MetadataChange["update"] = {}
-      for (let file of files) {
-        const metadata = extractMetadata(file);
-        if (metadata) {
-          changedMetadata[file.path] = metadata.data;
-        }
-        this.fs.writeFile(file.path, file.code);
-        await this.preloadModules();
-        await this.addLocalModules();
-      }
-      if (Object.keys(changedMetadata).length > 0) {
-        this.onMetadataChangeEmitter.fire({type: 'metadata-update', update: changedMetadata});
-      }
+    } else {
+      // First load: files are read lazily from zenfs as the bundler traverses
+      // from the entrypoint. Only preloaded/local node_modules are written up
+      // front here.
+      await this.preloadModules();
+      await this.addLocalModules();
+      // Drain any spurious watcher events that fired during bootstrap so they
+      // aren't interpreted as user-driven changes later.
+      this.zenFsLayer.drainPendingChanges();
+      // update MDX metadata for files which need to be picked up on startup
+      // TODO: make this glob pattern overridable from package.json
+      await this.preloadMDXMetadata();
     }
 
     if (changedFiles.length) {
@@ -547,28 +594,33 @@ export class Bundler {
         });
 
         if (invalidatedModules.length > 0) {
-          return this.compile(files);
+          return this.compile();
         }
       }
     };
   }
 
   // TODO: Support template languages...
-  getHTMLEntry(): string {
-    const foundHTMLFilepath = ['/index.html', '/public/index.html'].find((filepath) => this.fs.isFileSync(filepath));
-
-    if (foundHTMLFilepath) {
-      return this.fs.readFileSync(foundHTMLFilepath);
-    } else {
-      if (!this.preset) {
-        throw new BundlerError('Bundler has not been initialized with a preset');
+  async getHTMLEntry(): Promise<string> {
+    let content = undefined;
+    for (const filepath of ['/index.html', '/public/index.html']) {
+      try {
+        content = await this.fs.readFileAsync(filepath);
+      } catch (err) {
       }
-      return this.preset.defaultHtmlBody;
+      if (content) {
+        return content;
+      }
     }
+    // fall back to preset default
+    if (!this.preset) {
+      throw new BundlerError('Bundler has not been initialized with a preset');
+    }
+    return this.preset.defaultHtmlBody;
   }
 
-  replaceHTML() {
-    const html = this.getHTMLEntry() ?? '<div id="root"></div>';
+  async replaceHTML() {
+    const html = (await this.getHTMLEntry()) ?? '<div id="root"></div>';
     if (this.lastHTML) {
       if (this.lastHTML !== html) {
         window.location.reload();

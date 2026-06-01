@@ -14,9 +14,11 @@
     "prepare": "husky install",
     "dev": "parcel ./src/index.html",
     "start": "node ./server.js",
-    "build": "npm run build:tinkerable-internal && npm run build:parcel",
+    "build": "npm run build:sdk && npm run build:babel-worker && npm run sync:babel-worker && npm run build:parcel",
     "build:parcel": "parcel build ./src/index.html --no-scope-hoist",
-    "build:tinkerable-internal": "./scripts/build-tinkerable-internal.sh",
+    "build:babel-worker": "parcel build --target babelWorker --no-scope-hoist --cache-dir .parcel-cache-worker",
+    "sync:babel-worker": "./scripts/sync-babel-worker.sh",
+    "build:sdk": "./scripts/copy-sdk.sh",
     "test": "jest",
     "typecheck": "tsc --noEmit",
     "format": "prettier --write \"./src/**/*.{ts,tsx,js,jsx,json}\"",
@@ -35,6 +37,18 @@
     ]
   },
   "browserslist": "> 2.5%, not ie 11, not dead, not op_mini all",
+  "targets": {
+    "babelWorker": {
+      "source": "src/bundler/transforms/babel/babel-worker.ts",
+      "distDir": "dist-worker",
+      "context": "web-worker",
+      "outputFormat": "global",
+      "isLibrary": false,
+      "optimize": true,
+      "sourceMap": false,
+      "includeNodeModules": true
+    }
+  },
   "dependencies": {
     "@babel/plugin-proposal-explicit-resource-management": "7.25.9",
     "@babel/standalone": "7.27.0",
@@ -43,6 +57,7 @@
     "@swc/helpers": "0.5.17",
     "@types/babel__standalone": "7.1.9",
     "@types/mdast": "^4.0.4",
+    "@zenfs/core": "^2.5.6",
     "babel-preset-solid": "^1.3.13",
     "console-feed": "3.8.0",
     "gensync": "^1.0.0-beta.2",
@@ -67,6 +82,7 @@
   "devDependencies": {
     "@octokit/rest": "^18.12.0",
     "@swc-node/jest": "^1.4.3",
+    "@immediately-run/sdk": "^0.1.0",
     "@types/jest": "^27.4.1",
     "@types/micromatch": "^4.0.2",
     "@types/pako": "^2.0.3",
@@ -106,6 +122,10 @@
     "@babel/preset-env": "7.27.0",
     "@swc/core": "1.11.24",
     "react": "19.1.0"
+  },
+  "overrides": {
+    "react": "19.1.0",
+    "react-dom": "19.1.0"
   },
   "@parcel/resolver-default": {
     "packageExports": true

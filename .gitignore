@@ -1,8 +1,10 @@
 node_modules
 dist
 .parcel-cache
+.parcel-cache-worker
+dist-worker
 *.log
 .DS_Store
 .firebase
 static/cached_node_module_requests.tar.gz
-static/tinkerable-internal
+static/immediately-run-sdk

@@ -9,20 +9,12 @@ export class FSLayer {
     return;
   }
 
-  writeFile(path: string, content: string): void {
-    return;
-  }
-
-  readFileSync(path: string): string {
-    throw new Error(`readFileSync is not implemented for fs#${this.name}`);
+  writeFile(path: string, content: string): Promise<void> {
+    return Promise.resolve();
   }
 
   readFileAsync(path: string): Promise<string> {
     throw new Error(`readFileAsync is not implemented for fs#${this.name}`);
-  }
-
-  isFileSync(path: string): boolean {
-    throw new Error(`isFileSync is not implemented for fs#${this.name}`);
   }
 
   isFileAsync(path: string): Promise<boolean> {
