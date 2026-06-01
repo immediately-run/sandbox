@@ -12,7 +12,7 @@ set -euo pipefail
 
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 SRC="$SCRIPT_DIR/../dist-worker"
-DEST="$SCRIPT_DIR/../../tinkerable-site-main/public/babel-worker"
+DEST="$SCRIPT_DIR/../../immediately-run-site-main/public/babel-worker"
 
 if [ ! -f "$SRC/babel-worker.js" ]; then
   echo "error: $SRC/babel-worker.js not found — run 'npm run build:babel-worker' first" >&2
