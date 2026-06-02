@@ -18,7 +18,7 @@
     "dev": "parcel ./src/index.html",
     "start": "node ./server.js",
     "build": "npm run build:sdk && npm run build:babel-worker && npm run sync:babel-worker && npm run build:parcel",
-    "build:parcel": "parcel build ./src/index.html --no-scope-hoist",
+    "build:parcel": "parcel build ./src/index.html --target default --no-scope-hoist",
     "build:babel-worker": "parcel build --target babelWorker --no-scope-hoist --cache-dir .parcel-cache-worker",
     "sync:babel-worker": "./scripts/sync-babel-worker.sh",
     "build:sdk": "./scripts/copy-sdk.sh",
@@ -41,6 +41,11 @@
   },
   "browserslist": "> 2.5%, not ie 11, not dead, not op_mini all",
   "targets": {
+    "default": {
+      "distDir": "dist",
+      "context": "browser",
+      "includeNodeModules": true
+    },
     "babelWorker": {
       "source": "src/bundler/transforms/babel/babel-worker.ts",
       "distDir": "dist-worker",
@@ -85,7 +90,7 @@
   "devDependencies": {
     "@octokit/rest": "^18.12.0",
     "@swc-node/jest": "^1.4.3",
-    "@immediately-run/sdk": "^0.1.0",
+    "@immediately-run/sdk": "file:../immediately-run-sdk",
     "@types/jest": "^27.4.1",
     "@types/micromatch": "^4.0.2",
     "@types/pako": "^2.0.3",

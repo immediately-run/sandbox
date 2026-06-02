@@ -1,12 +1,15 @@
 import { Bundler } from '../../bundler';
 import { DepMap } from '../../module-registry';
 import { Module } from '../../module/Module';
+import { AssetTransformer, ASSET_EXTENSIONS } from '../../transforms/asset';
 import { BabelTransformer } from '../../transforms/babel';
 import { MDXTransformer } from '../../transforms/mdx';
 import { CSSTransformer } from '../../transforms/css';
 import { ReactRefreshTransformer } from '../../transforms/react-refresh';
 import { StyleTransformer } from '../../transforms/style';
 import { Preset } from '../Preset';
+
+const ASSET_REGEX = new RegExp(`\\.(${ASSET_EXTENSIONS.join('|')})$`, 'i');
 
 
 export class ReactPreset extends Preset {
@@ -27,6 +30,7 @@ export class ReactPreset extends Preset {
       this.registerTransformer(new CSSTransformer()),
       this.registerTransformer(new StyleTransformer()),
       this.registerTransformer(new MDXTransformer()),
+      this.registerTransformer(new AssetTransformer()),
     ]);
   }
 
@@ -81,6 +85,10 @@ export class ReactPreset extends Preset {
         ['css-transformer', {}],
         ['style-transformer', {}],
       ];
+    }
+
+    if (ASSET_REGEX.test(module.filepath)) {
+      return [['asset-transformer', {}]];
     }
 
     throw new Error(`No transformer for ${module.filepath}`);

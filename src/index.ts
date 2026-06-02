@@ -1,4 +1,4 @@
-import { mount, configure, resolveMountConfig, bindContext } from '@zenfs/core';
+import { mount, umount, configure, resolveMountConfig, bindContext } from '@zenfs/core';
 import { Port } from '@zenfs/core/backends/port.js';
 
 import { Bundler } from './bundler/bundler';
@@ -8,6 +8,16 @@ import { CompilationError } from './errors/CompilationError';
 import { errorMessage } from './errors/util';
 import { handleEvaluate, hookConsole } from './integrations/console';
 import { IFrameParentMessageBus } from './protocol/iframe';
+import { AuthService } from './auth/AuthService';
+import { REQUEST_AUTH_STATE_MESSAGE } from './auth/authState';
+import { MountService } from './mounts/MountService';
+import {
+  MOUNT_ADD_MESSAGE,
+  MOUNT_REMOVE_MESSAGE,
+  REQUEST_MOUNTS_MESSAGE,
+  SandboxMount,
+} from './mounts/mountState';
+import { APP_ROOT, underAppRoot } from './fsLayout';
 import { Debouncer } from './utils/Debouncer';
 import { DisposableStore } from './utils/Disposable';
 import { getDocumentHeight } from './utils/document';
@@ -19,6 +29,8 @@ const bundlerStartTime = Date.now();
 
 class SandpackInstance {
   private messageBus: IFrameParentMessageBus;
+  private authService: AuthService;
+  private mountService: MountService;
   private disposableStore = new DisposableStore();
   private bundler!: Bundler;
   private compileDebouncer = new Debouncer(50);
@@ -29,6 +41,12 @@ class SandpackInstance {
 
   constructor() {
     this.messageBus = new IFrameParentMessageBus();
+    // Created before the bundler (and before bootstrap awaits the fs port) so an
+    // `auth-state` message that arrives early is captured rather than dropped.
+    this.authService = new AuthService(this.messageBus);
+    // Descriptor cache for mounts the parent announces. The actual zenfs
+    // mount/umount of the transferred port is done in `handleParentMessage`.
+    this.mountService = new MountService();
 
     this.readyPromise = this.bootstrap().catch((err) => {
       logger.error('Failed to bootstrap sandpack instance', err);
@@ -55,6 +73,15 @@ class SandpackInstance {
     // Any `fs.promises.*` call in the iframe will be forwarded to the parent
     // via zenfs's Port RPC.
     const fsPort = await this.messageBus.getFsPort();
+
+    // Registration is complete (the fs port rides on `register-frame`, so
+    // `parentId` is now set). Ask the parent to push the current auth state, in
+    // case it settled before we were listening. The parent also pushes
+    // unprompted on every change.
+    this.messageBus.sendMessage(REQUEST_AUTH_STATE_MESSAGE);
+    // Likewise ask the parent to (re-)announce any mounts that already exist.
+    this.messageBus.sendMessage(REQUEST_MOUNTS_MESSAGE);
+
     // The zenfs `Port` backend accepts any WebMessagePort-shaped object; the
     // DOM `MessagePort` satisfies this structurally even though TS's union
     // also includes `WebSocket`.
@@ -79,22 +106,27 @@ class SandpackInstance {
     // preview. 30s is a safety net for genuinely lost messages, not normal load.
     const portfs = await resolveMountConfig({ backend: Port, port: fsPort as any, disableAsyncCache: true, timeout: 30000 });
     portfs.attributes.set('no_atime', true);
-    mount('/remote', portfs);
+    mount(APP_ROOT, portfs);
 
     // Expose the shared filesystem to code running in the sandbox, rooted at the
-    // project root (so `/src/App.tsx` maps to the parent's `/src/App.tsx`). The
+    // project root (so `/app/src/App.tsx` maps to the parent's
+    // `/repository/${provider}/${namespace}/${repository}/${ref}/src/App.tsx`). The
     // preloaded `fs` module re-exports this, so an app's `fs.promises.writeFile`
     // goes to the parent over the Port — which the parent observes at its
     // `attachFS` hook and reflects in the editor. Async APIs only: the Port
     // bridge is request/response and can't service synchronous fs calls.
     (globalThis as any).__sandpackSharedFs = bindContext({
-      root: '/remote',
-      pwd: '/remote',
+      root: '/',
+      pwd: APP_ROOT,
     }).fs;
 
     // Zenfs is ready — safe to create the bundler (ZenFSLayer starts a
     // filesystem watcher that requires zenfs to be configured).
-    this.bundler = new Bundler({ messageBus: this.messageBus });
+    this.bundler = new Bundler({
+      messageBus: this.messageBus,
+      auth: this.authService,
+      mounts: this.mountService,
+    });
 
     this.bundler.onStatusChange((newStatus) => {
       this.messageBus.sendMessage('status', { status: newStatus });
@@ -148,21 +180,76 @@ class SandpackInstance {
       case 'fs-change':
         // The parent observed writes to the shared filesystem and relayed the
         // changed paths (zenfs's Port backend can't forward watch events, so we
-        // can't see them ourselves). Invalidate them and re-bundle. Gate on
-        // `readyPromise` so changes relayed during bootstrap (before the bundler
-        // exists) are applied once it's ready rather than throwing.
+        // can't see them ourselves). The parent reports them repo-relative
+        // (`/index.tsx`); the bundler fs is rooted at `/`, so anchor them to
+        // `APP_ROOT`. Gate on `readyPromise` so changes relayed during bootstrap
+        // (before the bundler exists) are applied once it's ready rather than
+        // throwing.
         this.readyPromise
           .then(() => {
-            this.bundler.markFilesChanged(message.paths ?? []);
+            const paths = (message.paths ?? []).map((p: string) => underAppRoot(p));
+            this.bundler.markFilesChanged(paths);
             this.compileDebouncer.debounce(() => this.runCompile());
           })
           .catch(logger.error);
+        break;
+      case MOUNT_ADD_MESSAGE:
+        this.readyPromise.then(() => this.handleMountAdd(message)).catch(logger.error);
+        break;
+      case MOUNT_REMOVE_MESSAGE:
+        this.readyPromise.then(() => this.handleMountRemove(message)).catch(logger.error);
         break;
       case 'refresh':
         window.location.reload();
         this.messageBus.sendMessage('refresh');
         break;
     }
+  }
+
+  // The parent announced a new mount and transferred a `MessagePort` for its
+  // filesystem (surfaced as `message.ports` by `IFrameParentMessageBus`). Mount
+  // it at the descriptor's absolute path so app code can read/write it, then
+  // record the descriptor for polling/subscription.
+  private async handleMountAdd(message: any): Promise<void> {
+    const mountDescriptor: SandboxMount | undefined = message.mount;
+    const port: MessagePort | undefined = message.ports && message.ports[0];
+    if (!mountDescriptor || !port) {
+      logger.error('mount-add missing descriptor or port', message);
+      return;
+    }
+    port.start();
+    const mountfs = await resolveMountConfig({
+      backend: Port,
+      port: port as any,
+      disableAsyncCache: true,
+      timeout: 30000,
+    });
+    mountfs.attributes.set('no_atime', true);
+    // Re-mounting the same path: drop the previous mount first.
+    try {
+      umount(mountDescriptor.path);
+    } catch {
+      /* not previously mounted — fine */
+    }
+    mount(mountDescriptor.path, mountfs);
+    this.mountService.add(mountDescriptor);
+  }
+
+  private async handleMountRemove(message: any): Promise<void> {
+    const id: string | undefined = message.id;
+    const path: string | undefined = message.path;
+    const target = this.mountService.getMounts().find((m) => (m.id ?? m.path) === (id ?? path));
+    const mountPath = target?.path ?? path;
+    if (!mountPath) {
+      logger.error('mount-remove missing id/path', message);
+      return;
+    }
+    try {
+      umount(mountPath);
+    } catch (err) {
+      logger.error(`Failed to umount ${mountPath}`, err);
+    }
+    this.mountService.remove(id ?? mountPath);
   }
 
   sendResizeEvent = () => {

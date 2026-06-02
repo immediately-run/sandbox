@@ -80,6 +80,14 @@ export class IFrameParentMessageBus {
       return;
     }
 
+    // `mount-add` transfers a MessagePort for the new mount's filesystem. The
+    // generic message channel drops `evt.ports`, so attach them here for the
+    // mount handler to pick up. (`register-frame` above is handled separately.)
+    if (data.type === 'mount-add' && evt.ports && evt.ports.length > 0) {
+      this.messageEmitter.fire({ ...data, ports: evt.ports });
+      return;
+    }
+
     this.messageEmitter.fire(data);
   }
 

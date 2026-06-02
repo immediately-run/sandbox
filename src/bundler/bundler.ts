@@ -4,6 +4,9 @@ import { MemoryFSLayer } from '../FileSystem/layers/MemoryFSLayer';
 import { NodeModuleFSLayer } from '../FileSystem/layers/NodeModuleFSLayer';
 import { ZenFSLayer } from '../FileSystem/layers/ZenFSLayer';
 import { IFrameParentMessageBus } from '../protocol/iframe';
+import { AuthService } from '../auth/AuthService';
+import { MountService } from '../mounts/MountService';
+import { APP_ROOT, underAppRoot, stripAppRoot } from '../fsLayout';
 import { BundlerStatus } from '../protocol/message-types';
 import { ResolverCache, resolveAsync } from '../resolver/resolver';
 import { IPackageJSON, ISandboxFile } from '../types';
@@ -38,11 +41,13 @@ Object.defineProperty(exports, "__esModule", {
 
 /**
  * Source for the sandbox's `fs` module. It re-exports the shared filesystem the
- * bundler exposes on the global (rooted at the project root, backed by the
- * parent window over the ZenFS Port). App-code writes via `fs` therefore land
- * in the parent filesystem and are reflected back into the editor. Async APIs
- * (\`fs.promises.*\`, callback style) are supported; synchronous APIs are not,
- * since the Port bridge cannot service synchronous calls.
+ * bundler exposes on the global. That fs is rooted at `/` (so app code can reach
+ * the whole tree, including dynamic mounts like `/firestore`) with the working
+ * directory at `APP_ROOT`, so relative paths resolve against the repo. The repo
+ * is backed by the parent window over the ZenFS Port, so app-code writes there
+ * land in the parent filesystem and are reflected back into the editor. Async
+ * APIs (\`fs.promises.*\`, callback style) are supported; synchronous APIs are
+ * not, since the Port bridge cannot service synchronous calls.
  */
 export const SHARED_FS_MODULE_CODE = `
 "use strict";
@@ -55,6 +60,8 @@ module.exports = __fs;
 
 interface IBundlerOpts {
   messageBus: IFrameParentMessageBus;
+  auth: AuthService;
+  mounts: MountService;
 }
 
 const extractMetadata = (file: ISandboxFile):(FrontmatterParseResult|null) => {
@@ -76,6 +83,15 @@ export class Bundler {
   // Public so transformers reached via `Transformer#init(bundler)` can use the
   // parent handshake — the `BabelTransformer` needs `getBabelPort()`.
   messageBus: IFrameParentMessageBus;
+
+  // Auth/account state mirrored from the parent. App code reaches it via the
+  // SDK at `module.evaluation.module.bundler.auth` (same path it already uses
+  // for `messageBus` / `onMetadataChange`).
+  auth: AuthService;
+
+  // Mounts available to the sandbox, mirrored from the parent. Reached by app
+  // code via the SDK at `module.evaluation.module.bundler.mounts`.
+  mounts: MountService;
 
   fs: FileSystem;
   moduleRegistry: ModuleRegistry;
@@ -120,9 +136,15 @@ export class Bundler {
     const memoryFS = new MemoryFSLayer();
     // In-memory write resolves synchronously, so we don't need to await it here.
     void memoryFS.writeFile('//empty.js', 'module.exports = () => {};');
-    this.zenFsLayer = new ZenFSLayer(bindContext({'root': '/remote', 'pwd': '/remote'}));
+    // Bind at the filesystem root (not just the repo) so module resolution can
+    // reach the whole tree — the repo lives at `APP_ROOT` and dynamic mounts
+    // (e.g. `/firestore`) appear as siblings. Repo-relative reads below are
+    // anchored to `APP_ROOT` explicitly.
+    this.zenFsLayer = new ZenFSLayer(bindContext({'root': '/', 'pwd': '/'}));
     this.fs = new FileSystem([memoryFS, this.zenFsLayer, new NodeModuleFSLayer(this.moduleRegistry)]);
     this.messageBus = options.messageBus;
+    this.auth = options.auth;
+    this.mounts = options.mounts;
   }
 
   /** Reset all compilation data */
@@ -166,7 +188,7 @@ export class Bundler {
   }
 
   async processPackageJSON(): Promise<void> {
-    const foundPackageJSON = await this.fs.readFileAsync('/package.json');
+    const foundPackageJSON = await this.fs.readFileAsync(underAppRoot('/package.json'));
     try {
       this.parsedPackageJSON = JSON.parse(foundPackageJSON);
     } catch (err) {
@@ -198,10 +220,18 @@ export class Bundler {
     for (let potentialEntry of potentialEntries) {
       if (typeof potentialEntry === 'string') {
         try {
-          // Normalize path
+          // Entry paths from package.json (and preset defaults) are
+          // repo-relative. The bundler fs is now rooted at `/`, so anchor them
+          // to `APP_ROOT`: an absolute entry like `/index.tsx` means the repo's
+          // `/app/index.tsx`, and relative/bare entries resolve against an
+          // `APP_ROOT` base.
           const entryPoint =
-            potentialEntry[0] !== '.' && potentialEntry[0] !== '/' ? `./${potentialEntry}` : potentialEntry;
-          const resolvedEntryPont = await this.resolveAsync(entryPoint, '/index.js');
+            potentialEntry[0] === '/'
+              ? underAppRoot(potentialEntry)
+              : potentialEntry[0] !== '.'
+              ? `./${potentialEntry}`
+              : potentialEntry;
+          const resolvedEntryPont = await this.resolveAsync(entryPoint, underAppRoot('/index.js'));
           return resolvedEntryPont;
         } catch (err) {
           logger.debug(`Could not resolve entrypoint ${potentialEntry}`);
@@ -394,8 +424,10 @@ export class Bundler {
   async preloadMDXMetadata(): Promise<void> {
     const re = globToRegex('/**/*.mdx');
     const zenFsLayer = this.fs.layers[1] as ZenFSLayer;
-    const mdxFiles = (await zenFsLayer.boundContext.fs.promises.readdir('/', {recursive: true})).map(
-      i => '/' + i).filter(p => p.match(re));
+    // Scan only the repo (`APP_ROOT`), not the whole filesystem — dynamic mounts
+    // (e.g. `/firestore`) and virtual node_modules aren't sources of app MDX.
+    const mdxFiles = (await zenFsLayer.boundContext.fs.promises.readdir(APP_ROOT, {recursive: true})).map(
+      i => underAppRoot('/' + i)).filter(p => p.match(re));
     await Promise.all(mdxFiles.map(async (filepath) => {
       const source = await zenFsLayer.readFileAsync(filepath);
       this.refreshMetadata(filepath, source);
@@ -411,7 +443,10 @@ export class Bundler {
   private refreshMetadata(path: string, source: string): void {
     const parsed = extractMetadata({ path, code: source });
     const next = parsed ? parsed.data : undefined;
-    const prev = this.lastMetadata.get(path);
+    // Metadata is keyed by the repo-relative path apps and the URL space use
+    // (the bundler fs is rooted at `/`, so module paths are `/app/...`).
+    const publicPath = stripAppRoot(path);
+    const prev = this.lastMetadata.get(publicPath);
 
     const prevKey = prev ? JSON.stringify(prev) : undefined;
     const nextKey = next ? JSON.stringify(next) : undefined;
@@ -420,13 +455,13 @@ export class Bundler {
     }
 
     if (next) {
-      this.lastMetadata.set(path, next);
+      this.lastMetadata.set(publicPath, next);
     } else {
-      this.lastMetadata.delete(path);
+      this.lastMetadata.delete(publicPath);
     }
     this.onMetadataChangeEmitter.fire({
       type: 'metadata-update',
-      update: { [path]: next ?? {} },
+      update: { [publicPath]: next ?? {} },
     });
   }
 
@@ -494,7 +529,7 @@ export class Bundler {
       await Promise.all(promises);
     }
 
-    const pkgJsonChanged = changedFiles.find((f) => f === '/package.json');
+    const pkgJsonChanged = changedFiles.find((f) => f === underAppRoot('/package.json'));
     if (this.isFirstLoad || pkgJsonChanged) {
       logger.debug('Loading node modules');
       await this.processPackageJSON();
@@ -603,7 +638,7 @@ export class Bundler {
   // TODO: Support template languages...
   async getHTMLEntry(): Promise<string> {
     let content = undefined;
-    for (const filepath of ['/index.html', '/public/index.html']) {
+    for (const filepath of [underAppRoot('/index.html'), underAppRoot('/public/index.html')]) {
       try {
         content = await this.fs.readFileAsync(filepath);
       } catch (err) {
