@@ -38,4 +38,21 @@ cat > "$DEST/package.json" <<'JSON'
 }
 JSON
 
+# Manifest of the vendored files, fetched by the bundler at boot (addLocalModules
+# in src/bundler/bundler.ts). Generated in the same step that copies the files so
+# the list can never drift from the directory contents.
+( cd "$DEST" && node -e '
+  const fs = require("fs"), path = require("path");
+  const files = [];
+  (function walk(dir) {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const p = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(p);
+      else if (p.endsWith(".js")) files.push(p);
+    }
+  })(".");
+  files.push("package.json");
+  fs.writeFileSync("manifest.json", JSON.stringify({ files: files.sort() }, null, 2) + "\n");
+' )
+
 echo "Copied @immediately-run/sdk -> static/immediately-run-sdk/"

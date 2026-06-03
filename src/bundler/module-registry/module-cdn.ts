@@ -1,10 +1,16 @@
 import { decode as decodeMsgPack } from '@msgpack/msgpack';
 import urlJoin from 'url-join';
 
-import { retryFetch } from '../../utils/fetch';
+import { retryFetch, registerImmutableUrlPrefix } from '../../utils/fetch';
 import { DepMap } from '.';
 
 const CDN_ROOT = 'https://sandpack-cdn-staging.blazingly.io/';
+
+// /package/<name@exact-version> responses never change for a given URL, so
+// retryFetch serves them cache-first from the persistent immutable cache.
+// /dep_tree/ is deliberately NOT registered: it resolves semver ranges, and its
+// result changes as new versions are published.
+registerImmutableUrlPrefix(urlJoin(CDN_ROOT, '/package/'));
 
 export interface IResolvedDependency {
   // name

@@ -21,9 +21,7 @@ import { APP_ROOT, underAppRoot } from './fsLayout';
 import { Debouncer } from './utils/Debouncer';
 import { DisposableStore } from './utils/Disposable';
 import { getDocumentHeight } from './utils/document';
-import {loadCachedResponses} from './utils/fetch'
 import * as logger from './utils/logger';
-import cachedRequestInfo from './config/cached_requests.json'
 
 const bundlerStartTime = Date.now();
 
@@ -65,9 +63,17 @@ class SandpackInstance {
     // Send 'initialized' now — the parent waits for this before it sends
     // 'register-frame' with the MessagePort in the transferable list.
     this.messageBus.sendMessage('initialized');
-    for (let url of cachedRequestInfo.locations) {
-      await loadCachedResponses(url);
-    }
+
+    // WORKAROUND: settle the parent handshake before proceeding. Historically a
+    // ~1.8MB response-cache tarball was downloaded (awaited) right here; removing
+    // it exposed a latent race — when bootstrap continues immediately after
+    // `initialized`, the parent ends up reloading this iframe in a loop a few
+    // seconds into the first compile (reproducible; a 0ms yield is NOT enough,
+    // ~10ms+ is). Until the parent-side handshake is fixed to be order-robust,
+    // keep a generous fixed delay where the tarball await used to be.
+    // TODO: root-cause in sandpack-client/site (register-frame / client
+    // lifecycle) and remove this delay.
+    await new Promise((resolve) => setTimeout(resolve, 300));
 
     // Wait for the MessagePort transferred in the 'register-frame' handshake.
     // Any `fs.promises.*` call in the iframe will be forwarded to the parent

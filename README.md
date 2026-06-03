@@ -1,21 +1,10 @@
-# Regenerating node modules cache
+# Node module caching
 
-```bash
-# First, clean build dir
-npm run clean
-# Remove the old tarball from the static dir
-rm static/cached_node_module_requests.tar.gz
-# Start a dev server
-npm run dev
-# Go to localhost:3000, load the app with cache turned off and save the HAR file in the network tab.
-# Then, run the following:
-bash scripts/cache_har.sh ~/Downloads/localhost.har static/cached_node_module_requests.tar.gz
-# The build step copies the tarball from static/ to dist/
-npm run build
-# Verify that no CDN requests are made with the new tarball in place
-npm run dev
-
-```
+Immutable, exact-versioned module requests (the module CDN's `/package/...`
+endpoints and unpkg files) are cached at runtime in a persistent Cache API
+cache — see `registerImmutableUrlPrefix` in `src/utils/fetch.ts`. The first
+fetch of a given URL populates the cache; later loads are served from it
+without touching the network. There is nothing to regenerate or check in.
 
 # Sandpack Bundler
 

@@ -72,8 +72,6 @@
     "gray-matter": "^4.0.3",
     "micromatch": "^4.0.5",
     "p-queue": "^6.6.2",
-    "pako": "^2.1.0",
-    "parse-tar": "^1.2.2",
     "postcss": "^8.4.14",
     "postcss-url": "^10.1.3",
     "postcss-value-parser": "^4.2.0",
@@ -88,12 +86,11 @@
     "vfile-message": "^4.0.2"
   },
   "devDependencies": {
+    "@immediately-run/sdk": "file:../immediately-run-sdk",
     "@octokit/rest": "^18.12.0",
     "@swc-node/jest": "^1.4.3",
-    "@immediately-run/sdk": "file:../immediately-run-sdk",
     "@types/jest": "^27.4.1",
     "@types/micromatch": "^4.0.2",
-    "@types/pako": "^2.0.3",
     "@types/postcss-url": "^10.0.0",
     "@types/url-join": "^4.0.1",
     "@types/uuid": "^8.3.4",

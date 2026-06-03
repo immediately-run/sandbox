@@ -1,8 +1,5 @@
 import { FetchError } from '../errors/FetchError';
 import { sleep } from './sleep';
-import {inflate} from 'pako';
-import {basename} from '../utils/path'
-import parseTar from 'parse-tar';
 
 interface RetryOptions {
   maxRetries?: number;
@@ -25,36 +22,33 @@ function isRetryableStatus(status: number): boolean {
   return ERROR_CODES_TO_RETRY.has(status);
 }
 
-const responseCache:Map<string, () => Response> = new Map();
+// URL prefixes whose responses are immutable — the URL encodes the exact
+// content version (e.g. the module CDN's /package/<name@version> endpoints, or
+// unpkg files at an exact version). Such responses are served cache-first from
+// a persistent Cache API cache: a hit never touches the network, a miss
+// populates the cache after a successful fetch. Callers register their own
+// prefixes (see module-cdn.ts / NodeModuleFSLayer.ts) to avoid an import cycle
+// back into this module. Do NOT register endpoints that resolve floating
+// versions (semver ranges, tags): caching those would pin the resolution.
+const immutableUrlPrefixes: string[] = [];
 
-export const loadCachedResponses = async (url:string):Promise<number> => {
+export const registerImmutableUrlPrefix = (prefix: string): void => {
+  immutableUrlPrefixes.push(prefix);
+};
+
+const IMMUTABLE_CACHE_NAME = 'immutable-url-cache-v1';
+
+// CacheStorage can be unavailable or outright forbidden — in a sandboxed iframe
+// without `allow-same-origin` (an opaque origin, i.e. this bundler in
+// production) even *reading* `window.caches` throws. Cache failures must
+// degrade to a plain network fetch, never break the request itself.
+const openImmutableCache = async (): Promise<Cache | undefined> => {
   try {
-    const response = await retryFetch(url);
-    const compressed = await response.arrayBuffer(); // Download gzipped tar file and get ArrayBuffer
-    const inflated = await inflate(compressed);             // Decompress gzip using pako
-    const inflatedBuffer = await inflated.buffer;     // Get ArrayBuffer from the Uint8Array pako returns
-    const files = parseTar(inflatedBuffer);                  // Untar
-    // read manifest
-    const manifestFile = files.filter(f => basename(f.name) == 'manifest.json');
-    if (manifestFile.length !== 1) {
-      throw new Error("Could not find cache responses manifest file in tarball");
-    }
-    const manifest = JSON.parse(new TextDecoder().decode(manifestFile[0].contents)) as Record<string, string>;
-    let urlsCached = 0;
-    for (let file of files) {
-      const hash = basename(file.name);
-      const url = manifest[hash];
-      if (url) {
-        responseCache.set(url, () => new Response(new Blob([file.contents!]), { status: 200 }))
-      }
-      urlsCached++;
-    }
-    return urlsCached;
-  } catch (e) {
-    console.error(e);
-    return 0;
+    return await caches.open(IMMUTABLE_CACHE_NAME);
+  } catch {
+    return undefined;
   }
-}
+};
 
 /**
  * Fetches a resource using the provided config and retries if it fails with a network or server availability error
@@ -65,12 +59,24 @@ export const loadCachedResponses = async (url:string):Promise<number> => {
  * @returns {Response}
  */
 export async function retryFetch(input: RequestInfo, init: RequestInitWithRetry = {}, count = 0): Promise<Response> {
-  if (typeof input === 'string') {
-    const responder = responseCache.get(input);
-    if (responder) {
-      return responder();
+  if (typeof input === 'string' && immutableUrlPrefixes.some((prefix) => input.startsWith(prefix))) {
+    const cache = await openImmutableCache();
+    if (cache) {
+      const hit = await cache.match(input).catch(() => undefined);
+      if (hit) {
+        return hit;
+      }
+      const result = await retryFetchUncached(input, init, count);
+      // Clone before the caller consumes the body; a failed put (e.g. quota)
+      // only costs the cache entry.
+      await cache.put(input, result.clone()).catch(() => {});
+      return result;
     }
   }
+  return retryFetchUncached(input, init, count);
+}
+
+async function retryFetchUncached(input: RequestInfo, init: RequestInitWithRetry = {}, count = 0): Promise<Response> {
   const { maxRetries = 0, retryDelay = 500 } = init;
   if (count > maxRetries) {
     throw new Error('Fetch failed, maximum retries exceeded');
@@ -94,5 +100,5 @@ export async function retryFetch(input: RequestInfo, init: RequestInitWithRetry 
     }
   }
   await sleep(retryDelay);
-  return retryFetch(input, init, count + 1);
+  return retryFetchUncached(input, init, count + 1);
 }

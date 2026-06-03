@@ -1,8 +1,13 @@
 import { ModuleRegistry } from '../../bundler/module-registry';
-import { retryFetch } from '../../utils/fetch';
+import { retryFetch, registerImmutableUrlPrefix } from '../../utils/fetch';
 import { FSLayer } from '../FSLayer';
 
 const MODULE_PATH_RE = /^\/node_modules\/(@[^/]+\/[^/]+|[^@/]+)(.*)$/;
+
+// Files are always requested at an exact version (getUnpkgSpecifier below, with
+// the version resolved by the module registry), so the responses are immutable
+// and retryFetch serves them cache-first from the persistent immutable cache.
+registerImmutableUrlPrefix('https://unpkg.com/');
 
 function getUnpkgSpecifier(moduleName: string, moduleVersion: string, path: string): string {
   return `${moduleName}@${moduleVersion}/${path}`;
