@@ -21,6 +21,7 @@ import { APP_ROOT, underAppRoot } from './fsLayout';
 import { Debouncer } from './utils/Debouncer';
 import { DisposableStore } from './utils/Disposable';
 import { getDocumentHeight } from './utils/document';
+import { registerParentImmutableFetch, ParentImmutableFetchResult } from './utils/fetch';
 import * as logger from './utils/logger';
 
 const bundlerStartTime = Date.now();
@@ -45,6 +46,17 @@ class SandpackInstance {
     // Descriptor cache for mounts the parent announces. The actual zenfs
     // mount/umount of the transferred port is done in `handleParentMessage`.
     this.mountService = new MountService();
+
+    // Bridge immutable module fetches to the parent's persistent cache. This
+    // iframe's opaque origin has no CacheStorage of its own; the parent
+    // answers over `protocol-immutable-fetch` (see sandpack-client's
+    // immutable-fetch-protocol.ts). Only consulted by retryFetch for
+    // registered immutable URL prefixes, with a timeout fallback to a direct
+    // fetch when the parent predates the protocol.
+    registerParentImmutableFetch(
+      (url) =>
+        this.messageBus.protocolRequest('immutable-fetch', 'fetch', [url]) as Promise<ParentImmutableFetchResult>,
+    );
 
     this.readyPromise = this.bootstrap().catch((err) => {
       logger.error('Failed to bootstrap sandpack instance', err);

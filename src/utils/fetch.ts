@@ -51,6 +51,59 @@ const openImmutableCache = async (): Promise<Cache | undefined> => {
 };
 
 /**
+ * The result of a parent-side immutable fetch (see `handleImmutableFetch` in
+ * sandpack-client). The body is structured-cloned across the iframe boundary.
+ */
+export interface ParentImmutableFetchResult {
+  status: number;
+  contentType: string;
+  body: ArrayBuffer;
+}
+
+// In the production iframe (opaque origin) there is no local CacheStorage at
+// all, so immutable fetches are forwarded to the parent window, which serves
+// them from its own persistent cache. Registered by SandpackInstance (which
+// owns the message bus) to avoid an import cycle into the protocol layer.
+let parentImmutableFetch: ((url: string) => Promise<ParentImmutableFetchResult>) | undefined;
+
+export const registerParentImmutableFetch = (
+  fn: (url: string) => Promise<ParentImmutableFetchResult>,
+): void => {
+  parentImmutableFetch = fn;
+};
+
+// An older parent build may not implement the immutable-fetch protocol, in
+// which case the request never gets a reply — bound the wait and fall back to
+// a direct network fetch.
+const PARENT_FETCH_TIMEOUT_MS = 3000;
+
+const fetchViaParent = async (url: string): Promise<Response | undefined> => {
+  if (!parentImmutableFetch) {
+    return undefined;
+  }
+  try {
+    const result = await Promise.race([
+      parentImmutableFetch(url),
+      new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), PARENT_FETCH_TIMEOUT_MS)),
+    ]);
+    if (!result) {
+      // No reply: the parent predates the protocol. Disable the bridge for
+      // the rest of the session so only the first (concurrent) batch of
+      // requests pays the timeout.
+      parentImmutableFetch = undefined;
+      return undefined;
+    }
+    return new Response(new Blob([result.body], { type: result.contentType }), {
+      status: result.status,
+    });
+  } catch {
+    // Parent refused (e.g. URL outside its allowlist) or failed — let the
+    // caller fetch directly.
+    return undefined;
+  }
+};
+
+/**
  * Fetches a resource using the provided config and retries if it fails with a network or server availability error
  *
  * @param {RequestInfo} input: request info for fetch
@@ -71,6 +124,12 @@ export async function retryFetch(input: RequestInfo, init: RequestInitWithRetry 
       // only costs the cache entry.
       await cache.put(input, result.clone()).catch(() => {});
       return result;
+    }
+    // No local CacheStorage (opaque origin): use the parent's persistent
+    // cache over the message bus, falling back to a direct fetch.
+    const viaParent = await fetchViaParent(input);
+    if (viaParent) {
+      return viaParent;
     }
   }
   return retryFetchUncached(input, init, count);
