@@ -505,8 +505,17 @@ export class Bundler {
         return () => { };
       }
 
-      // If it's a change and we don't have any hmr modules we simply reload the application
-      if (!this.hasHMR) {
+      // If it's a change and we don't have any hmr modules we simply reload the
+      // application. package.json is exempt: it can't be hot-applied anyway and
+      // is handled below (`pkgJsonChanged` re-checks the dependencies and
+      // reloads only if they actually changed). Without the exemption, a no-op
+      // package.json rewrite by the parent (addPackageJSONIfNeeded runs on
+      // every register-frame handshake) arrives as an fs-change right after
+      // boot — before the app evaluated and registered HMR — and forces a
+      // reload, whose handshake rewrites package.json again: an infinite
+      // reload loop.
+      const changesNeedingHMR = changedFiles.filter((f) => f !== underAppRoot('/package.json'));
+      if (!this.hasHMR && changesNeedingHMR.length) {
         logger.debug('HMR is not enabled, doing a full page refresh');
         window.location.reload();
         return () => { };
