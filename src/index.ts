@@ -1,4 +1,4 @@
-import { mount, umount, configure, resolveMountConfig, bindContext } from '@zenfs/core';
+import { fs, mount, umount, configure, resolveMountConfig, bindContext } from '@zenfs/core';
 import { Port } from '@zenfs/core/backends/port.js';
 
 import { Bundler } from './bundler/bundler';
@@ -10,6 +10,10 @@ import { handleEvaluate, hookConsole } from './integrations/console';
 import { IFrameParentMessageBus } from './protocol/iframe';
 import { AuthService } from './auth/AuthService';
 import { REQUEST_AUTH_STATE_MESSAGE } from './auth/authState';
+import { ThemeService } from './theme/ThemeService';
+import { REQUEST_THEME_MESSAGE } from './theme/themeState';
+import { FormFactorService } from './formFactor/FormFactorService';
+import { REQUEST_FORM_FACTOR_MESSAGE } from './formFactor/formFactorState';
 import { MountService } from './mounts/MountService';
 import {
   MOUNT_ADD_MESSAGE,
@@ -26,9 +30,30 @@ import * as logger from './utils/logger';
 
 const bundlerStartTime = Date.now();
 
+/**
+ * ZenFS routes paths to mounted filesystems through its mount table alone —
+ * `mount(path, fs)` creates no directory entry in the parent filesystem. A
+ * mount point is therefore invisible to `readdir` of its parent: app code
+ * listing `/` would never see `/app` (or `/spaces/...`), only an empty
+ * in-memory root. Materialize the mount point as a real (empty) directory in
+ * the underlying filesystem so mounts show up in listings.
+ *
+ * MUST be called BEFORE `mount()` — once the mount exists, the path resolves
+ * into the mounted filesystem and the mkdir would land there instead.
+ */
+async function materializeMountPoint(path: string): Promise<void> {
+  try {
+    await fs.promises.mkdir(path, { recursive: true });
+  } catch (err) {
+    logger.error(`Failed to materialize mount point ${path}`, err);
+  }
+}
+
 class SandpackInstance {
   private messageBus: IFrameParentMessageBus;
   private authService: AuthService;
+  private themeService: ThemeService;
+  private formFactorService: FormFactorService;
   private mountService: MountService;
   private disposableStore = new DisposableStore();
   private bundler!: Bundler;
@@ -43,6 +68,11 @@ class SandpackInstance {
     // Created before the bundler (and before bootstrap awaits the fs port) so an
     // `auth-state` message that arrives early is captured rather than dropped.
     this.authService = new AuthService(this.messageBus);
+    // Likewise for the host theme, so a `theme` message that arrives early is
+    // captured rather than dropped (baseline `theme:read`, §5.4).
+    this.themeService = new ThemeService(this.messageBus);
+    // Form factor of the rendered surface, for responsive app layout (§5.4.1).
+    this.formFactorService = new FormFactorService(this.messageBus);
     // Descriptor cache for mounts the parent announces. The actual zenfs
     // mount/umount of the transferred port is done in `handleParentMessage`.
     this.mountService = new MountService();
@@ -86,6 +116,10 @@ class SandpackInstance {
     // case it settled before we were listening. The parent also pushes
     // unprompted on every change.
     this.messageBus.sendMessage(REQUEST_AUTH_STATE_MESSAGE);
+    // Ask the parent to push the current host theme too.
+    this.messageBus.sendMessage(REQUEST_THEME_MESSAGE);
+    // ...and the current form factor.
+    this.messageBus.sendMessage(REQUEST_FORM_FACTOR_MESSAGE);
     // Likewise ask the parent to (re-)announce any mounts that already exist.
     this.messageBus.sendMessage(REQUEST_MOUNTS_MESSAGE);
 
@@ -113,6 +147,7 @@ class SandpackInstance {
     // preview. 30s is a safety net for genuinely lost messages, not normal load.
     const portfs = await resolveMountConfig({ backend: Port, port: fsPort as any, disableAsyncCache: true, timeout: 30000 });
     portfs.attributes.set('no_atime', true);
+    await materializeMountPoint(APP_ROOT);
     mount(APP_ROOT, portfs);
 
     // Expose the shared filesystem to code running in the sandbox, rooted at the
@@ -132,6 +167,8 @@ class SandpackInstance {
     this.bundler = new Bundler({
       messageBus: this.messageBus,
       auth: this.authService,
+      theme: this.themeService,
+      formFactor: this.formFactorService,
       mounts: this.mountService,
     });
 
@@ -238,6 +275,7 @@ class SandpackInstance {
     } catch {
       /* not previously mounted — fine */
     }
+    await materializeMountPoint(mountDescriptor.path);
     mount(mountDescriptor.path, mountfs);
     this.mountService.add(mountDescriptor);
   }
@@ -253,6 +291,13 @@ class SandpackInstance {
     }
     try {
       umount(mountPath);
+      // Drop the placeholder directory materialized at mount time so the
+      // unmounted path doesn't linger as an empty dir in listings.
+      // Non-recursive on purpose: if anything was written here outside the
+      // mount's lifetime, leave it alone.
+      await fs.promises.rmdir(mountPath).catch(() => {
+        /* not empty or already gone — fine */
+      });
     } catch (err) {
       logger.error(`Failed to umount ${mountPath}`, err);
     }

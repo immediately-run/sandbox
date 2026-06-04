@@ -5,6 +5,8 @@ import { NodeModuleFSLayer } from '../FileSystem/layers/NodeModuleFSLayer';
 import { ZenFSLayer } from '../FileSystem/layers/ZenFSLayer';
 import { IFrameParentMessageBus } from '../protocol/iframe';
 import { AuthService } from '../auth/AuthService';
+import { ThemeService } from '../theme/ThemeService';
+import { FormFactorService } from '../formFactor/FormFactorService';
 import { MountService } from '../mounts/MountService';
 import { APP_ROOT, underAppRoot, stripAppRoot } from '../fsLayout';
 import { BundlerStatus } from '../protocol/message-types';
@@ -67,6 +69,8 @@ module.exports = __fs;
 interface IBundlerOpts {
   messageBus: IFrameParentMessageBus;
   auth: AuthService;
+  theme: ThemeService;
+  formFactor: FormFactorService;
   mounts: MountService;
 }
 
@@ -94,6 +98,14 @@ export class Bundler {
   // SDK at `module.evaluation.module.bundler.auth` (same path it already uses
   // for `messageBus` / `onMetadataChange`).
   auth: AuthService;
+
+  // Host UI theme mirrored from the parent. Reached by app code via the SDK at
+  // `module.evaluation.module.bundler.theme` (getHostTheme / useHostTheme).
+  theme: ThemeService;
+
+  // Form factor of the rendered surface, mirrored from the parent. Reached via
+  // the SDK at `module.evaluation.module.bundler.formFactor` (useFormFactor).
+  formFactor: FormFactorService;
 
   // Mounts available to the sandbox, mirrored from the parent. Reached by app
   // code via the SDK at `module.evaluation.module.bundler.mounts`.
@@ -150,6 +162,8 @@ export class Bundler {
     this.fs = new FileSystem([memoryFS, this.zenFsLayer, new NodeModuleFSLayer(this.moduleRegistry)]);
     this.messageBus = options.messageBus;
     this.auth = options.auth;
+    this.theme = options.theme;
+    this.formFactor = options.formFactor;
     this.mounts = options.mounts;
   }
 
