@@ -12,6 +12,8 @@ import { AuthService } from './auth/AuthService';
 import { REQUEST_AUTH_STATE_MESSAGE } from './auth/authState';
 import { ThemeService } from './theme/ThemeService';
 import { REQUEST_THEME_MESSAGE } from './theme/themeState';
+import { EditorContextService } from './editor/EditorContextService';
+import { REQUEST_EDITOR_CONTEXT_MESSAGE } from './editor/editorContextState';
 import { FormFactorService } from './formFactor/FormFactorService';
 import { REQUEST_FORM_FACTOR_MESSAGE } from './formFactor/formFactorState';
 import { MountService } from './mounts/MountService';
@@ -53,6 +55,7 @@ class SandpackInstance {
   private messageBus: IFrameParentMessageBus;
   private authService: AuthService;
   private themeService: ThemeService;
+  private editorContextService: EditorContextService;
   private formFactorService: FormFactorService;
   private mountService: MountService;
   private disposableStore = new DisposableStore();
@@ -71,6 +74,10 @@ class SandpackInstance {
     // Likewise for the host theme, so a `theme` message that arrives early is
     // captured rather than dropped (baseline `theme:read`, §5.4).
     this.themeService = new ThemeService(this.messageBus);
+    // Editor context (the dirty set, §5.3) — captured early so an `editor-context`
+    // message arriving before the bundler exists isn't dropped. Elevated
+    // `editor:read`; the parent only sends it to iframes that hold the capability.
+    this.editorContextService = new EditorContextService(this.messageBus);
     // Form factor of the rendered surface, for responsive app layout (§5.4.1).
     this.formFactorService = new FormFactorService(this.messageBus);
     // Descriptor cache for mounts the parent announces. The actual zenfs
@@ -118,6 +125,7 @@ class SandpackInstance {
     this.messageBus.sendMessage(REQUEST_AUTH_STATE_MESSAGE);
     // Ask the parent to push the current host theme too.
     this.messageBus.sendMessage(REQUEST_THEME_MESSAGE);
+    this.messageBus.sendMessage(REQUEST_EDITOR_CONTEXT_MESSAGE);
     // ...and the current form factor.
     this.messageBus.sendMessage(REQUEST_FORM_FACTOR_MESSAGE);
     // Likewise ask the parent to (re-)announce any mounts that already exist.
@@ -168,6 +176,7 @@ class SandpackInstance {
       messageBus: this.messageBus,
       auth: this.authService,
       theme: this.themeService,
+      editorContext: this.editorContextService,
       formFactor: this.formFactorService,
       mounts: this.mountService,
     });

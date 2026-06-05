@@ -7,6 +7,7 @@ import { IFrameParentMessageBus } from '../protocol/iframe';
 import { AuthService } from '../auth/AuthService';
 import { ThemeService } from '../theme/ThemeService';
 import { FormFactorService } from '../formFactor/FormFactorService';
+import { EditorContextService } from '../editor/EditorContextService';
 import { MountService } from '../mounts/MountService';
 import { APP_ROOT, underAppRoot, stripAppRoot } from '../fsLayout';
 import { BundlerStatus } from '../protocol/message-types';
@@ -70,6 +71,7 @@ interface IBundlerOpts {
   messageBus: IFrameParentMessageBus;
   auth: AuthService;
   theme: ThemeService;
+  editorContext: EditorContextService;
   formFactor: FormFactorService;
   mounts: MountService;
 }
@@ -102,6 +104,10 @@ export class Bundler {
   // Host UI theme mirrored from the parent. Reached by app code via the SDK at
   // `module.evaluation.module.bundler.theme` (getHostTheme / useHostTheme).
   theme: ThemeService;
+
+  // Editor context (the dirty set, §5.3) mirrored from the parent. Reached via
+  // the SDK at `module.evaluation.module.bundler.editorContext` (useEditorContext).
+  editorContext: EditorContextService;
 
   // Form factor of the rendered surface, mirrored from the parent. Reached via
   // the SDK at `module.evaluation.module.bundler.formFactor` (useFormFactor).
@@ -163,6 +169,7 @@ export class Bundler {
     this.messageBus = options.messageBus;
     this.auth = options.auth;
     this.theme = options.theme;
+    this.editorContext = options.editorContext;
     this.formFactor = options.formFactor;
     this.mounts = options.mounts;
   }
