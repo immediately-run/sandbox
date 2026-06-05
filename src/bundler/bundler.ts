@@ -8,6 +8,7 @@ import { AuthService } from '../auth/AuthService';
 import { ThemeService } from '../theme/ThemeService';
 import { FormFactorService } from '../formFactor/FormFactorService';
 import { EditorContextService } from '../editor/EditorContextService';
+import { CatalogService } from '../catalog/CatalogService';
 import { MountService } from '../mounts/MountService';
 import { APP_ROOT, underAppRoot, stripAppRoot } from '../fsLayout';
 import { BundlerStatus } from '../protocol/message-types';
@@ -72,6 +73,7 @@ interface IBundlerOpts {
   auth: AuthService;
   theme: ThemeService;
   editorContext: EditorContextService;
+  catalog: CatalogService;
   formFactor: FormFactorService;
   mounts: MountService;
 }
@@ -108,6 +110,10 @@ export class Bundler {
   // Editor context (the dirty set, §5.3) mirrored from the parent. Reached via
   // the SDK at `module.evaluation.module.bundler.editorContext` (useEditorContext).
   editorContext: EditorContextService;
+
+  // Method catalog (§5.5) mirrored from the parent. Reached via the SDK at
+  // `module.evaluation.module.bundler.catalog` (useCatalog).
+  catalog: CatalogService;
 
   // Form factor of the rendered surface, mirrored from the parent. Reached via
   // the SDK at `module.evaluation.module.bundler.formFactor` (useFormFactor).
@@ -170,6 +176,7 @@ export class Bundler {
     this.auth = options.auth;
     this.theme = options.theme;
     this.editorContext = options.editorContext;
+    this.catalog = options.catalog;
     this.formFactor = options.formFactor;
     this.mounts = options.mounts;
   }
