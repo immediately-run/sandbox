@@ -3,6 +3,7 @@ import { sortObj } from '../../utils/object';
 import { Bundler } from '../bundler';
 import { Module } from '../module/Module';
 import { filterBuildDeps } from './build-dep';
+import { depMapsEqual, LocksetSection } from './lockset';
 import { ICDNModuleFile, IResolvedDependency, fetchManifest, fetchModule } from './module-cdn';
 import { NodeModule } from './NodeModule';
 
@@ -21,12 +22,30 @@ export class ModuleRegistry {
     this.bundler = bundler;
   }
 
-  async fetchManifest(deps: DepMap, shouldFilterBuildDeps = true): Promise<void> {
+  async fetchManifest(deps: DepMap, shouldFilterBuildDeps = true, lockset?: LocksetSection): Promise<void> {
     if (shouldFilterBuildDeps) {
       deps = filterBuildDeps(deps);
     }
 
     const sortedDeps = sortObj(deps);
+
+    // A sidecar lockset (PRETRANSPILED_ARTIFACTS_SPEC §5.4) replaces the
+    // blocking /dep_tree request — but only on an exact input match, so a
+    // stale or foreign lockset can never be applied. `validateLockset` has
+    // already checked shape + cdnVersion; the dependency echo is checked here
+    // because this is where the final (filtered) input DepMap exists.
+    if (lockset) {
+      if (depMapsEqual(sortedDeps, lockset.dependencies)) {
+        logger.debug('Using sidecar lockset, skipping dep_tree resolution', lockset.resolved);
+        this.manifest = lockset.resolved;
+        return;
+      }
+      logger.debug('Sidecar lockset dependency echo does not match; resolving live', {
+        computed: sortedDeps,
+        lockset: lockset.dependencies,
+      });
+    }
+
     logger.debug('Fetching manifest', sortedDeps);
     this.manifest = await fetchManifest(sortedDeps);
     logger.debug('fetched manifest', this.manifest);

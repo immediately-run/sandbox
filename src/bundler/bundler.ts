@@ -10,7 +10,7 @@ import { FormFactorService } from '../formFactor/FormFactorService';
 import { EditorContextService } from '../editor/EditorContextService';
 import { CatalogService } from '../catalog/CatalogService';
 import { MountService } from '../mounts/MountService';
-import { APP_ROOT, underAppRoot, stripAppRoot } from '../fsLayout';
+import { APP_ROOT, MANIFEST_SIDECAR_PATH, underAppRoot, stripAppRoot } from '../fsLayout';
 import { BundlerStatus } from '../protocol/message-types';
 import { ResolverCache, resolveAsync } from '../resolver/resolver';
 import { IPackageJSON, ISandboxFile } from '../types';
@@ -20,6 +20,7 @@ import * as logger from '../utils/logger';
 import { NamedPromiseQueue } from '../utils/NamedPromiseQueue';
 import { nullthrows } from '../utils/nullthrows';
 import { ModuleRegistry } from './module-registry';
+import { LocksetSection, validateLockset } from './module-registry/lockset';
 import { Module } from './module/Module';
 import { Preset } from './presets/Preset';
 import { getPreset } from './presets/registry';
@@ -280,6 +281,23 @@ export class Bundler {
     );
   }
 
+  /**
+   * Best-effort read of the cache zip's sidecar lockset
+   * (PRETRANSPILED_ARTIFACTS_SPEC §5.4). The sidecar exists inside the mounted
+   * repo only when it was loaded from a cache zip — REST loads keep their
+   * manifest outside the mount — so this scopes the optimization to exactly
+   * the zip path. Any read/parse/validation failure means "no lockset" and the
+   * registry resolves dependencies live, as before.
+   */
+  private async readSidecarLockset(): Promise<LocksetSection | undefined> {
+    try {
+      const raw = await this.fs.readFileAsync(underAppRoot(MANIFEST_SIDECAR_PATH));
+      return validateLockset((JSON.parse(raw) as { lockset?: unknown }).lockset) ?? undefined;
+    } catch (err) {
+      return undefined;
+    }
+  }
+
   async loadNodeModules() {
     if (!this.parsedPackageJSON) {
       throw new BundlerError('No parsed pkg.json found!');
@@ -292,7 +310,7 @@ export class Bundler {
         'Preset needs to be defined when loading node modules'
       ).augmentDependencies(dependencies);
 
-      await this.moduleRegistry.fetchManifest(dependencies);
+      await this.moduleRegistry.fetchManifest(dependencies, true, await this.readSidecarLockset());
 
       // Load all modules
       await this.moduleRegistry.preloadModules();

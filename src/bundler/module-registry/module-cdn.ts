@@ -21,7 +21,9 @@ export interface IResolvedDependency {
   d: number;
 }
 
-const CDN_VERSION = 5;
+// Exported so the lockset check (lockset.ts) can reject locksets resolved
+// against a different CDN protocol version.
+export const CDN_VERSION = 5;
 
 function encodePayload(payload: string): string {
   return btoa(`${CDN_VERSION}(${payload})`);
