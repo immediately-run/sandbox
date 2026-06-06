@@ -13,7 +13,7 @@ import { MountService } from '../mounts/MountService';
 import { APP_ROOT, MANIFEST_SIDECAR_PATH, underAppRoot, stripAppRoot } from '../fsLayout';
 import { BundlerStatus } from '../protocol/message-types';
 import { ResolverCache, resolveAsync } from '../resolver/resolver';
-import { parseRegistryResolvedModules, planRegistryResolution, fetchVendoredModule } from './registryResolvedModules';
+import { selfHostVersion, fetchVendoredModule } from './registryResolvedModules';
 import { IPackageJSON, ISandboxFile } from '../types';
 import { DelayedEmitter, Emitter } from '../utils/emitter';
 import { replaceHTML } from '../utils/html';
@@ -36,22 +36,22 @@ export type MetadataChange = {
   update: Record<string, Record<string, any>>
 };
 
-// Local (non-CDN) packages vendored into the served root by scripts/copy-sdk.sh.
-// Each base URL hosts a manifest.json listing the package's files; the bundler
-// fetches it at boot (see addLocalModules).
-const LOCAL_MODULES: Record<string, string> = {
-  '@immediately-run/sdk': '/immediately-run-sdk',
-};
-
-// Self-hosted versioned location for a local module, used when an app opts it
-// into `immediately.run`.`resolveFromRegistry` (SDK_PACKAGING_SPEC §10, phase 2).
-// Files live under `<base>/v/<version>/` — the SDK's release CI publishes its
-// `dist/` + a `manifest.json` there. Self-hosting (not the sandpack CDN) makes
-// the pinned version available the instant our own CI finishes, immune to the
-// npm→CDN replication lag, and over an origin we control (SRI-able).
+// Self-hosted, versioned packages the bundler resolves from an origin we control
+// instead of the sandpack CDN (SDK_PACKAGING_SPEC §5). Files live under
+// `<base>/v/<version>/` — the SDK's release CI publishes its `dist/` + a
+// `manifest.json` there. Self-hosting makes the pinned version available the
+// instant our own CI finishes (immune to npm→CDN replication lag) over an
+// SRI-able origin, and is the SOLE delivery path: there is no host-injected
+// singleton anymore (copy-sdk.sh / static vendoring removed). Resolution is
+// implicit — see `addLocalModules`.
 const SELF_HOST_BASES: Record<string, string> = {
   '@immediately-run/sdk': 'https://immediately-run.github.io/immediately-run-sdk',
 };
+
+// The version fetched for a self-hosted module when the app does not pin a
+// concrete one (no declaration, or a non-concrete range). Must be a version the
+// SDK release CI has published to `/v/<version>/`. Bump on SDK releases.
+const DEFAULT_SDK_VERSION = '0.2.8';
 
 // Each self-host `/v/<version>/` path encodes the exact version, so its
 // responses are immutable and may be served cache-first from the persistent
@@ -505,8 +505,8 @@ export class Bundler {
   /**
    * Fetch a module's `manifest.json` + listed files from `baseUrl` and register
    * them as local modules under `/node_modules/<moduleName>/`. The manifest's
-   * file list is generated alongside the files (copy-sdk.sh for the vendored
-   * path; the SDK release CI for the self-hosted path), so it cannot drift.
+   * file list is generated alongside the files (by the SDK release CI's
+   * build-selfhost.mjs), so it cannot drift from the directory contents.
    */
   private async vendorModuleFrom(moduleName: string, baseUrl: string): Promise<void> {
     const vendored = await fetchVendoredModule(moduleName, baseUrl, (url) => this.fetchSource(url));
@@ -519,38 +519,32 @@ export class Bundler {
   }
 
   async addLocalModules(): Promise<void> {
-    // Apps can opt a local module out of host injection (SDK_PACKAGING_SPEC §10,
-    // phase 2): when listed in `immediately.run`.`resolveFromRegistry` with a
-    // concrete pinned version, it is fetched from its self-hosted versioned
-    // location (`<base>/v/<version>/`) instead of the host singleton — making
-    // per-app versions real, lag-free, and over an origin we control. Dual-mode:
-    // anything not opted in (or without a concrete pin) is injected exactly as
-    // before, so every existing app is unaffected. Read directly here because
-    // this runs before `processPackageJSON`.
+    // Resolve each self-hosted module (the SDK) from its versioned gh-pages
+    // location and register its files as local modules. IMPLICIT (no opt-in):
+    // the app's pinned dependency version wins, else DEFAULT_SDK_VERSION — so the
+    // SDK always resolves as a plain dependency with no `resolveFromRegistry`
+    // ceremony. This is the SOLE delivery path; the host-injected singleton
+    // (copy-sdk.sh vendoring) is gone. Read package.json directly because this
+    // runs before `processPackageJSON`.
     const raw = await this.readPackageJsonRaw();
-    const selfHosted = planRegistryResolution(raw, SELF_HOST_BASES);
-    for (const [moduleName, localBaseUrl] of Object.entries(LOCAL_MODULES)) {
-      const resolution = selfHosted.get(moduleName);
-      if (resolution) {
-        logger.debug(`Resolving ${moduleName}@${resolution.version} from self-host ${resolution.baseUrl}`);
-        await this.vendorModuleFrom(moduleName, resolution.baseUrl);
-      } else {
-        await this.vendorModuleFrom(moduleName, localBaseUrl);
-      }
+    for (const [moduleName, base] of Object.entries(SELF_HOST_BASES)) {
+      const version = selfHostVersion(raw, moduleName, DEFAULT_SDK_VERSION);
+      const baseUrl = `${base.replace(/\/$/, '')}/v/${version}`;
+      logger.debug(`Resolving ${moduleName}@${version} from self-host ${baseUrl}`);
+      await this.vendorModuleFrom(moduleName, baseUrl);
     }
   }
 
   /**
-   * Names the app resolves from a self-hosted versioned location (those
-   * `addLocalModules` registered as local modules). They must be removed from
-   * the dependency map before the sandpack-CDN `/dep_tree/` query — otherwise an
-   * SDK version not yet replicated npm→CDN would fail resolution for the whole
-   * app. Mirrors the CLI lockset's `computeInputDepMap` stripping so the
-   * lockset echo-match still holds.
+   * Names resolved from a self-hosted versioned location (those `addLocalModules`
+   * registered as local modules). They must be removed from the dependency map
+   * before the sandpack-CDN `/dep_tree/` query — otherwise an SDK version not yet
+   * replicated npm→CDN would fail resolution for the whole app. Mirrors the CLI
+   * lockset's `computeInputDepMap` stripping so the lockset echo-match still
+   * holds. Self-hosting is implicit, so every `SELF_HOST_BASES` key is stripped.
    */
   private registryResolvedNames(): Set<string> {
-    const raw = this.parsedPackageJSON ? JSON.stringify(this.parsedPackageJSON) : '';
-    return new Set(parseRegistryResolvedModules(raw).filter((n) => n in SELF_HOST_BASES));
+    return new Set(Object.keys(SELF_HOST_BASES));
   }
 
   async preloadMDXMetadata(): Promise<void> {
