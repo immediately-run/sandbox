@@ -155,10 +155,6 @@ class SandpackInstance {
     this.messageBus.sendMessage(REQUEST_FORM_FACTOR_MESSAGE);
     // Likewise ask the parent to (re-)announce any mounts that already exist.
     this.messageBus.sendMessage(REQUEST_MOUNTS_MESSAGE);
-    // ...and the repo's canonical /mnt/{hash} address, so we can dual-mount the
-    // app fs there in addition to /app (§11.2). Best-effort: if the host doesn't
-    // answer (older host), the app keeps working at /app unchanged.
-    this.messageBus.sendMessage('request-repo-mount');
 
     // The zenfs `Port` backend accepts any WebMessagePort-shaped object; the
     // DOM `MessagePort` satisfies this structurally even though TS's union
@@ -190,6 +186,15 @@ class SandpackInstance {
     // /mnt/{hash} address when the host answers `request-repo-mount` (§11.2). The
     // /app mount above is the critical one and is untouched by that.
     this.repoPortFs = portfs;
+
+    // Now that `repoPortFs` is set, ask the parent for the repo's canonical
+    // /mnt/{hash} address so we can ADDITIONALLY dual-mount the app fs there
+    // (§11.2). This MUST follow the `repoPortFs` assignment above: the host's
+    // answer races back fast (a SHA-256), and an earlier request would let
+    // `handleRepoMount` arrive before `repoPortFs` exists and silently no-op.
+    // Best-effort: if the host doesn't answer (older host), the app keeps
+    // working at /app unchanged.
+    this.messageBus.sendMessage('request-repo-mount');
 
     // Expose the shared filesystem to code running in the sandbox, rooted at the
     // project root (so `/app/src/App.tsx` maps to the parent's
