@@ -13,7 +13,7 @@ import { MountService } from '../mounts/MountService';
 import { APP_ROOT, MANIFEST_SIDECAR_PATH, underAppRoot, stripAppRoot } from '../fsLayout';
 import { BundlerStatus } from '../protocol/message-types';
 import { ResolverCache, resolveAsync } from '../resolver/resolver';
-import { parseRegistryResolvedModules } from './registryResolvedModules';
+import { parseRegistryResolvedModules, planRegistryResolution } from './registryResolvedModules';
 import { IPackageJSON, ISandboxFile } from '../types';
 import { DelayedEmitter, Emitter } from '../utils/emitter';
 import { replaceHTML } from '../utils/html';
@@ -41,6 +41,16 @@ export type MetadataChange = {
 // fetches it at boot (see addLocalModules).
 const LOCAL_MODULES: Record<string, string> = {
   '@immediately-run/sdk': '/immediately-run-sdk',
+};
+
+// Self-hosted versioned location for a local module, used when an app opts it
+// into `immediately.run`.`resolveFromRegistry` (SDK_PACKAGING_SPEC §10, phase 2).
+// Files live under `<base>/v/<version>/` — the SDK's release CI publishes its
+// `dist/` + a `manifest.json` there. Self-hosting (not the sandpack CDN) makes
+// the pinned version available the instant our own CI finishes, immune to the
+// npm→CDN replication lag, and over an origin we control (SRI-able).
+const SELF_HOST_BASES: Record<string, string> = {
+  '@immediately-run/sdk': 'https://immediately-run.github.io/immediately-run-sdk',
 };
 
 export const DEFAULT_CODE = `
@@ -306,6 +316,16 @@ export class Bundler {
 
     let dependencies = this.parsedPackageJSON.dependencies;
     if (dependencies) {
+      // Self-hosted (resolveFromRegistry) modules are already registered as
+      // local modules by addLocalModules; strip them so the CDN /dep_tree/ query
+      // never has to resolve them (immune to npm→CDN replication lag). Their own
+      // transitive deps are added by the preset augmentation below regardless.
+      const registryResolved = this.registryResolvedNames();
+      if (registryResolved.size) {
+        dependencies = Object.fromEntries(
+          Object.entries(dependencies).filter(([name]) => !registryResolved.has(name))
+        );
+      }
       dependencies = nullthrows(
         this.preset,
         'Preset needs to be defined when loading node modules'
@@ -460,46 +480,70 @@ export class Bundler {
   }
 
   /**
-   * Best-effort read of `immediately.run`.`resolveFromRegistry` from the app's
-   * package.json, used by `addLocalModules` (which runs before
-   * `processPackageJSON`). Any read/parse failure is treated as "opt out of
-   * nothing" so the default injection path is fully preserved.
+   * Best-effort read of the app's package.json (used by `addLocalModules`, which
+   * runs before `processPackageJSON`). Returns `''` on any failure so callers
+   * treat it as "no opt-in" and the default injection path is preserved.
    */
-  private async readRegistryResolvedModules(): Promise<string[]> {
+  private async readPackageJsonRaw(): Promise<string> {
     try {
-      return parseRegistryResolvedModules(await this.fs.readFileAsync(underAppRoot('/package.json')));
+      return await this.fs.readFileAsync(underAppRoot('/package.json'));
     } catch {
-      return [];
+      return '';
+    }
+  }
+
+  /**
+   * Fetch a module's `manifest.json` + listed files from `baseUrl` and register
+   * them as local modules under `/node_modules/<moduleName>/`. The manifest's
+   * file list is generated alongside the files (copy-sdk.sh for the vendored
+   * path; the SDK release CI for the self-hosted path), so it cannot drift.
+   */
+  private async vendorModuleFrom(moduleName: string, baseUrl: string): Promise<void> {
+    const { files } = JSON.parse(await this.fetchSource(`${baseUrl}/manifest.json`)) as { files: string[] };
+    const codeContents = await Promise.all(files.map((rel) => this.fetchSource(`${baseUrl}/${rel}`)));
+    for (let ix = 0; ix < files.length; ix++) {
+      const filepath = this.getModuleRelativePath(moduleName, files[ix]);
+      await this.fs.writeFile(filepath, codeContents[ix]);
+      if (filepath.endsWith('.js')) {
+        const module = new Module(filepath, codeContents[ix], false, this);
+        this.modules.set(filepath, module);
+      }
     }
   }
 
   async addLocalModules(): Promise<void> {
-    // Apps can opt a local module out of injection (SDK_PACKAGING_SPEC §10,
-    // phase 2): when listed in `immediately.run`.`resolveFromRegistry`, the module
-    // is NOT vendored here, so the normal dependency path resolves it from the
-    // CDN at the app's *pinned* version — making per-app SDK versions real.
-    // Dual-mode: anything not opted out is still injected exactly as before, so
-    // every existing app is unaffected. Parsed directly here because this runs
-    // before `processPackageJSON`.
-    const skip = new Set(await this.readRegistryResolvedModules());
-    for (const [moduleName, baseUrl] of Object.entries(LOCAL_MODULES)) {
-      if (skip.has(moduleName)) {
-        logger.debug(`Skipping local injection of ${moduleName}; resolving from registry`);
-        continue;
-      }
-      // The manifest is generated by scripts/copy-sdk.sh in the same step that
-      // vendors the files, so the list cannot drift from the directory contents.
-      const { files } = JSON.parse(await this.fetchSource(`${baseUrl}/manifest.json`)) as { files: string[] };
-      const codeContents = await Promise.all(files.map((rel) => this.fetchSource(`${baseUrl}/${rel}`)))
-      for (let ix = 0; ix < files.length; ix++) {
-        const filepath = this.getModuleRelativePath(moduleName, files[ix]);
-        await this.fs.writeFile(filepath, codeContents[ix]);
-        if (filepath.endsWith('.js')) {
-          const module = new Module(filepath, codeContents[ix], false, this);
-          this.modules.set(filepath, module);
-        }
+    // Apps can opt a local module out of host injection (SDK_PACKAGING_SPEC §10,
+    // phase 2): when listed in `immediately.run`.`resolveFromRegistry` with a
+    // concrete pinned version, it is fetched from its self-hosted versioned
+    // location (`<base>/v/<version>/`) instead of the host singleton — making
+    // per-app versions real, lag-free, and over an origin we control. Dual-mode:
+    // anything not opted in (or without a concrete pin) is injected exactly as
+    // before, so every existing app is unaffected. Read directly here because
+    // this runs before `processPackageJSON`.
+    const raw = await this.readPackageJsonRaw();
+    const selfHosted = planRegistryResolution(raw, SELF_HOST_BASES);
+    for (const [moduleName, localBaseUrl] of Object.entries(LOCAL_MODULES)) {
+      const resolution = selfHosted.get(moduleName);
+      if (resolution) {
+        logger.debug(`Resolving ${moduleName}@${resolution.version} from self-host ${resolution.baseUrl}`);
+        await this.vendorModuleFrom(moduleName, resolution.baseUrl);
+      } else {
+        await this.vendorModuleFrom(moduleName, localBaseUrl);
       }
     }
+  }
+
+  /**
+   * Names the app resolves from a self-hosted versioned location (those
+   * `addLocalModules` registered as local modules). They must be removed from
+   * the dependency map before the sandpack-CDN `/dep_tree/` query — otherwise an
+   * SDK version not yet replicated npm→CDN would fail resolution for the whole
+   * app. Mirrors the CLI lockset's `computeInputDepMap` stripping so the
+   * lockset echo-match still holds.
+   */
+  private registryResolvedNames(): Set<string> {
+    const raw = this.parsedPackageJSON ? JSON.stringify(this.parsedPackageJSON) : '';
+    return new Set(parseRegistryResolvedModules(raw).filter((n) => n in SELF_HOST_BASES));
   }
 
   async preloadMDXMetadata(): Promise<void> {
