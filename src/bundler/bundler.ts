@@ -13,7 +13,7 @@ import { MountService } from '../mounts/MountService';
 import { APP_ROOT, MANIFEST_SIDECAR_PATH, underAppRoot, stripAppRoot } from '../fsLayout';
 import { BundlerStatus } from '../protocol/message-types';
 import { ResolverCache, resolveAsync } from '../resolver/resolver';
-import { parseRegistryResolvedModules, planRegistryResolution } from './registryResolvedModules';
+import { parseRegistryResolvedModules, planRegistryResolution, fetchVendoredModule } from './registryResolvedModules';
 import { IPackageJSON, ISandboxFile } from '../types';
 import { DelayedEmitter, Emitter } from '../utils/emitter';
 import { replaceHTML } from '../utils/html';
@@ -485,10 +485,6 @@ export class Bundler {
     return await (await retryFetch(url)).text()
   }
 
-  private getModuleRelativePath(moduleName: string, relativePath: string): string {
-    return `/node_modules/${moduleName}/${relativePath}`;
-  }
-
   /**
    * Best-effort read of the app's package.json (used by `addLocalModules`, which
    * runs before `processPackageJSON`). Returns `''` on any failure so callers
@@ -509,14 +505,11 @@ export class Bundler {
    * path; the SDK release CI for the self-hosted path), so it cannot drift.
    */
   private async vendorModuleFrom(moduleName: string, baseUrl: string): Promise<void> {
-    const { files } = JSON.parse(await this.fetchSource(`${baseUrl}/manifest.json`)) as { files: string[] };
-    const codeContents = await Promise.all(files.map((rel) => this.fetchSource(`${baseUrl}/${rel}`)));
-    for (let ix = 0; ix < files.length; ix++) {
-      const filepath = this.getModuleRelativePath(moduleName, files[ix]);
-      await this.fs.writeFile(filepath, codeContents[ix]);
-      if (filepath.endsWith('.js')) {
-        const module = new Module(filepath, codeContents[ix], false, this);
-        this.modules.set(filepath, module);
+    const vendored = await fetchVendoredModule(moduleName, baseUrl, (url) => this.fetchSource(url));
+    for (const { path, content, isModule } of vendored) {
+      await this.fs.writeFile(path, content);
+      if (isModule) {
+        this.modules.set(path, new Module(path, content, false, this));
       }
     }
   }

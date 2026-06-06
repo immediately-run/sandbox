@@ -35,6 +35,40 @@ export function concreteVersion(range: string | undefined): string | undefined {
   return m ? m[1] : undefined;
 }
 
+/** One file resolved for a vendored/self-hosted module, ready to write + register. */
+export interface VendoredFile {
+  /** Absolute in-sandbox path: `/node_modules/<moduleName>/<rel>`. */
+  path: string;
+  content: string;
+  /** `.js` files are registered as bundler Modules; others (package.json) only written. */
+  isModule: boolean;
+}
+
+/**
+ * Fetch a module's `manifest.json` from `baseUrl` and then every file it lists,
+ * mapping each to its in-sandbox `/node_modules/<moduleName>/<rel>` path. Used by
+ * both delivery paths (the local vendored singleton and the self-hosted
+ * `/v/<version>/` build) — identical logic, only `baseUrl` differs. The manifest
+ * is generated alongside the files (copy-sdk.sh / the SDK release CI), so its
+ * list cannot drift from the directory contents.
+ *
+ * Pure but for the injected `fetchSource`, so the manifest-driven fetch + path
+ * derivation is unit-testable without a bundler.
+ */
+export async function fetchVendoredModule(
+  moduleName: string,
+  baseUrl: string,
+  fetchSource: (url: string) => Promise<string>,
+): Promise<VendoredFile[]> {
+  const { files } = JSON.parse(await fetchSource(`${baseUrl}/manifest.json`)) as { files: string[] };
+  const contents = await Promise.all(files.map((rel) => fetchSource(`${baseUrl}/${rel}`)));
+  return files.map((rel, ix) => ({
+    path: `/node_modules/${moduleName}/${rel}`,
+    content: contents[ix],
+    isModule: rel.endsWith('.js'),
+  }));
+}
+
 /** A module to fetch from its self-hosted versioned location instead of injecting. */
 export interface RegistryResolution {
   name: string;

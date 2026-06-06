@@ -2,6 +2,7 @@ import {
   parseRegistryResolvedModules,
   concreteVersion,
   planRegistryResolution,
+  fetchVendoredModule,
 } from './registryResolvedModules';
 
 describe('parseRegistryResolvedModules', () => {
@@ -110,5 +111,68 @@ describe('planRegistryResolution', () => {
 
   it('returns an empty plan on malformed JSON', () => {
     expect(planRegistryResolution('{nope', bases).size).toBe(0);
+  });
+});
+
+describe('fetchVendoredModule', () => {
+  // Mimic the self-host serving layout: a manifest + the files it lists.
+  const makeFetch = (base: string) => {
+    const tree: Record<string, string> = {
+      [`${base}/manifest.json`]: JSON.stringify({
+        files: ['index.js', 'components/Include.js', 'package.json'],
+      }),
+      [`${base}/index.js`]: 'export * from "./components/Include";',
+      [`${base}/components/Include.js`]: 'export const Include = 1;',
+      [`${base}/package.json`]: '{"name":"@immediately-run/sdk","main":"./index.js"}',
+    };
+    const calls: string[] = [];
+    const fetchSource = async (url: string) => {
+      calls.push(url);
+      if (!(url in tree)) throw new Error(`unexpected fetch ${url}`);
+      return tree[url];
+    };
+    return { fetchSource, calls };
+  };
+
+  it('fetches the manifest then each file from the given base URL', async () => {
+    const base = 'https://immediately-run.github.io/immediately-run-sdk/v/0.2.7';
+    const { fetchSource, calls } = makeFetch(base);
+    await fetchVendoredModule('@immediately-run/sdk', base, fetchSource);
+    expect(calls[0]).toBe(`${base}/manifest.json`);
+    expect(calls).toContain(`${base}/index.js`);
+    expect(calls).toContain(`${base}/components/Include.js`);
+    expect(calls).toContain(`${base}/package.json`);
+  });
+
+  it('maps each file to its /node_modules path and flags .js as modules', async () => {
+    const base = 'https://immediately-run.github.io/immediately-run-sdk/v/0.2.7';
+    const { fetchSource } = makeFetch(base);
+    const vendored = await fetchVendoredModule('@immediately-run/sdk', base, fetchSource);
+    expect(vendored).toEqual([
+      {
+        path: '/node_modules/@immediately-run/sdk/index.js',
+        content: 'export * from "./components/Include";',
+        isModule: true,
+      },
+      {
+        path: '/node_modules/@immediately-run/sdk/components/Include.js',
+        content: 'export const Include = 1;',
+        isModule: true,
+      },
+      {
+        path: '/node_modules/@immediately-run/sdk/package.json',
+        content: '{"name":"@immediately-run/sdk","main":"./index.js"}',
+        isModule: false,
+      },
+    ]);
+  });
+
+  it('works identically for the local (injection) base URL', async () => {
+    // The same logic serves the vendored singleton path — only the base differs.
+    const base = '/immediately-run-sdk';
+    const { fetchSource, calls } = makeFetch(base);
+    const vendored = await fetchVendoredModule('@immediately-run/sdk', base, fetchSource);
+    expect(calls[0]).toBe('/immediately-run-sdk/manifest.json');
+    expect(vendored.map((v) => v.path)).toContain('/node_modules/@immediately-run/sdk/index.js');
   });
 });
