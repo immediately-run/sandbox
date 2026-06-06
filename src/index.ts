@@ -18,6 +18,7 @@ import { CatalogService } from './catalog/CatalogService';
 import { REQUEST_CATALOG_MESSAGE } from './catalog/catalogState';
 import { FormFactorService } from './formFactor/FormFactorService';
 import { REQUEST_FORM_FACTOR_MESSAGE } from './formFactor/formFactorState';
+import { SDK_VERSION, SDK_PROTOCOL_VERSION } from '@immediately-run/sdk';
 import { MountService } from './mounts/MountService';
 import {
   MOUNT_ADD_MESSAGE,
@@ -117,6 +118,18 @@ class SandpackInstance {
     // Send 'initialized' now — the parent waits for this before it sends
     // 'register-frame' with the MessagePort in the transferable list.
     this.messageBus.sendMessage('initialized');
+
+    // SDK_PACKAGING_SPEC §4: publish the runtime-discovery global so a
+    // bundled-from-npm SDK can find the runtime + transport without injection
+    // (additive — injection is still the active path in phase 1). §6: announce the
+    // (vendored) SDK version + protocol so the host can record + version-check it
+    // (T45); inert while every frame announces the same version.
+    (globalThis as { __immediatelyRun__?: unknown }).__immediatelyRun__ = {
+      runtimeVersion: SDK_PROTOCOL_VERSION,
+      protocolVersion: SDK_PROTOCOL_VERSION,
+      transport: this.messageBus,
+    };
+    this.announceHandshake();
 
     // Wait for the MessagePort transferred in the 'register-frame' handshake.
     // Any `fs.promises.*` call in the iframe will be forwarded to the parent
@@ -235,8 +248,22 @@ class SandpackInstance {
     this.compileDebouncer.debounce(() => this.runCompile());
   }
 
+  // SDK_PACKAGING_SPEC §6 — announce the (vendored) SDK version + protocol to the
+  // host so it can record + version-check (T45).
+  private announceHandshake() {
+    this.messageBus.sendMessage('sdk-handshake', {
+      sdkVersion: SDK_VERSION,
+      protocolVersion: SDK_PROTOCOL_VERSION,
+    });
+  }
+
   handleParentMessage(message: any) {
     switch (message.type) {
+      // The host (re)asks for the handshake on (re)mount — reply so it never misses
+      // it even if the frame booted before the host was listening.
+      case 'request-handshake':
+        this.announceHandshake();
+        break;
       case 'fs-change':
         // The parent observed writes to the shared filesystem and relayed the
         // changed paths (zenfs's Port backend can't forward watch events, so we
