@@ -339,6 +339,15 @@ class SandpackInstance {
     await materializeMountPoint(mountDescriptor.path);
     mount(mountDescriptor.path, mountfs);
     this.mountService.add(mountDescriptor);
+    // Post-mount lifecycle hooks (§11.3) — best-effort, never blocks the mount.
+    // (No registered action targets non-app-root mounts today; this is the hook
+    // point for future ones.)
+    await this.bundler.runPostMount({
+      path: mountDescriptor.path,
+      isAppRoot: false,
+      uri: mountDescriptor.id,
+      type: mountDescriptor.type,
+    });
   }
 
   private async handleMountRemove(message: any): Promise<void> {
@@ -350,6 +359,14 @@ class SandpackInstance {
       logger.error('mount-remove missing id/path', message);
       return;
     }
+    // Pre-unmount lifecycle hooks (§11.3) — best-effort; let an action drop what
+    // it added before the fs goes away.
+    await this.bundler.runPreUnmount({
+      path: mountPath,
+      isAppRoot: false,
+      uri: target?.id,
+      type: target?.type,
+    });
     try {
       umount(mountPath);
       // Drop the placeholder directory materialized at mount time so the

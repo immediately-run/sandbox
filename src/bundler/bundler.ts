@@ -14,6 +14,7 @@ import { APP_ROOT, MANIFEST_SIDECAR_PATH, underAppRoot, stripAppRoot } from '../
 import { BundlerStatus } from '../protocol/message-types';
 import { ResolverCache, resolveAsync } from '../resolver/resolver';
 import { selfHostVersion, fetchVendoredModule } from './registryResolvedModules';
+import { MountLifecycle, type MountContext } from './mountLifecycle';
 import { IPackageJSON, ISandboxFile } from '../types';
 import { DelayedEmitter, Emitter } from '../utils/emitter';
 import { replaceHTML } from '../utils/html';
@@ -165,6 +166,7 @@ export class Bundler {
   initiators = new Map<string, Set<string>>();
   runtimes: string[] = [];
 
+  private readonly mountLifecycle = new MountLifecycle();
   private onMetadataChangeEmitter = new DelayedEmitter<MetadataChange>();
   onMetadataChange = this.onMetadataChangeEmitter.event;
 
@@ -205,6 +207,26 @@ export class Bundler {
     this.catalog = options.catalog;
     this.formFactor = options.formFactor;
     this.mounts = options.mounts;
+
+    // Mount-lifecycle hooks (§11.3). The MDX-frontmatter scan is the first action,
+    // scoped to the app root (it skips dynamic mounts — a granted space isn't an
+    // app-MDX source by default, and scanning it would be unbounded work). Future
+    // post-mount behaviours register here without touching the mount sites.
+    this.mountLifecycle.register({
+      name: 'mdx-metadata',
+      onMount: (ctx) => (ctx.isAppRoot ? this.preloadMDXMetadata() : undefined),
+    });
+  }
+
+  /** Run post-mount lifecycle actions for a freshly-mounted fs (§11.3). Called by
+   *  the runtime at the app-root mount (boot) and each dynamic mount. */
+  runPostMount(ctx: MountContext): Promise<void> {
+    return this.mountLifecycle.runMount(ctx);
+  }
+
+  /** Run pre-unmount lifecycle actions before a mount is torn down (§11.3). */
+  runPreUnmount(ctx: MountContext): Promise<void> {
+    return this.mountLifecycle.runUnmount(ctx);
   }
 
   /** Reset all compilation data */
@@ -647,9 +669,10 @@ export class Bundler {
       // Drain any spurious watcher events that fired during bootstrap so they
       // aren't interpreted as user-driven changes later.
       this.zenFsLayer.drainPendingChanges();
-      // update MDX metadata for files which need to be picked up on startup
-      // TODO: make this glob pattern overridable from package.json
-      await this.preloadMDXMetadata();
+      // Fire the app-root mount lifecycle (§11.3) — runs the MDX-metadata scan
+      // (and any future post-mount actions). Replaces the former direct
+      // preloadMDXMetadata() call; behaviour is unchanged (MDX is app-root-scoped).
+      await this.runPostMount({ path: APP_ROOT, isAppRoot: true });
     }
 
     if (changedFiles.length) {
