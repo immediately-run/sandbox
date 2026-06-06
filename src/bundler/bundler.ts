@@ -25,7 +25,7 @@ import { LocksetSection, validateLockset } from './module-registry/lockset';
 import { Module } from './module/Module';
 import { Preset } from './presets/Preset';
 import { getPreset } from './presets/registry';
-import { retryFetch } from '../utils/fetch'
+import { retryFetch, registerImmutableUrlPrefix } from '../utils/fetch'
 import { basename } from '../utils/path'
 import { FrontmatterParseResult, parseFrontmatter } from './frontmatter';
 import { bindContext, globToRegex } from '@zenfs/core';
@@ -52,6 +52,16 @@ const LOCAL_MODULES: Record<string, string> = {
 const SELF_HOST_BASES: Record<string, string> = {
   '@immediately-run/sdk': 'https://immediately-run.github.io/immediately-run-sdk',
 };
+
+// Each self-host `/v/<version>/` path encodes the exact version, so its
+// responses are immutable and may be served cache-first from the persistent
+// (parent-side) cache. Register the `/v/` prefix so retryFetch routes it through
+// that cache — and keep it in sync with the parent's IMMUTABLE_URL_ALLOWLIST
+// (immediately-run-sandpack immutable-fetch-protocol.ts), which gates what the
+// parent will fetch on the opaque-origin iframe's behalf.
+for (const base of Object.values(SELF_HOST_BASES)) {
+  registerImmutableUrlPrefix(`${base.replace(/\/$/, '')}/v/`);
+}
 
 export const DEFAULT_CODE = `
 "use strict";
