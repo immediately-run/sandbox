@@ -153,6 +153,10 @@ export class Bundler {
   modules: Map<string, Module> = new Map();
   transformationQueue: TransformationQueue;
   resolverCache: ResolverCache = new Map();
+  // Filepaths of modules whose evaluation is in progress (synchronous require
+  // chain), used by Module.evaluate to detect import cycles instead of
+  // recursing into a stack overflow.
+  evaluationStack: string[] = [];
   hasHMR = false;
   isFirstLoad = true;
   preset: Preset | undefined;
