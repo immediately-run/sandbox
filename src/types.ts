@@ -11,10 +11,11 @@ export interface IPackageJSON {
   source?: string;
   dependencies?: DepMap;
   /**
-   * immediately.run-specific build hints (SDK_PACKAGING_SPEC §10, phase 2).
-   * Namespaced so it never collides with standard package.json fields.
+   * The per-repo `immediately.run` config object (same key the host reads for
+   * `requireLatest`/`provides`, see immediatelyRunConfig.ts). The bundler only
+   * consumes `resolveFromRegistry` (SDK_PACKAGING_SPEC §10, phase 2).
    */
-  immediatelyRun?: {
+  'immediately.run'?: {
     /**
      * Names of otherwise-vendored local modules (see `LOCAL_MODULES`) that this
      * app wants resolved from the CDN registry at its *pinned* version instead

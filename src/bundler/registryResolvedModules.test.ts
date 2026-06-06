@@ -4,7 +4,7 @@ describe('parseRegistryResolvedModules', () => {
   it('returns the opted-in module list', () => {
     const raw = JSON.stringify({
       dependencies: { '@immediately-run/sdk': '^0.2.7' },
-      immediatelyRun: { resolveFromRegistry: ['@immediately-run/sdk'] },
+      'immediately.run': { resolveFromRegistry: ['@immediately-run/sdk'] },
     });
     expect(parseRegistryResolvedModules(raw)).toEqual(['@immediately-run/sdk']);
   });
@@ -14,18 +14,18 @@ describe('parseRegistryResolvedModules', () => {
     expect(parseRegistryResolvedModules(raw)).toEqual([]);
   });
 
-  it('defaults to [] when immediatelyRun has no resolveFromRegistry', () => {
-    expect(parseRegistryResolvedModules(JSON.stringify({ immediatelyRun: {} }))).toEqual([]);
+  it('defaults to [] when immediately.run has no resolveFromRegistry', () => {
+    expect(parseRegistryResolvedModules(JSON.stringify({ 'immediately.run': {} }))).toEqual([]);
   });
 
   it('ignores a non-array resolveFromRegistry', () => {
-    const raw = JSON.stringify({ immediatelyRun: { resolveFromRegistry: '@immediately-run/sdk' } });
+    const raw = JSON.stringify({ 'immediately.run': { resolveFromRegistry: '@immediately-run/sdk' } });
     expect(parseRegistryResolvedModules(raw)).toEqual([]);
   });
 
   it('filters out non-string entries', () => {
     const raw = JSON.stringify({
-      immediatelyRun: { resolveFromRegistry: ['@immediately-run/sdk', 42, null, 'other'] },
+      'immediately.run': { resolveFromRegistry: ['@immediately-run/sdk', 42, null, 'other'] },
     });
     expect(parseRegistryResolvedModules(raw)).toEqual(['@immediately-run/sdk', 'other']);
   });

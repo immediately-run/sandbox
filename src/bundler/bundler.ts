@@ -460,7 +460,7 @@ export class Bundler {
   }
 
   /**
-   * Best-effort read of `immediatelyRun.resolveFromRegistry` from the app's
+   * Best-effort read of `immediately.run`.`resolveFromRegistry` from the app's
    * package.json, used by `addLocalModules` (which runs before
    * `processPackageJSON`). Any read/parse failure is treated as "opt out of
    * nothing" so the default injection path is fully preserved.
@@ -475,7 +475,7 @@ export class Bundler {
 
   async addLocalModules(): Promise<void> {
     // Apps can opt a local module out of injection (SDK_PACKAGING_SPEC §10,
-    // phase 2): when listed in `immediatelyRun.resolveFromRegistry`, the module
+    // phase 2): when listed in `immediately.run`.`resolveFromRegistry`, the module
     // is NOT vendored here, so the normal dependency path resolves it from the
     // CDN at the app's *pinned* version — making per-app SDK versions real.
     // Dual-mode: anything not opted out is still injected exactly as before, so
