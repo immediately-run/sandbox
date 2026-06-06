@@ -65,6 +65,9 @@ class SandpackInstance {
   private disposableStore = new DisposableStore();
   private bundler!: Bundler;
   private compileDebouncer = new Debouncer(50);
+  // The repo's Port-backed fs (mounted at /app); kept so it can also be
+  // dual-mounted at its canonical /mnt/{hash} address (§11.2, handleRepoMount).
+  private repoPortFs?: Awaited<ReturnType<typeof resolveMountConfig>>;
   private template!: string;
   private lastHeight: number = 0;
   private resizePollingTimer: NodeJS.Timer | undefined;
@@ -128,6 +131,9 @@ class SandpackInstance {
       runtimeVersion: SDK_PROTOCOL_VERSION,
       protocolVersion: SDK_PROTOCOL_VERSION,
       transport: this.messageBus,
+      // Default to the legacy /app path; upgraded to the canonical /mnt/{hash}
+      // path when the host answers `request-repo-mount` (FILE_SHARING §11.2).
+      appMountPath: APP_ROOT,
     };
     this.announceHandshake();
 
@@ -149,6 +155,10 @@ class SandpackInstance {
     this.messageBus.sendMessage(REQUEST_FORM_FACTOR_MESSAGE);
     // Likewise ask the parent to (re-)announce any mounts that already exist.
     this.messageBus.sendMessage(REQUEST_MOUNTS_MESSAGE);
+    // ...and the repo's canonical /mnt/{hash} address, so we can dual-mount the
+    // app fs there in addition to /app (§11.2). Best-effort: if the host doesn't
+    // answer (older host), the app keeps working at /app unchanged.
+    this.messageBus.sendMessage('request-repo-mount');
 
     // The zenfs `Port` backend accepts any WebMessagePort-shaped object; the
     // DOM `MessagePort` satisfies this structurally even though TS's union
@@ -176,6 +186,10 @@ class SandpackInstance {
     portfs.attributes.set('no_atime', true);
     await materializeMountPoint(APP_ROOT);
     mount(APP_ROOT, portfs);
+    // Keep the repo fs object so we can ADDITIONALLY dual-mount it at its uniform
+    // /mnt/{hash} address when the host answers `request-repo-mount` (§11.2). The
+    // /app mount above is the critical one and is untouched by that.
+    this.repoPortFs = portfs;
 
     // Expose the shared filesystem to code running in the sandbox, rooted at the
     // project root (so `/app/src/App.tsx` maps to the parent's
@@ -286,6 +300,10 @@ class SandpackInstance {
       case MOUNT_REMOVE_MESSAGE:
         this.readyPromise.then(() => this.handleMountRemove(message)).catch(logger.error);
         break;
+      case 'repo-mount':
+        // Additive + best-effort (§11.2): never blocks readiness or boot.
+        this.handleRepoMount(message).catch(logger.error);
+        break;
       case 'refresh':
         window.location.reload();
         this.messageBus.sendMessage('refresh');
@@ -345,6 +363,37 @@ class SandpackInstance {
       logger.error(`Failed to umount ${mountPath}`, err);
     }
     this.mountService.remove(id ?? mountPath);
+  }
+
+  /**
+   * The host reported the repo's canonical `/mnt/{hash}` address (§11.2). ADD a
+   * second mount of the existing app fs there (the repo is dual-mounted at `/app`
+   * AND `/mnt/{hash}`) and surface the canonical path to the SDK via
+   * `__immediatelyRun__.appMountPath` (read by `getAppMountPath()`). Strictly
+   * additive + best-effort: `/app` (the bundler root) is never touched, and any
+   * failure here leaves the app fully working at `/app`.
+   */
+  private repoDualMounted = false;
+  private async handleRepoMount(message: { path?: string; uri?: string }): Promise<void> {
+    const path = message?.path;
+    if (this.repoDualMounted || !path || typeof path !== 'string' || !this.repoPortFs) return;
+    // Defense in depth (review H4): the sandbox independently rejects a path that
+    // isn't a clean `/mnt/...` address before materializing/mounting it.
+    if (!path.startsWith('/mnt/') || path.split('/').includes('..')) {
+      logger.error('repo-mount: refused non-/mnt or traversing path', path);
+      return;
+    }
+    try {
+      await materializeMountPoint(path);
+      mount(path, this.repoPortFs);
+      this.repoDualMounted = true;
+      const g = (globalThis as { __immediatelyRun__?: { appMountPath?: string } }).__immediatelyRun__;
+      if (g) g.appMountPath = path;
+      logger.debug(`repo dual-mounted at ${path} (uri ${message.uri ?? '?'})`);
+    } catch (err) {
+      // Best-effort: /app remains the live mount; the /mnt alias is a convenience.
+      logger.error('repo-mount: dual-mount failed (app keeps working at /app)', err);
+    }
   }
 
   sendResizeEvent = () => {
