@@ -361,10 +361,22 @@ class SandpackInstance {
   private async handleMountRemove(message: any): Promise<void> {
     const id: string | undefined = message.id;
     const path: string | undefined = message.path;
+    if (id == null && path == null) {
+      // Genuinely malformed — the message references no mount at all.
+      logger.error('mount-remove missing id/path', message);
+      return;
+    }
     const target = this.mountService.getMounts().find((m) => (m.id ?? m.path) === (id ?? path));
     const mountPath = target?.path ?? path;
     if (!mountPath) {
-      logger.error('mount-remove missing id/path', message);
+      // Asked to drop a mount we never mounted. Benign and EXPECTED at boot: the
+      // matching `mount-add` can be dropped before the bundler connects (the
+      // host's sandpack dispatch is a no-op while the client is idle, then
+      // recovered via the `request-mounts` replay), and a teardown — including a
+      // dev StrictMode double-invoke — can dispatch the `mount-remove` in
+      // between. Unmounting nothing is a no-op, so log at debug rather than error
+      // so it never trips the dev runtime-error overlay.
+      logger.debug('mount-remove for an unknown mount; ignoring', id ?? path);
       return;
     }
     // Pre-unmount lifecycle hooks (§11.3) — best-effort; let an action drop what
