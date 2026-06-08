@@ -44,6 +44,16 @@ describe('MountService', () => {
     expect(seen).toEqual([[], [firestore], []]);
   });
 
+  it('fires on a rw→ro downgrade of the same mount (mode is not deduped, AM-3)', () => {
+    const svc = new MountService();
+    const rw: SandboxMount = { path: '/mnt/s1', type: 'firestore', id: 's1', mode: 'rw' };
+    const seen: SandboxMount[][] = [];
+    svc.onChange((m) => seen.push(m)); // initial replay: []
+    svc.add(rw);
+    svc.add({ ...rw, mode: 'ro' }); // same key, only mode changed → must fire
+    expect(seen).toEqual([[], [rw], [{ ...rw, mode: 'ro' }]]);
+  });
+
   it('stops notifying after dispose', () => {
     const svc = new MountService();
     const seen: SandboxMount[][] = [];
