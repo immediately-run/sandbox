@@ -1,4 +1,10 @@
-import { concreteVersion, selfHostVersion, fetchVendoredModule } from './registryResolvedModules';
+import {
+  concreteVersion,
+  compareSemver,
+  resolveSelfHostVersion,
+  fetchVendoredModule,
+  SelfHostResolutionError,
+} from './registryResolvedModules';
 
 describe('concreteVersion', () => {
   it('passes through an exact version', () => {
@@ -25,29 +31,66 @@ describe('concreteVersion', () => {
   });
 });
 
-describe('selfHostVersion (implicit resolution)', () => {
-  const DEFAULT = '0.2.8';
-  const SDK = '@immediately-run/sdk';
+describe('compareSemver', () => {
+  it('orders numeric triples', () => {
+    expect(compareSemver('0.2.7', '0.2.8')).toBe(-1);
+    expect(compareSemver('0.2.8', '0.2.8')).toBe(0);
+    expect(compareSemver('0.10.0', '0.9.9')).toBe(1);
+    expect(compareSemver('1.0.0', '0.99.99')).toBe(1);
+  });
 
-  it("uses the app's concrete pinned version", () => {
-    const raw = JSON.stringify({ dependencies: { [SDK]: '0.2.7', react: '^19.0.0' } });
-    expect(selfHostVersion(raw, SDK, DEFAULT)).toBe('0.2.7');
+  it('orders a prerelease below its release', () => {
+    expect(compareSemver('0.2.8-beta.1', '0.2.8')).toBe(-1);
+    expect(compareSemver('0.3.0-rc.1', '0.2.8')).toBe(1);
+  });
+});
+
+describe('resolveSelfHostVersion (implicit resolution, fail-closed §5.1)', () => {
+  const DEFAULT = '0.4.0';
+  const FLOOR = '0.2.8';
+  const SDK = '@immediately-run/sdk';
+  const resolve = (raw: string) => resolveSelfHostVersion(raw, SDK, DEFAULT, FLOOR);
+
+  it("uses the app's concrete pinned version when at/above the floor", () => {
+    const raw = JSON.stringify({ dependencies: { [SDK]: '0.2.9', react: '^19.0.0' } });
+    expect(resolve(raw)).toBe('0.2.9');
+  });
+
+  it('accepts a pin exactly at the floor', () => {
+    expect(resolve(JSON.stringify({ dependencies: { [SDK]: '0.2.8' } }))).toBe('0.2.8');
   });
 
   it('reduces a range to its floor version', () => {
-    expect(selfHostVersion(JSON.stringify({ dependencies: { [SDK]: '^0.3.1' } }), SDK, DEFAULT)).toBe('0.3.1');
+    expect(resolve(JSON.stringify({ dependencies: { [SDK]: '^0.3.1' } }))).toBe('0.3.1');
   });
 
-  it('falls back to the default for a non-concrete range', () => {
-    expect(selfHostVersion(JSON.stringify({ dependencies: { [SDK]: 'latest' } }), SDK, DEFAULT)).toBe(DEFAULT);
+  it('FAILS CLOSED on a pin below the floor (§5.1(b) — never boots the known crash)', () => {
+    const raw = JSON.stringify({ dependencies: { [SDK]: '0.2.7' } });
+    expect(() => resolve(raw)).toThrow(SelfHostResolutionError);
+    expect(() => resolve(raw)).toThrow(/below the supported floor 0\.2\.8/);
   });
 
-  it('falls back to the default when the SDK is not declared', () => {
-    expect(selfHostVersion(JSON.stringify({ dependencies: { react: '^19.0.0' } }), SDK, DEFAULT)).toBe(DEFAULT);
+  it('FAILS CLOSED on a prerelease of the floor version', () => {
+    expect(() => resolve(JSON.stringify({ dependencies: { [SDK]: '0.2.8-beta.1' } }))).toThrow(
+      SelfHostResolutionError,
+    );
   });
 
-  it('falls back to the default on malformed package.json', () => {
-    expect(selfHostVersion('{ not json', SDK, DEFAULT)).toBe(DEFAULT);
+  it('FAILS CLOSED on a declared non-concrete specifier (§5.1(c) — no silent aliasing)', () => {
+    for (const spec of ['latest', '*', '1.2', 'github:owner/repo']) {
+      const raw = JSON.stringify({ dependencies: { [SDK]: spec } });
+      expect(() => resolve(raw)).toThrow(SelfHostResolutionError);
+      expect(() => resolve(raw)).toThrow(/not a concrete version/);
+    }
+  });
+
+  it('uses the default ONLY when the SDK is not declared at all', () => {
+    expect(resolve(JSON.stringify({ dependencies: { react: '^19.0.0' } }))).toBe(DEFAULT);
+    expect(resolve(JSON.stringify({}))).toBe(DEFAULT);
+  });
+
+  it('uses the default on malformed package.json (boot fails later if truly broken)', () => {
+    expect(resolve('{ not json')).toBe(DEFAULT);
   });
 
   it('ignores the obsolete resolveFromRegistry opt-in (resolution is implicit)', () => {
@@ -56,7 +99,7 @@ describe('selfHostVersion (implicit resolution)', () => {
       dependencies: { [SDK]: '0.2.9' },
       'immediately.run': { resolveFromRegistry: [] },
     });
-    expect(selfHostVersion(raw, SDK, DEFAULT)).toBe('0.2.9');
+    expect(resolve(raw)).toBe('0.2.9');
   });
 });
 
@@ -87,6 +130,19 @@ describe('fetchVendoredModule', () => {
     expect(calls).toContain(`${base}/index.js`);
     expect(calls).toContain(`${base}/components/Include.js`);
     expect(calls).toContain(`${base}/package.json`);
+  });
+
+  it('FAILS CLOSED with a clear boot error when the version is unavailable (§5.1(a))', async () => {
+    const failingFetch = async (url: string): Promise<string> => {
+      throw new Error(`404 for ${url}`);
+    };
+    const base = 'https://immediately-run.github.io/immediately-run-sdk/v/9.9.9';
+    await expect(fetchVendoredModule('@immediately-run/sdk', base, failingFetch)).rejects.toThrow(
+      SelfHostResolutionError,
+    );
+    await expect(fetchVendoredModule('@immediately-run/sdk', base, failingFetch)).rejects.toThrow(
+      /unavailable/,
+    );
   });
 
   it('maps each file to its /node_modules path and flags .js as modules', async () => {

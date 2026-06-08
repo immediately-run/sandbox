@@ -18,24 +18,93 @@ export function concreteVersion(range: string | undefined): string | undefined {
 }
 
 /**
- * The self-hosted version to fetch for `moduleName`, given the app's raw
- * package.json (SDK_PACKAGING_SPEC §5, implicit resolution). The app's pinned
- * dependency version wins; anything non-concrete (or an absent declaration)
- * falls back to `defaultVersion` — the version the sandbox guarantees is
- * published — so `@immediately-run/sdk` always resolves with no opt-in needed
- * ("a plain dependency that just works"). Any parse failure → `defaultVersion`.
+ * A self-host resolution failure that must surface to the user as a boot error
+ * (SDK_PACKAGING_SPEC §5.1 "Resolution failure semantics"): resolution FAILS
+ * CLOSED — we never silently substitute a different version, because an app
+ * author who pinned X must get X or a clear error, not Y (that aliasing is the
+ * exact bug implicit per-app resolution exists to fix).
  */
-export function selfHostVersion(
+export class SelfHostResolutionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'SelfHostResolutionError';
+  }
+}
+
+/**
+ * Minimal semver comparison for floor checks: numeric major.minor.patch, with
+ * any prerelease ordering below its release (`0.2.8-beta < 0.2.8`). Build
+ * metadata is ignored. Sufficient for comparing two concrete versions; not a
+ * general range evaluator.
+ */
+export function compareSemver(a: string, b: string): number {
+  const parse = (v: string) => {
+    const [core, pre] = v.split('+')[0].split(/-(.*)/s);
+    const nums = core.split('.').map((n) => parseInt(n, 10));
+    return { nums, pre };
+  };
+  const pa = parse(a);
+  const pb = parse(b);
+  for (let i = 0; i < 3; i++) {
+    if ((pa.nums[i] ?? 0) !== (pb.nums[i] ?? 0)) return (pa.nums[i] ?? 0) < (pb.nums[i] ?? 0) ? -1 : 1;
+  }
+  // Same numeric triple: a prerelease sorts below the plain release.
+  if (pa.pre && !pb.pre) return -1;
+  if (!pa.pre && pb.pre) return 1;
+  if (pa.pre && pb.pre) return pa.pre < pb.pre ? -1 : pa.pre > pb.pre ? 1 : 0;
+  return 0;
+}
+
+/**
+ * The self-hosted version to fetch for `moduleName`, given the app's raw
+ * package.json (SDK_PACKAGING_SPEC §5/§5.1, implicit resolution).
+ *
+ * - The app's concrete pinned version wins — but a pin below `floor` FAILS
+ *   CLOSED (`SelfHostResolutionError`) at resolve time rather than booting
+ *   into a known-broken runtime (the 0.2.7 import-cycle crash).
+ * - A declared but non-concrete specifier (`latest`, `*`, multi-ranges) also
+ *   FAILS CLOSED: implicit self-host resolution serves exact published
+ *   versions only, and silently substituting `defaultVersion` would alias the
+ *   author's declared intent (§5.1(c): the default applies ONLY when the app
+ *   declares no dependency at all).
+ * - No declaration → `defaultVersion` ("a plain dependency that just works").
+ * - Unparseable package.json → `defaultVersion` (intent unknowable here; a
+ *   truly broken package.json fails the boot later in processPackageJSON).
+ */
+export function resolveSelfHostVersion(
   raw: string,
   moduleName: string,
   defaultVersion: string,
+  floor: string,
 ): string {
+  let parsed: IPackageJSON | undefined;
   try {
-    const parsed = JSON.parse(raw) as IPackageJSON;
-    return concreteVersion(parsed?.dependencies?.[moduleName]) ?? defaultVersion;
+    parsed = JSON.parse(raw) as IPackageJSON;
   } catch {
     return defaultVersion;
   }
+  const declared = parsed?.dependencies?.[moduleName];
+  if (declared === undefined) {
+    return defaultVersion;
+  }
+  const version = concreteVersion(declared);
+  if (version === undefined) {
+    throw new SelfHostResolutionError(
+      `This app declares ${moduleName}@"${declared}", which is not a concrete version. ` +
+        `Self-hosted resolution serves exact published versions only — pin one ` +
+        `(e.g. "${defaultVersion}") in package.json. ` +
+        `(SDK_PACKAGING_SPEC §5.1: resolution fails closed, never silently substitutes.)`,
+    );
+  }
+  if (compareSemver(version, floor) < 0) {
+    throw new SelfHostResolutionError(
+      `This app requires ${moduleName}@${version}, which is below the supported ` +
+        `floor ${floor} (older versions are known-broken at boot). ` +
+        `Update the pin to ${floor} or newer. ` +
+        `(SDK_PACKAGING_SPEC §5.1: resolution fails closed at resolve time.)`,
+    );
+  }
+  return version;
 }
 
 /** One file resolved for a self-hosted module, ready to write + register. */
@@ -61,7 +130,21 @@ export async function fetchVendoredModule(
   baseUrl: string,
   fetchSource: (url: string) => Promise<string>,
 ): Promise<VendoredFile[]> {
-  const { files } = JSON.parse(await fetchSource(`${baseUrl}/manifest.json`)) as { files: string[] };
+  let manifestRaw: string;
+  try {
+    manifestRaw = await fetchSource(`${baseUrl}/manifest.json`);
+  } catch (err) {
+    // A pinned version that 404s (or is unreachable) FAILS CLOSED with a clear
+    // boot error — never a silent fallback to another version
+    // (SDK_PACKAGING_SPEC §5.1(a)).
+    throw new SelfHostResolutionError(
+      `This app requires ${moduleName} from ${baseUrl}/, which is unavailable ` +
+        `(missing or unreachable). The pinned version may not be published to the ` +
+        `self-hosted origin. Fix the pin in package.json or publish the version. ` +
+        `(SDK_PACKAGING_SPEC §5.1: resolution fails closed, no fallback.)`,
+    );
+  }
+  const { files } = JSON.parse(manifestRaw) as { files: string[] };
   const contents = await Promise.all(files.map((rel) => fetchSource(`${baseUrl}/${rel}`)));
   return files.map((rel, ix) => ({
     path: `/node_modules/${moduleName}/${rel}`,

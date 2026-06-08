@@ -13,7 +13,7 @@ import { MountService } from '../mounts/MountService';
 import { APP_ROOT, MANIFEST_SIDECAR_PATH, underAppRoot, stripAppRoot } from '../fsLayout';
 import { BundlerStatus } from '../protocol/message-types';
 import { ResolverCache, resolveAsync } from '../resolver/resolver';
-import { selfHostVersion, fetchVendoredModule } from './registryResolvedModules';
+import { resolveSelfHostVersion, fetchVendoredModule } from './registryResolvedModules';
 import { MountLifecycle, type MountContext } from './mountLifecycle';
 import { IPackageJSON, ISandboxFile } from '../types';
 import { DelayedEmitter, Emitter } from '../utils/emitter';
@@ -49,10 +49,21 @@ const SELF_HOST_BASES: Record<string, string> = {
   '@immediately-run/sdk': 'https://immediately-run.github.io/immediately-run-sdk',
 };
 
-// The version fetched for a self-hosted module when the app does not pin a
-// concrete one (no declaration, or a non-concrete range). Must be a version the
-// SDK release CI has published to `/v/<version>/`. Bump on SDK releases.
-const DEFAULT_SDK_VERSION = '0.2.8';
+// The version fetched for a self-hosted module when the app declares no SDK
+// dependency at all (SDK_PACKAGING_SPEC §5.1(c) — a declared-but-non-concrete
+// specifier fails closed instead, see resolveSelfHostVersion). Must be a
+// version the SDK release CI has published to `/v/<version>/`. Bump on SDK
+// releases.
+const DEFAULT_SDK_VERSION = '0.4.0';
+
+// Oldest version each self-hosted module may pin (SDK_PACKAGING_SPEC §5.1(b)).
+// Pins below the floor fail closed at resolve time: 0.2.7 ships a fatal
+// sandboxUtils↔runtime import cycle that infinite-loops this bundler at boot
+// ("Maximum call stack size exceeded"), so booting it would crash anyway —
+// fail with a clear error instead.
+const SELF_HOST_FLOORS: Record<string, string> = {
+  '@immediately-run/sdk': '0.2.8',
+};
 
 // Each self-host `/v/<version>/` path encodes the exact version, so its
 // responses are immutable and may be served cache-first from the persistent
@@ -550,7 +561,15 @@ export class Bundler {
     // runs before `processPackageJSON`.
     const raw = await this.readPackageJsonRaw();
     for (const [moduleName, base] of Object.entries(SELF_HOST_BASES)) {
-      const version = selfHostVersion(raw, moduleName, DEFAULT_SDK_VERSION);
+      // Fails closed (SelfHostResolutionError) on a below-floor or
+      // non-concrete pin — surfaced as a boot error, never a silent
+      // substitute (SDK_PACKAGING_SPEC §5.1).
+      const version = resolveSelfHostVersion(
+        raw,
+        moduleName,
+        DEFAULT_SDK_VERSION,
+        SELF_HOST_FLOORS[moduleName] ?? '0.0.0',
+      );
       const baseUrl = `${base.replace(/\/$/, '')}/v/${version}`;
       logger.debug(`Resolving ${moduleName}@${version} from self-host ${baseUrl}`);
       await this.vendorModuleFrom(moduleName, baseUrl);
