@@ -9,7 +9,7 @@
  */
 import { ModuleRegistry } from '.';
 import { Bundler } from '../bundler';
-import { depMapsEqual, validateLockset } from './lockset';
+import { depMapsEqual, locksetClosureValid, validateLockset } from './lockset';
 import { CDN_VERSION, fetchManifest } from './module-cdn';
 
 jest.mock('./module-cdn', () => ({
@@ -59,6 +59,26 @@ describe('validateLockset', () => {
   });
 });
 
+describe('locksetClosureValid (PT-2: no injected top-level package)', () => {
+  it('accepts a lockset whose depth-0 entries are all declared', () => {
+    expect(locksetClosureValid(lockset())).toBe(true); // react d0 ∈ declared
+  });
+
+  it('rejects a lockset with an injected top-level package not in declared deps', () => {
+    const poisoned = lockset({
+      resolved: [...RESOLVED, { n: 'evil-pkg', v: '1.0.0', d: 0 }],
+    });
+    expect(locksetClosureValid(poisoned as never)).toBe(false);
+  });
+
+  it('does NOT reject an extra transitive (depth>0) entry — documented residual', () => {
+    const withTransitive = lockset({
+      resolved: [...RESOLVED, { n: 'some-transitive', v: '2.0.0', d: 2 }],
+    });
+    expect(locksetClosureValid(withTransitive as never)).toBe(true);
+  });
+});
+
 describe('depMapsEqual', () => {
   it('is order-independent and exact', () => {
     expect(depMapsEqual({ a: '1', b: '2' }, { b: '2', a: '1' })).toBe(true);
@@ -105,5 +125,15 @@ describe('ModuleRegistry.fetchManifest with a lockset', () => {
     const r = registry();
     await r.fetchManifest({ ...DEPS }, true, undefined);
     expect(mockedFetchManifest).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects a lockset with an injected root and resolves live (PT-2)', async () => {
+    const r = registry();
+    // Echo matches the declared deps, but `resolved` smuggles an extra
+    // top-level package — the whole lockset is rejected, not partially trusted.
+    const poisoned = lockset({ resolved: [...RESOLVED, { n: 'evil-pkg', v: '1.0.0', d: 0 }] });
+    await r.fetchManifest({ ...DEPS }, true, poisoned as never);
+    expect(mockedFetchManifest).toHaveBeenCalledTimes(1);
+    expect(r.manifest).toEqual([{ n: 'live', v: '1.0.0', d: 0 }]);
   });
 });

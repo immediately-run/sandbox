@@ -13,7 +13,8 @@ import { MountService } from '../mounts/MountService';
 import { APP_ROOT, MANIFEST_SIDECAR_PATH, underAppRoot, stripAppRoot } from '../fsLayout';
 import { BundlerStatus } from '../protocol/message-types';
 import { ResolverCache, resolveAsync } from '../resolver/resolver';
-import { resolveSelfHostVersion, fetchVendoredModule } from './registryResolvedModules';
+import { resolveSelfHostVersion, fetchVendoredModule, SelfHostResolutionError } from './registryResolvedModules';
+import { verifyVendoredFiles, pinnedHashesFor, type SdkIntegrity, type FileHashes } from './sdkIntegrity';
 import { MountLifecycle, type MountContext } from './mountLifecycle';
 import { IPackageJSON, ISandboxFile } from '../types';
 import { DelayedEmitter, Emitter } from '../utils/emitter';
@@ -187,6 +188,9 @@ export class Bundler {
   private _previousDepString: string | null = null;
   private zenFsLayer: ZenFSLayer;
   private lastMetadata: Map<string, Record<string, any>> = new Map();
+  // Host-pinned SDK integrity hashes (SDK_PACKAGING_SPEC §5.2), set from
+  // IInitConfig before the initial compile; undefined → verification skipped.
+  private sdkIntegrity?: SdkIntegrity;
 
   /**
    * Records files the parent reported as changed. ZenFS's `Port` backend does
@@ -541,14 +545,45 @@ export class Bundler {
    * file list is generated alongside the files (by the SDK release CI's
    * build-selfhost.mjs), so it cannot drift from the directory contents.
    */
-  private async vendorModuleFrom(moduleName: string, baseUrl: string): Promise<void> {
+  private async vendorModuleFrom(
+    moduleName: string,
+    baseUrl: string,
+    expectedHashes?: FileHashes,
+  ): Promise<void> {
     const vendored = await fetchVendoredModule(moduleName, baseUrl, (url) => this.fetchSource(url));
+    // SDK_PACKAGING_SPEC §5.2: when the host pinned hashes for this version,
+    // verify the fetched bytes BEFORE writing/registering anything — fail the
+    // boot closed on any mismatch (a tampered self-host origin must not run).
+    if (expectedHashes) {
+      const prefix = `/node_modules/${moduleName}/`;
+      const result = await verifyVendoredFiles(
+        vendored.map((v) => ({ rel: v.path.startsWith(prefix) ? v.path.slice(prefix.length) : v.path, content: v.content })),
+        expectedHashes,
+      );
+      if (!result.ok) {
+        console.warn(`[security] sdk-integrity:mismatch ${moduleName}`, {
+          mismatches: result.mismatches,
+          missing: result.missing,
+        });
+        throw new SelfHostResolutionError(
+          `${moduleName} failed integrity verification (${[...result.mismatches, ...result.missing].join(', ')}). ` +
+            `The self-hosted SDK bytes do not match the host-pinned hashes. ` +
+            `(SDK_PACKAGING_SPEC §5.2: verification fails closed.)`,
+        );
+      }
+    }
     for (const { path, content, isModule } of vendored) {
       await this.fs.writeFile(path, content);
       if (isModule) {
         this.modules.set(path, new Module(path, content, false, this));
       }
     }
+  }
+
+  /** Host-pinned SDK integrity (SDK_PACKAGING_SPEC §5.2), set from IInitConfig
+   *  before the initial compile. Undefined → verification skipped (not wired). */
+  setSdkIntegrity(integrity: SdkIntegrity | undefined): void {
+    this.sdkIntegrity = integrity;
   }
 
   async addLocalModules(): Promise<void> {
@@ -572,7 +607,7 @@ export class Bundler {
       );
       const baseUrl = `${base.replace(/\/$/, '')}/v/${version}`;
       logger.debug(`Resolving ${moduleName}@${version} from self-host ${baseUrl}`);
-      await this.vendorModuleFrom(moduleName, baseUrl);
+      await this.vendorModuleFrom(moduleName, baseUrl, pinnedHashesFor(this.sdkIntegrity, moduleName, version));
     }
   }
 

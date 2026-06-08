@@ -10,6 +10,11 @@ import { SandpackLogLevel } from '../utils/logger';
 export interface IInitConfig {
   template: string;
   logLevel?: SandpackLogLevel;
+  // Host-pinned SDK integrity hashes (SDK_PACKAGING_SPEC §5.2): keyed module →
+  // version → { fileRel: 'sha384-<b64>' }. Delivered on register-frame so the
+  // bundler can verify self-hosted SDK bytes before evaluation. Optional — when
+  // absent, verification is skipped (the host has not wired delivery yet).
+  sdkIntegrity?: Record<string, Record<string, Record<string, string>>>;
 }
 
 export type BundlerStatus =

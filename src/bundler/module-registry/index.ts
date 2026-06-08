@@ -3,7 +3,7 @@ import { sortObj } from '../../utils/object';
 import { Bundler } from '../bundler';
 import { Module } from '../module/Module';
 import { filterBuildDeps } from './build-dep';
-import { depMapsEqual, LocksetSection } from './lockset';
+import { depMapsEqual, locksetClosureValid, LocksetSection } from './lockset';
 import { ICDNModuleFile, IResolvedDependency, fetchManifest, fetchModule } from './module-cdn';
 import { NodeModule } from './NodeModule';
 
@@ -36,14 +36,22 @@ export class ModuleRegistry {
     // because this is where the final (filtered) input DepMap exists.
     if (lockset) {
       if (depMapsEqual(sortedDeps, lockset.dependencies)) {
-        logger.debug('Using sidecar lockset, skipping dep_tree resolution', lockset.resolved);
-        this.manifest = lockset.resolved;
-        return;
+        // The echo matches the INPUT, but a lockset could still inject extra
+        // packages into `resolved` (SPEC_REVIEW PT-2). Reject the WHOLE lockset
+        // if its resolved set isn't closed over the declared deps; never trust
+        // it partially. Falls through to live /dep_tree resolution.
+        if (locksetClosureValid(lockset)) {
+          logger.debug('Using sidecar lockset, skipping dep_tree resolution', lockset.resolved);
+          this.manifest = lockset.resolved;
+          return;
+        }
+        logger.warn('Sidecar lockset failed closure validation (resolved not closed over declared deps); resolving live');
+      } else {
+        logger.debug('Sidecar lockset dependency echo does not match; resolving live', {
+          computed: sortedDeps,
+          lockset: lockset.dependencies,
+        });
       }
-      logger.debug('Sidecar lockset dependency echo does not match; resolving live', {
-        computed: sortedDeps,
-        lockset: lockset.dependencies,
-      });
     }
 
     logger.debug('Fetching manifest', sortedDeps);

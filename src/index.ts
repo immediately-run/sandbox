@@ -262,6 +262,9 @@ class SandpackInstance {
       logger.setLogLevel(initConfig.logLevel);
     }
     this.template = initConfig.template;
+    // Host-pinned SDK integrity (SDK_PACKAGING_SPEC §5.2): hand it to the bundler
+    // so addLocalModules verifies self-hosted SDK bytes before evaluation.
+    this.bundler.setSdkIntegrity(initConfig.sdkIntegrity);
 
     // Kick off the initial compile.
     this.compileDebouncer.debounce(() => this.runCompile());

@@ -39,6 +39,9 @@ export class IFrameParentMessageBus {
       const config: IInitConfig = {
         template: data.template,
         logLevel: data.logLevel,
+        // Forwarded verbatim by the sandpack client's `register({...config})`
+        // (no fork change needed); present only once the host wires delivery.
+        sdkIntegrity: data.sdkIntegrity,
       };
       this.initConfig = config;
       const configResolvers = this.initConfigResolvers;
