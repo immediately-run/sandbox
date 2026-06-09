@@ -31,7 +31,10 @@ export class EditorContextService {
     messageBus.onMessage((msg: any) => {
       if (msg && msg.type === EDITOR_CONTEXT_MESSAGE && Array.isArray(msg.dirtyPaths)) {
         const dirtyPaths = msg.dirtyPaths.filter((p: unknown): p is string => typeof p === 'string');
-        this.setContext({ dirtyPaths });
+        // `activeFile` is newer than `dirtyPaths`; a non-string (or an older parent
+        // that omits it) reads as `null` rather than rejecting the whole message.
+        const activeFile = typeof msg.activeFile === 'string' ? msg.activeFile : null;
+        this.setContext({ dirtyPaths, activeFile });
       }
     });
   }
