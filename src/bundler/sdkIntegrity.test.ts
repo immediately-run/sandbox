@@ -5,7 +5,7 @@
  */
 import { TextEncoder as NodeTextEncoder } from 'node:util';
 import { webcrypto } from 'node:crypto';
-import { sha384, verifyVendoredFiles, pinnedHashesFor } from './sdkIntegrity';
+import { sha384, verifyVendoredFiles, pinnedHashesFor, decideIntegrity } from './sdkIntegrity';
 
 // jsdom in this jest setup doesn't expose TextEncoder / crypto.subtle / btoa
 // (the real iframe runtime does). Polyfill from node before any test runs them.
@@ -74,5 +74,27 @@ describe('pinnedHashesFor', () => {
     expect(pinnedHashesFor(integrity, '@immediately-run/sdk', '0.2.8')).toBeUndefined();
     expect(pinnedHashesFor(integrity, 'other', '0.4.0')).toBeUndefined();
     expect(pinnedHashesFor(undefined, '@immediately-run/sdk', '0.4.0')).toBeUndefined();
+  });
+});
+
+describe('decideIntegrity (SDK_PACKAGING_SPEC §5.2 fail-closed-on-missing-version)', () => {
+  const integrity = { '@immediately-run/sdk': { '0.4.0': { 'index.js': 'sha384-abc' } } };
+
+  it('verifies when the host pinned the resolved version', () => {
+    expect(decideIntegrity(integrity, '@immediately-run/sdk', '0.4.0')).toEqual({
+      action: 'verify',
+      hashes: { 'index.js': 'sha384-abc' },
+    });
+  });
+
+  it('FAILS CLOSED when the host wired integrity but not this version', () => {
+    // The §5.2 hardening: a missing manifest entry must not silently skip
+    // verification (an attacker landing on an unpinned version would bypass it).
+    expect(decideIntegrity(integrity, '@immediately-run/sdk', '0.2.8')).toEqual({ action: 'fail-closed' });
+    expect(decideIntegrity(integrity, 'other-module', '0.4.0')).toEqual({ action: 'fail-closed' });
+  });
+
+  it('skips when no host pin exists at all (guarantee inactive, not failed)', () => {
+    expect(decideIntegrity(undefined, '@immediately-run/sdk', '0.4.0')).toEqual({ action: 'skip' });
   });
 });

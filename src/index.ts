@@ -169,6 +169,9 @@ class SandpackInstance {
         enabled: true,
         level: "debug",
         dumpBacklog: true,
+        // A logger output sink, not stray logging — keep the global no-console
+        // policy strict (console.debug stays blocked elsewhere).
+        // eslint-disable-next-line no-console
         output: console.debug
       }
     });

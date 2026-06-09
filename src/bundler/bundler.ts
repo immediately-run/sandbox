@@ -14,7 +14,7 @@ import { APP_ROOT, MANIFEST_SIDECAR_PATH, underAppRoot, stripAppRoot } from '../
 import { BundlerStatus } from '../protocol/message-types';
 import { ResolverCache, resolveAsync } from '../resolver/resolver';
 import { resolveSelfHostVersion, fetchVendoredModule, SelfHostResolutionError } from './registryResolvedModules';
-import { verifyVendoredFiles, pinnedHashesFor, type SdkIntegrity, type FileHashes } from './sdkIntegrity';
+import { verifyVendoredFiles, decideIntegrity, type SdkIntegrity, type FileHashes } from './sdkIntegrity';
 import { MountLifecycle, type MountContext } from './mountLifecycle';
 import { IPackageJSON, ISandboxFile } from '../types';
 import { DelayedEmitter, Emitter } from '../utils/emitter';
@@ -607,7 +607,27 @@ export class Bundler {
       );
       const baseUrl = `${base.replace(/\/$/, '')}/v/${version}`;
       logger.debug(`Resolving ${moduleName}@${version} from self-host ${baseUrl}`);
-      await this.vendorModuleFrom(moduleName, baseUrl, pinnedHashesFor(this.sdkIntegrity, moduleName, version));
+      // SDK_PACKAGING_SPEC §5.2: a MISSING manifest entry for the resolved
+      // version must fail closed, exactly like a hash mismatch — otherwise an
+      // attacker who can influence the resolved version (or strip a version from
+      // a tampered origin) sidesteps verification by landing on an unpinned one.
+      // `decideIntegrity` enforces this only once the host has wired integrity;
+      // with no host pin, verification is intentionally skipped (the guarantee
+      // is inactive — see sdkIntegrity.ts module note), not failed.
+      const decision = decideIntegrity(this.sdkIntegrity, moduleName, version);
+      if (decision.action === 'fail-closed') {
+        console.warn(`[security] sdk-integrity:missing-version ${moduleName}@${version}`);
+        throw new SelfHostResolutionError(
+          `${moduleName}@${version} has no host-pinned integrity entry. ` +
+            `The host delivered an SDK integrity manifest but it does not cover the resolved version. ` +
+            `(SDK_PACKAGING_SPEC §5.2: a missing manifest entry fails closed.)`,
+        );
+      }
+      await this.vendorModuleFrom(
+        moduleName,
+        baseUrl,
+        decision.action === 'verify' ? decision.hashes : undefined,
+      );
     }
   }
 
