@@ -13,10 +13,14 @@
 export interface EditorContext {
   /** Paths (repo-relative) the user has modified but not yet saved. */
   dirtyPaths: string[];
+  /** The one file focused in the host editor (repo-relative, leading slash), or
+   *  `null` when none is open. Carried here (not via `route:read`) so a self-routed
+   *  system panel — which doesn't observe the host route — can still learn it. */
+  activeFile: string | null;
 }
 
-/** Assumed before the parent has reported: nothing dirty. */
-export const DEFAULT_EDITOR_CONTEXT: EditorContext = { dirtyPaths: [] };
+/** Assumed before the parent has reported: nothing dirty, no active file. */
+export const DEFAULT_EDITOR_CONTEXT: EditorContext = { dirtyPaths: [], activeFile: null };
 
 /** Identity message the parent sends to push the current editor context. */
 export const EDITOR_CONTEXT_MESSAGE = 'editor-context';
@@ -28,9 +32,11 @@ export const REQUEST_EDITOR_CONTEXT_MESSAGE = 'request-editor-context';
 export interface EditorContextMessage {
   type: typeof EDITOR_CONTEXT_MESSAGE;
   dirtyPaths: string[];
+  activeFile?: string | null;
 }
 
 /** True when two contexts are equal (used to suppress no-op change events). */
 export const editorContextsEqual = (a: EditorContext, b: EditorContext): boolean =>
+  a.activeFile === b.activeFile &&
   a.dirtyPaths.length === b.dirtyPaths.length &&
   a.dirtyPaths.every((p, i) => p === b.dirtyPaths[i]);

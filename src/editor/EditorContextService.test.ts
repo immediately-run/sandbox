@@ -10,35 +10,61 @@ const makeBus = () => {
   return { bus, fire: (msg: any) => emitter.fire(msg) };
 };
 
-const ctxMsg = (dirtyPaths: string[]) => ({ type: EDITOR_CONTEXT_MESSAGE, dirtyPaths });
+const ctxMsg = (dirtyPaths: string[], activeFile: string | null = null) => ({
+  type: EDITOR_CONTEXT_MESSAGE,
+  dirtyPaths,
+  activeFile,
+});
 
 describe('EditorContextService', () => {
-  it('starts with an empty dirty set', () => {
+  it('starts with an empty dirty set and no active file', () => {
     const { bus } = makeBus();
-    expect(new EditorContextService(bus).getContext()).toEqual({ dirtyPaths: [] });
+    expect(new EditorContextService(bus).getContext()).toEqual({
+      dirtyPaths: [],
+      activeFile: null,
+    });
   });
 
   it('caches the latest dirty set from editor-context messages', () => {
     const { bus, fire } = makeBus();
     const svc = new EditorContextService(bus);
     fire(ctxMsg(['a.ts', 'b.ts']));
-    expect(svc.getContext()).toEqual({ dirtyPaths: ['a.ts', 'b.ts'] });
+    expect(svc.getContext()).toEqual({ dirtyPaths: ['a.ts', 'b.ts'], activeFile: null });
     fire(ctxMsg([]));
-    expect(svc.getContext()).toEqual({ dirtyPaths: [] });
+    expect(svc.getContext()).toEqual({ dirtyPaths: [], activeFile: null });
+  });
+
+  it('caches the active file, distinct from the dirty set', () => {
+    const { bus, fire } = makeBus();
+    const svc = new EditorContextService(bus);
+    fire(ctxMsg(['a.ts'], '/src/index.ts'));
+    expect(svc.getContext()).toEqual({ dirtyPaths: ['a.ts'], activeFile: '/src/index.ts' });
+    // The active file moves independently of the dirty set.
+    fire(ctxMsg(['a.ts'], '/src/util.ts'));
+    expect(svc.getContext()).toEqual({ dirtyPaths: ['a.ts'], activeFile: '/src/util.ts' });
+  });
+
+  it('reads a missing/non-string active file as null (defensive)', () => {
+    const { bus, fire } = makeBus();
+    const svc = new EditorContextService(bus);
+    fire({ type: EDITOR_CONTEXT_MESSAGE, dirtyPaths: [] }); // older parent, no activeFile
+    expect(svc.getContext()).toEqual({ dirtyPaths: [], activeFile: null });
+    fire({ type: EDITOR_CONTEXT_MESSAGE, dirtyPaths: [], activeFile: 42 });
+    expect(svc.getContext()).toEqual({ dirtyPaths: [], activeFile: null });
   });
 
   it('drops non-string entries defensively (untrusted parent message)', () => {
     const { bus, fire } = makeBus();
     const svc = new EditorContextService(bus);
     fire({ type: EDITOR_CONTEXT_MESSAGE, dirtyPaths: ['ok.ts', 42, null, 'two.ts'] });
-    expect(svc.getContext()).toEqual({ dirtyPaths: ['ok.ts', 'two.ts'] });
+    expect(svc.getContext()).toEqual({ dirtyPaths: ['ok.ts', 'two.ts'], activeFile: null });
   });
 
   it('ignores unrelated messages', () => {
     const { bus, fire } = makeBus();
     const svc = new EditorContextService(bus);
     fire({ type: 'theme', theme: 'dark' });
-    expect(svc.getContext()).toEqual({ dirtyPaths: [] });
+    expect(svc.getContext()).toEqual({ dirtyPaths: [], activeFile: null });
   });
 
   it('replays the current value immediately to new subscribers, then on change', () => {
