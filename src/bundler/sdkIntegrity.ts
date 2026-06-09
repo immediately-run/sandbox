@@ -71,3 +71,31 @@ export const pinnedHashesFor = (
   moduleName: string,
   version: string,
 ): FileHashes | undefined => integrity?.[moduleName]?.[version];
+
+/** What the bundler should do with a resolved self-hosted module version:
+ *  - `verify`: the host pinned this version — check fetched bytes against `hashes`.
+ *  - `fail-closed`: the host wired integrity but did NOT pin THIS version (§5.2:
+ *    a missing manifest entry fails closed, like a mismatch).
+ *  - `skip`: no host pin at all — verification is inactive (the guarantee is off;
+ *    see the module note). */
+export type IntegrityDecision =
+  | { action: 'verify'; hashes: FileHashes }
+  | { action: 'fail-closed' }
+  | { action: 'skip' };
+
+/**
+ * Decide how to treat a resolved `moduleName@version` against the host pin.
+ * Pure, so the fail-closed-on-missing-version policy (§5.2) is unit-testable
+ * without spinning up the bundler's fetch/fs.
+ */
+export const decideIntegrity = (
+  integrity: SdkIntegrity | undefined,
+  moduleName: string,
+  version: string,
+): IntegrityDecision => {
+  const hashes = pinnedHashesFor(integrity, moduleName, version);
+  if (hashes) return { action: 'verify', hashes };
+  // Host wired a manifest but it lacks this version → fail closed (do not let an
+  // unpinned version slip through unverified). No manifest at all → skip.
+  return integrity ? { action: 'fail-closed' } : { action: 'skip' };
+};
