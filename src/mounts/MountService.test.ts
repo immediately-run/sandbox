@@ -1,5 +1,5 @@
 import { MountService } from './MountService';
-import { SandboxMount } from './mountState';
+import { SandboxMount, RemovedMount, asMountRemoveReason } from './mountState';
 
 const firestore: SandboxMount = { path: '/firestore', type: 'firestore', id: 'firestore' };
 const other: SandboxMount = { path: '/scratch', type: 'memory', id: 'scratch' };
@@ -61,5 +61,30 @@ describe('MountService', () => {
     disposable.dispose();
     svc.add(firestore);
     expect(seen).toEqual([[]]); // only the replay
+  });
+
+  it('surfaces the removed descriptor + reason to listeners (AM2-4)', () => {
+    const svc = new MountService();
+    svc.add(firestore);
+    const removedSeen: RemovedMount[][] = [];
+    svc.onChange((_m, removed) => removedSeen.push(removed)); // replay: []
+    svc.remove('firestore', 'unshared');
+    expect(removedSeen).toEqual([[], [{ ...firestore, reason: 'unshared' }]]);
+  });
+
+  it('defaults a removal reason to revoked, and replay/add carry no removed', () => {
+    const svc = new MountService();
+    const removedSeen: RemovedMount[][] = [];
+    svc.onChange((_m, removed) => removedSeen.push(removed)); // replay: []
+    svc.add(firestore); //                                       add: []
+    svc.remove('firestore'); //                                  remove (default reason)
+    expect(removedSeen).toEqual([[], [], [{ ...firestore, reason: 'revoked' }]]);
+  });
+
+  it('normalizes an unknown/absent wire reason to revoked', () => {
+    expect(asMountRemoveReason('deleted')).toBe('deleted');
+    expect(asMountRemoveReason('signed-out')).toBe('signed-out');
+    expect(asMountRemoveReason('bogus')).toBe('revoked');
+    expect(asMountRemoveReason(undefined)).toBe('revoked');
   });
 });
