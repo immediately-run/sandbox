@@ -128,11 +128,16 @@ export interface VendoredFile {
 export async function fetchVendoredModule(
   moduleName: string,
   baseUrl: string,
-  fetchSource: (url: string) => Promise<string>,
+  fetchSource: (url: string, integrity?: string) => Promise<string>,
+  /** Per-file expected `sha384-…` (the host pin for this version), so the fetch
+   *  layer's immutable cache can verify before caching + evict stale hits
+   *  (cache-poisoning prevention). Keyed by the same rel paths as the manifest
+   *  (incl. `manifest.json`). Omitted when the host wired no pin for the version. */
+  expected?: Record<string, string>,
 ): Promise<VendoredFile[]> {
   let manifestRaw: string;
   try {
-    manifestRaw = await fetchSource(`${baseUrl}/manifest.json`);
+    manifestRaw = await fetchSource(`${baseUrl}/manifest.json`, expected?.['manifest.json']);
   } catch (err) {
     // A pinned version that 404s (or is unreachable) FAILS CLOSED with a clear
     // boot error — never a silent fallback to another version
@@ -145,7 +150,7 @@ export async function fetchVendoredModule(
     );
   }
   const { files } = JSON.parse(manifestRaw) as { files: string[] };
-  const contents = await Promise.all(files.map((rel) => fetchSource(`${baseUrl}/${rel}`)));
+  const contents = await Promise.all(files.map((rel) => fetchSource(`${baseUrl}/${rel}`, expected?.[rel])));
   return files.map((rel, ix) => ({
     path: `/node_modules/${moduleName}/${rel}`,
     content: contents[ix],

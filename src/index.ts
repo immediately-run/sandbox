@@ -105,8 +105,8 @@ class SandpackInstance {
     // registered immutable URL prefixes, with a timeout fallback to a direct
     // fetch when the parent predates the protocol.
     registerParentImmutableFetch(
-      (url) =>
-        this.messageBus.protocolRequest('immutable-fetch', 'fetch', [url]) as Promise<ParentImmutableFetchResult>,
+      (url, integrity) =>
+        this.messageBus.protocolRequest('immutable-fetch', 'fetch', [url, integrity]) as Promise<ParentImmutableFetchResult>,
     );
 
     this.readyPromise = this.bootstrap().catch((err) => {

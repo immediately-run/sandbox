@@ -522,8 +522,11 @@ export class Bundler {
     ]);
   }
 
-  async fetchSource(url: string): Promise<string> {
-    return await (await retryFetch(url)).text()
+  async fetchSource(url: string, integrity?: string): Promise<string> {
+    // `pinnedSri` makes the immutable cache integrity-aware for this URL: it
+    // never serves or persists bytes that don't match (cache-poisoning
+    // prevention). Undefined for unpinned URLs (cached by URL as before).
+    return await (await retryFetch(url, { pinnedSri: integrity })).text()
   }
 
   /**
@@ -550,7 +553,12 @@ export class Bundler {
     baseUrl: string,
     expectedHashes?: FileHashes,
   ): Promise<void> {
-    const vendored = await fetchVendoredModule(moduleName, baseUrl, (url) => this.fetchSource(url));
+    const vendored = await fetchVendoredModule(
+      moduleName,
+      baseUrl,
+      (url, integrity) => this.fetchSource(url, integrity),
+      expectedHashes,
+    );
     // SDK_PACKAGING_SPEC §5.2: when the host pinned hashes for this version,
     // verify the fetched bytes BEFORE writing/registering anything — fail the
     // boot closed on any mismatch (a tampered self-host origin must not run).
