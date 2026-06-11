@@ -17,7 +17,8 @@
     "prepare": "husky install",
     "dev": "parcel ./src/index.html",
     "start": "node ./server.js",
-    "build": "npm run build:babel-worker && npm run sync:babel-worker && npm run build:parcel",
+    "gen:sdk-versions": "node scripts/gen-sdk-versions.mjs",
+    "build": "npm run gen:sdk-versions && npm run build:babel-worker && npm run sync:babel-worker && npm run build:parcel",
     "build:parcel": "parcel build ./src/index.html --target default --no-scope-hoist",
     "build:babel-worker": "parcel build --target babelWorker --no-scope-hoist --cache-dir .parcel-cache-worker",
     "sync:babel-worker": "./scripts/sync-babel-worker.sh",
@@ -85,7 +86,6 @@
     "vfile-message": "^4.0.2"
   },
   "devDependencies": {
-    "@immediately-run/sdk": "file:../immediately-run-sdk",
     "@octokit/rest": "^18.12.0",
     "@swc-node/jest": "^1.4.3",
     "@types/jest": "^27.4.1",

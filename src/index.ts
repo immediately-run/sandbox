@@ -18,7 +18,11 @@ import { CatalogService } from './catalog/CatalogService';
 import { REQUEST_CATALOG_MESSAGE } from './catalog/catalogState';
 import { FormFactorService } from './formFactor/FormFactorService';
 import { REQUEST_FORM_FACTOR_MESSAGE } from './formFactor/formFactorState';
-import { SDK_VERSION, SDK_PROTOCOL_VERSION } from '@immediately-run/sdk';
+// Two compile-time strings the host handshake/telemetry stamps in (T45). Sourced
+// from the SDK at build time (scripts/gen-sdk-versions.mjs) rather than imported
+// from the package — no need to drag the SDK barrel into the bundle or take a
+// build-time dependency on its built dist/.
+import { SDK_VERSION, SDK_PROTOCOL_VERSION } from './generated/sdkVersions';
 import { MountService } from './mounts/MountService';
 import {
   MOUNT_ADD_MESSAGE,
