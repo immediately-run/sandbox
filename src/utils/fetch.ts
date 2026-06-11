@@ -4,9 +4,41 @@ import { sleep } from './sleep';
 interface RetryOptions {
   maxRetries?: number;
   retryDelay?: number;
+  /**
+   * Expected `sha384-<base64>` of the response body for an immutable URL. When
+   * set, the immutable cache becomes integrity-aware (cache-poisoning
+   * prevention): a cache hit whose bytes no longer match is evicted + refetched
+   * (self-heal), and freshly fetched bytes are only stored when they match
+   * (never persist unverified bytes). Distinct from the native `integrity`
+   * RequestInit field on purpose — that makes the browser HARD-FAIL the fetch on
+   * mismatch, but we want to return mismatched bytes so the caller's own
+   * verification fails closed with a precise error, while just refusing to cache.
+   */
+  pinnedSri?: string;
 }
 
 export type RequestInitWithRetry = RequestInit & RetryOptions;
+
+/** SHA-384 of bytes, `sha384-<base64>` (SRI style). */
+const sha384 = async (body: ArrayBuffer): Promise<string> => {
+  const digest = await crypto.subtle.digest('SHA-384', body);
+  let bin = '';
+  const view = new Uint8Array(digest);
+  for (let i = 0; i < view.length; i++) bin += String.fromCharCode(view[i]);
+  return `sha384-${btoa(bin)}`;
+};
+
+/** Whether a response's body matches `sri` (true when no `sri` to check). A
+ *  hashing failure (no crypto) counts as a non-match so we never serve/persist
+ *  bytes we couldn't validate. */
+const responseMatchesSri = async (res: Response, sri: string | undefined): Promise<boolean> => {
+  if (!sri) return true;
+  try {
+    return (await sha384(await res.clone().arrayBuffer())) === sri;
+  } catch {
+    return false;
+  }
+};
 
 // 408 is timeout
 // 429 is too many requests
@@ -64,10 +96,12 @@ export interface ParentImmutableFetchResult {
 // all, so immutable fetches are forwarded to the parent window, which serves
 // them from its own persistent cache. Registered by SandpackInstance (which
 // owns the message bus) to avoid an import cycle into the protocol layer.
-let parentImmutableFetch: ((url: string) => Promise<ParentImmutableFetchResult>) | undefined;
+let parentImmutableFetch:
+  | ((url: string, integrity?: string) => Promise<ParentImmutableFetchResult>)
+  | undefined;
 
 export const registerParentImmutableFetch = (
-  fn: (url: string) => Promise<ParentImmutableFetchResult>,
+  fn: (url: string, integrity?: string) => Promise<ParentImmutableFetchResult>,
 ): void => {
   parentImmutableFetch = fn;
 };
@@ -77,13 +111,13 @@ export const registerParentImmutableFetch = (
 // a direct network fetch.
 const PARENT_FETCH_TIMEOUT_MS = 3000;
 
-const fetchViaParent = async (url: string): Promise<Response | undefined> => {
+const fetchViaParent = async (url: string, integrity?: string): Promise<Response | undefined> => {
   if (!parentImmutableFetch) {
     return undefined;
   }
   try {
     const result = await Promise.race([
-      parentImmutableFetch(url),
+      parentImmutableFetch(url, integrity),
       new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), PARENT_FETCH_TIMEOUT_MS)),
     ]);
     if (!result) {
@@ -113,21 +147,32 @@ const fetchViaParent = async (url: string): Promise<Response | undefined> => {
  */
 export async function retryFetch(input: RequestInfo, init: RequestInitWithRetry = {}, count = 0): Promise<Response> {
   if (typeof input === 'string' && immutableUrlPrefixes.some((prefix) => input.startsWith(prefix))) {
+    const { pinnedSri } = init;
     const cache = await openImmutableCache();
     if (cache) {
       const hit = await cache.match(input).catch(() => undefined);
       if (hit) {
-        return hit;
+        // verify-on-read: serve a hit only if it still matches the pin; an entry
+        // the host has since re-pinned is evicted + refetched (self-heal).
+        if (await responseMatchesSri(hit, pinnedSri)) {
+          return hit;
+        }
+        await cache.delete(input).catch(() => {});
       }
       const result = await retryFetchUncached(input, init, count);
-      // Clone before the caller consumes the body; a failed put (e.g. quota)
-      // only costs the cache entry.
-      await cache.put(input, result.clone()).catch(() => {});
+      // verify-before-cache: only persist bytes that match the pin, so a bad
+      // upstream window can't poison the cache. The (mismatching) bytes are still
+      // returned — the caller's own integrity check fails closed precisely.
+      if (await responseMatchesSri(result, pinnedSri)) {
+        // Clone before the caller consumes the body; a failed put (e.g. quota)
+        // only costs the cache entry.
+        await cache.put(input, result.clone()).catch(() => {});
+      }
       return result;
     }
     // No local CacheStorage (opaque origin): use the parent's persistent
     // cache over the message bus, falling back to a direct fetch.
-    const viaParent = await fetchViaParent(input);
+    const viaParent = await fetchViaParent(input, pinnedSri);
     if (viaParent) {
       return viaParent;
     }

@@ -132,6 +132,40 @@ describe('fetchVendoredModule', () => {
     expect(calls).toContain(`${base}/package.json`);
   });
 
+  it('threads each file\'s host pin to the fetch (cache-poisoning prevention)', async () => {
+    const base = 'https://immediately-run.github.io/immediately-run-sdk/v/0.8.0';
+    const { fetchSource: inner } = makeFetch(base);
+    const seen = new Map<string, string | undefined>();
+    const fetchSource = async (url: string, integrity?: string) => {
+      seen.set(url, integrity);
+      return inner(url);
+    };
+    const expected = {
+      'manifest.json': 'sha384-MAN',
+      'index.js': 'sha384-IDX',
+      'components/Include.js': 'sha384-INC',
+      'package.json': 'sha384-PKG',
+    };
+    await fetchVendoredModule('@immediately-run/sdk', base, fetchSource, expected);
+    expect(seen.get(`${base}/manifest.json`)).toBe('sha384-MAN');
+    expect(seen.get(`${base}/index.js`)).toBe('sha384-IDX');
+    expect(seen.get(`${base}/components/Include.js`)).toBe('sha384-INC');
+    expect(seen.get(`${base}/package.json`)).toBe('sha384-PKG');
+  });
+
+  it('passes undefined integrity when the host wired no pin (verification skipped)', async () => {
+    const base = 'https://immediately-run.github.io/immediately-run-sdk/v/0.2.8';
+    const { fetchSource: inner } = makeFetch(base);
+    const seen = new Map<string, string | undefined>();
+    const fetchSource = async (url: string, integrity?: string) => {
+      seen.set(url, integrity);
+      return inner(url);
+    };
+    await fetchVendoredModule('@immediately-run/sdk', base, fetchSource); // no expected
+    expect(seen.get(`${base}/manifest.json`)).toBeUndefined();
+    expect(seen.get(`${base}/index.js`)).toBeUndefined();
+  });
+
   it('FAILS CLOSED with a clear boot error when the version is unavailable (§5.1(a))', async () => {
     const failingFetch = async (url: string): Promise<string> => {
       throw new Error(`404 for ${url}`);
