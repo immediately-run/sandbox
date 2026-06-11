@@ -5,6 +5,7 @@ import {
   fetchVendoredModule,
   SelfHostResolutionError,
 } from './registryResolvedModules';
+import { verifyVendoredFiles } from './sdkIntegrity';
 
 describe('concreteVersion', () => {
   it('passes through an exact version', () => {
@@ -166,6 +167,32 @@ describe('fetchVendoredModule', () => {
     expect(seen.get(`${base}/index.js`)).toBeUndefined();
   });
 
+  it('includes manifest.json in the vendored set so its host pin verifies (not "missing")', async () => {
+    const base = 'https://immediately-run.github.io/immediately-run-sdk/v/0.5.0';
+    const { fetchSource } = makeFetch(base);
+    const vendored = await fetchVendoredModule('@immediately-run/sdk', base, fetchSource);
+    const manifestEntry = vendored.find((v) => v.path.endsWith('/manifest.json'));
+    expect(manifestEntry).toBeDefined();
+    expect(manifestEntry!.isModule).toBe(false);
+    expect(JSON.parse(manifestEntry!.content).files).toContain('index.js');
+
+    // The host pins manifest.json (it does for every version). With the manifest
+    // included, verifyVendoredFiles no longer reports it missing.
+    const rel = (p: string) => p.replace(`/node_modules/@immediately-run/sdk/`, '');
+    // Deterministic stub hash (jest's env has no WebCrypto); verifyVendoredFiles
+    // takes an injectable hasher.
+    const stub = async (c: string) => `h:${c.length}`;
+    const expected: Record<string, string> = {};
+    for (const v of vendored) expected[rel(v.path)] = await stub(v.content);
+    const result = await verifyVendoredFiles(
+      vendored.map((v) => ({ rel: rel(v.path), content: v.content })),
+      expected,
+      stub,
+    );
+    expect(result.missing).not.toContain('manifest.json');
+    expect(result.ok).toBe(true);
+  });
+
   it('FAILS CLOSED with a clear boot error when the version is unavailable (§5.1(a))', async () => {
     const failingFetch = async (url: string): Promise<string> => {
       throw new Error(`404 for ${url}`);
@@ -184,6 +211,11 @@ describe('fetchVendoredModule', () => {
     const { fetchSource } = makeFetch(base);
     const vendored = await fetchVendoredModule('@immediately-run/sdk', base, fetchSource);
     expect(vendored).toEqual([
+      {
+        path: '/node_modules/@immediately-run/sdk/manifest.json',
+        content: JSON.stringify({ files: ['index.js', 'components/Include.js', 'package.json'] }),
+        isModule: false,
+      },
       {
         path: '/node_modules/@immediately-run/sdk/index.js',
         content: 'export * from "./components/Include";',

@@ -151,9 +151,21 @@ export async function fetchVendoredModule(
   }
   const { files } = JSON.parse(manifestRaw) as { files: string[] };
   const contents = await Promise.all(files.map((rel) => fetchSource(`${baseUrl}/${rel}`, expected?.[rel])));
-  return files.map((rel, ix) => ({
+  const vendored = files.map((rel, ix) => ({
     path: `/node_modules/${moduleName}/${rel}`,
     content: contents[ix],
     isModule: rel.endsWith('.js'),
   }));
+  // Include `manifest.json` itself in the vendored set. The host pins it in
+  // `sdk-integrity.json` (it locks the file LIST — a tampered manifest can't add
+  // or drop files), and `verifyVendoredFiles` requires every pinned file to be
+  // present. The manifest doesn't list itself in `files`, so without this entry
+  // its pin is reported "missing" and EVERY version fails closed once integrity
+  // is enforced. We already have its bytes (`manifestRaw`), so verify them too.
+  vendored.unshift({
+    path: `/node_modules/${moduleName}/manifest.json`,
+    content: manifestRaw,
+    isModule: false,
+  });
+  return vendored;
 }
