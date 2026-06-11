@@ -25,6 +25,7 @@ import {
   MOUNT_REMOVE_MESSAGE,
   REQUEST_MOUNTS_MESSAGE,
   SandboxMount,
+  asMountRemoveReason,
 } from './mounts/mountState';
 import { APP_ROOT, underAppRoot } from './fsLayout';
 import { Debouncer } from './utils/Debouncer';
@@ -364,6 +365,9 @@ class SandpackInstance {
   private async handleMountRemove(message: any): Promise<void> {
     const id: string | undefined = message.id;
     const path: string | undefined = message.path;
+    // Why the mount went away (AM2-4) — normalized: an absent or unknown reason
+    // (older host) reads as 'revoked'. Surfaced via MountService → the SDK.
+    const reason = asMountRemoveReason(message.reason);
     if (id == null && path == null) {
       // Genuinely malformed — the message references no mount at all.
       logger.error('mount-remove missing id/path', message);
@@ -402,7 +406,7 @@ class SandpackInstance {
     } catch (err) {
       logger.error(`Failed to umount ${mountPath}`, err);
     }
-    this.mountService.remove(id ?? mountPath);
+    this.mountService.remove(id ?? mountPath, reason);
   }
 
   /**
