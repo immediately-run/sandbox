@@ -24,6 +24,7 @@ import { NamedPromiseQueue } from '../utils/NamedPromiseQueue';
 import { nullthrows } from '../utils/nullthrows';
 import { ModuleRegistry } from './module-registry';
 import { LocksetSection, validateLockset } from './module-registry/lockset';
+import { collectLocalEntrySideEffects } from './sideEffectImports';
 import { Module } from './module/Module';
 import { Preset } from './presets/Preset';
 import { getPreset } from './presets/registry';
@@ -177,6 +178,12 @@ export class Bundler {
   // Map from module id => parent module ids
   initiators = new Map<string, Set<string>>();
   runtimes: string[] = [];
+
+  // Resolved modules harvested from the local entry's (`src/main.tsx`)
+  // side-effect imports — CSS, polyfills — applied before the app renders so a
+  // default Vite scaffold "just works" (DG-2 / decision #27). Populated on the
+  // first compile; evaluated in the first-load branch of the evaluate callback.
+  private sideEffectModulePaths: string[] = [];
 
   private readonly mountLifecycle = new MountLifecycle();
   private onMetadataChangeEmitter = new DelayedEmitter<MetadataChange>();
@@ -812,6 +819,38 @@ export class Bundler {
 
     entryModule.isEntry = true;
 
+    // DG-2 / decision #27: a default Vite scaffold parks global CSS (and
+    // polyfills) in `src/main.tsx` — the local-dev render shim immediately.run
+    // never executes (the render entry is the URL-selected `App.tsx`). Harvest
+    // that file's *side-effect* imports and fold the resolved modules into the
+    // graph so they're applied, WITHOUT running its `render()` call. First load
+    // only; the modules then live in the graph and HMR like any other.
+    if (this.isFirstLoad) {
+      const { sideEffectModules } = await collectLocalEntrySideEffects({
+        entryPoint: resolvedEntryPoint,
+        resolve: (specifier, from) => this.resolveAsync(specifier, from),
+        readFile: (path) => this.fs.readFileAsync(path),
+        onWarn: (message, err) => {
+          logger.debug(message);
+          if (err) logger.debug(err);
+        },
+      });
+      const applied: string[] = [];
+      for (const path of sideEffectModules) {
+        try {
+          await this.transformModule(path);
+          await this.moduleFinishedPromise(path);
+          applied.push(path);
+        } catch (err) {
+          // A side-effect import that fails to compile degrades to the pre-#27
+          // behaviour (not applied) rather than failing the whole compile.
+          logger.error(`Failed compiling local-entry side-effect module ${path}`);
+          logger.error(err);
+        }
+      }
+      this.sideEffectModulePaths = applied;
+    }
+
     const transpiledModules = Array.from(this.modules, ([name, value]) => {
       return {
         /**
@@ -843,6 +882,20 @@ export class Bundler {
           } else {
             logger.debug(`Loading runtime ${runtime}...`);
             module.evaluate();
+          }
+        }
+
+        // Apply the local entry's side effects (CSS/polyfills — DG-2) before
+        // the app renders. A failure here degrades the app (e.g. unstyled)
+        // rather than crashing it, matching the pre-#27 behaviour.
+        for (const path of this.sideEffectModulePaths) {
+          const module = this.modules.get(path);
+          if (!module) continue;
+          try {
+            module.evaluate();
+          } catch (err) {
+            logger.error(`Failed evaluating local-entry side-effect module ${path}`);
+            logger.error(err);
           }
         }
 
