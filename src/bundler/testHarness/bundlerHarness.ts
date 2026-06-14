@@ -39,6 +39,25 @@ export const COMPILE_FIXTURE: Record<string, string> = {
   'src/answer.ts': "const answer: number = 41;\nexport default answer;\n",
 };
 
+/** A full-`compile()` fixture: the entry follows the `src/main` convention the
+ *  bundler's compile path expects, and stays JSX-free so the only node_modules
+ *  dependency is the react-refresh HMR runtime (stubbed below). */
+export const FULL_COMPILE_FIXTURE: Record<string, string> = {
+  'package.json': JSON.stringify({ name: 'full-compile-fixture', main: 'src/main' }),
+  'index.html': '<!doctype html><div id="root"></div>',
+  'src/main.ts': "import answer from './answer';\nexport default answer + 1;\n",
+  'src/answer.ts': "const answer: number = 41;\nexport default answer;\n",
+};
+
+/** A no-op `react-refresh/runtime` stub so the HMR runtime the react preset injects
+ *  RESOLVES at compile (the real HMR behavior is an evaluate-time concern, out of
+ *  scope for a transpile/FS-routing compile smoke). */
+const REACT_REFRESH_RUNTIME_STUB =
+  'module.exports = { injectIntoGlobalHook(){}, register(){}, ' +
+  'createSignatureFunctionForTransform(){ return function(){}; }, performReactRefresh(){}, ' +
+  'isLikelyComponentType(){ return false; }, getFamilyByType(){}, setSignature(){}, ' +
+  'collectCustomHooksForSignature(){} };';
+
 const stub = <T,>(): T => ({}) as unknown as T;
 
 export interface BundlerHarness extends BundlerFsHarness {
@@ -49,9 +68,16 @@ export interface BundlerHarness extends BundlerFsHarness {
   teardown(): Promise<void>;
 }
 
-/** Boot a `Bundler` wired to the harness fs + an in-process babel loopback. */
+/** Boot a `Bundler` wired to the harness fs + an in-process babel loopback.
+ *
+ * `forCompile` makes the returned bundler ready for a full `compile()`: it no-ops the
+ * platform SDK vendoring (`addLocalModules` → network, out of scope), runs
+ * `initPreset('create-react-app')`, and injects the `react-refresh/runtime` stub the
+ * preset's HMR runtime imports. Without it the harness is for the transpile path
+ * (`transformModule`) — the caller drives `initPreset` itself. */
 export async function createBundlerHarness(
   fixture: Record<string, string> = COMPILE_FIXTURE,
+  opts: { forCompile?: boolean } = {},
 ): Promise<BundlerHarness> {
   const fsHarness = await createBundlerFsHarness(fixture);
   const babel = await createBabelLoopback();
@@ -77,6 +103,15 @@ export async function createBundlerHarness(
     formFactor: stub<FormFactorService>(),
     mounts: stub<MountService>(),
   });
+
+  if (opts.forCompile) {
+    // SDK vendoring fetches `@immediately-run/sdk` from the self-host origin (network,
+    // no transport under jest) and is out of scope for an FS-routing/transpile compile.
+    (bundler as unknown as { addLocalModules: () => Promise<void> }).addLocalModules = () => Promise.resolve();
+    await bundler.initPreset('create-react-app');
+    // The react preset's HMR runtime `require('react-refresh/runtime')` — resolve it.
+    await bundler.addPreloadedModule('react-refresh/runtime', REACT_REFRESH_RUNTIME_STUB);
+  }
 
   return {
     ...fsHarness,
