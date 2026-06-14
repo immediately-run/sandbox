@@ -216,7 +216,7 @@ class SandpackInstance {
       pwd: APP_ROOT,
     }).fs;
 
-    // Zenfs is ready — safe to create the bundler (ZenFSLayer starts a
+    // Zenfs is ready — safe to create the bundler (CachedFS starts a
     // filesystem watcher that requires zenfs to be configured).
     this.bundler = new Bundler({
       messageBus: this.messageBus,

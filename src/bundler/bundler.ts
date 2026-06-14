@@ -2,7 +2,7 @@ import { BundlerError } from '../errors/BundlerError';
 import { FileSystem } from '../FileSystem';
 import { MemoryFSLayer } from '../FileSystem/layers/MemoryFSLayer';
 import { NodeModuleFSLayer } from '../FileSystem/layers/NodeModuleFSLayer';
-import { ZenFSLayer } from '../FileSystem/layers/ZenFSLayer';
+import { CachedFS } from '../FileSystem/CachedFS';
 import { IFrameParentMessageBus } from '../protocol/iframe';
 import { AuthService } from '../auth/AuthService';
 import { ThemeService } from '../theme/ThemeService';
@@ -193,7 +193,7 @@ export class Bundler {
   onStatusChange = this.onStatusChangeEmitter.event;
 
   private _previousDepString: string | null = null;
-  private zenFsLayer: ZenFSLayer;
+  private zenFsLayer: CachedFS;
   private lastMetadata: Map<string, Record<string, any>> = new Map();
   // Host-pinned SDK integrity hashes (SDK_PACKAGING_SPEC §5.2), set from
   // IInitConfig before the initial compile; undefined → verification skipped.
@@ -220,7 +220,7 @@ export class Bundler {
     // reach the whole tree — the repo lives at `APP_ROOT` and dynamic mounts
     // (e.g. `/firestore`) appear as siblings. Repo-relative reads below are
     // anchored to `APP_ROOT` explicitly.
-    this.zenFsLayer = new ZenFSLayer(bindContext({'root': '/', 'pwd': '/'}));
+    this.zenFsLayer = new CachedFS(bindContext({'root': '/', 'pwd': '/'}));
     this.fs = new FileSystem([memoryFS, this.zenFsLayer, new NodeModuleFSLayer(this.moduleRegistry)]);
     this.messageBus = options.messageBus;
     this.auth = options.auth;
@@ -660,7 +660,7 @@ export class Bundler {
 
   async preloadMDXMetadata(): Promise<void> {
     const re = globToRegex('/**/*.mdx');
-    const zenFsLayer = this.fs.layers[1] as ZenFSLayer;
+    const zenFsLayer = this.fs.layers[1] as CachedFS;
     // Scan only the repo (`APP_ROOT`), not the whole filesystem — dynamic mounts
     // (e.g. `/firestore`) and virtual node_modules aren't sources of app MDX.
     const mdxFiles = (await zenFsLayer.boundContext.fs.promises.readdir(APP_ROOT, {recursive: true})).map(
