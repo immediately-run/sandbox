@@ -1,5 +1,5 @@
 import { Bundler } from '../../bundler';
-import { ZenFSLayer } from '../../../FileSystem/layers/ZenFSLayer';
+import { CachedFS } from '../../../FileSystem/CachedFS';
 import { ITranspilationContext, ITranspilationResult, Transformer } from '../Transformer';
 
 const MIME_TYPES: Record<string, string> = {
@@ -58,7 +58,7 @@ export class AssetTransformer extends Transformer {
     }
 
     const zenLayer = this.bundler?.fs.layers.find(
-      (layer): layer is ZenFSLayer => layer.name === 'zenfs'
+      (layer): layer is CachedFS => layer.name === 'zenfs'
     );
     if (!zenLayer) {
       throw new Error(`Cannot read asset ${filepath}: zenfs layer unavailable`);

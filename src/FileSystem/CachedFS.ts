@@ -1,16 +1,19 @@
-import { BoundContext, fs } from '@zenfs/core';
+import { BoundContext } from '@zenfs/core';
 
-import * as logger from '../../utils/logger';
-import { Emitter } from '../../utils/emitter';
-import { FSLayer } from '../FSLayer';
+import * as logger from '../utils/logger';
+import { Emitter } from '../utils/emitter';
+import { FSLayer } from './FSLayer';
 
-export interface ZenFSChangeEvent {
+export interface CachedFSChangeEvent {
   path: string;
   eventType: 'rename' | 'change';
 }
 
 /**
- * FS layer backed by `@zenfs/core`'s node-compatible async API.
+ * Read-memoizing FS layer over a `@zenfs/core` bound context (extracted from the
+ * former `ZenFSLayer` — Gate 0 sub-PR G0-2, a behavior-preserving move so the
+ * caching/watcher logic has its own home + unit net before the G0-4 mount-table
+ * flip wires it onto a single ZenFS-backed read path).
  *
  * The parent window hosts the actual zenfs instance and exposes it to the iframe
  * via a `MessagePort` (see `IFrameParentMessageBus.getFsPort`). The bundler mounts
@@ -20,20 +23,22 @@ export interface ZenFSChangeEvent {
  *
  * Successful reads are memoized in an in-memory `fileCache` so repeated reads of the
  * same path (e.g. `package.json` lookups during resolution) avoid extra round-trips to
- * the parent. The watcher invalidates cache entries when the underlying file changes.
+ * the parent. The watcher invalidates cache entries when the underlying file changes,
+ * and `markChanged` mirrors that for parent-relayed writes the watcher can't see across
+ * the iframe boundary.
  */
-export class ZenFSLayer extends FSLayer {
+export class CachedFS extends FSLayer {
   private fileCache: Map<string, string> = new Map();
   private isFileCache: Map<string, boolean> = new Map();
   private pendingChanges: Set<string> = new Set();
-  private onFileChangedEmitter = new Emitter<ZenFSChangeEvent>();
+  private onFileChangedEmitter = new Emitter<CachedFSChangeEvent>();
   onFileChanged = this.onFileChangedEmitter.event;
   private watcherStarted = false;
 
   constructor(public boundContext: BoundContext) {
     super('zenfs');
     this.startWatcher().catch((err) => {
-      logger.error('ZenFSLayer: failed to start filesystem watcher', err);
+      logger.error('CachedFS: failed to start filesystem watcher', err);
     });
   }
 
@@ -60,7 +65,7 @@ export class ZenFSLayer extends FSLayer {
         });
       }
     } catch (err) {
-      logger.error('ZenFSLayer: watcher iteration failed', err);
+      logger.error('CachedFS: watcher iteration failed', err);
     }
   }
 
