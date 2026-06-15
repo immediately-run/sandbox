@@ -1,5 +1,4 @@
 import { Bundler } from '../../bundler';
-import { CachedFS } from '../../../FileSystem/CachedFS';
 import { ITranspilationContext, ITranspilationResult, Transformer } from '../Transformer';
 
 const MIME_TYPES: Record<string, string> = {
@@ -57,14 +56,13 @@ export class AssetTransformer extends Transformer {
       throw new Error(`Unsupported asset type for ${filepath}`);
     }
 
-    const zenLayer = this.bundler?.fs.layers.find(
-      (layer): layer is CachedFS => layer.name === 'zenfs'
-    );
-    if (!zenLayer) {
-      throw new Error(`Cannot read asset ${filepath}: zenfs layer unavailable`);
+    // The bundler fs is a single CachedFS over the ZenFS bound context (R3-48 G0-4);
+    // re-read the raw bytes straight from the bound context (the gensync `readFile`
+    // surface is UTF-8/string-only and would mangle binary data).
+    if (!this.bundler) {
+      throw new Error(`Cannot read asset ${filepath}: bundler unavailable`);
     }
-
-    const contents = await zenLayer.boundContext.fs.promises.readFile(filepath);
+    const contents = await this.bundler.fs.boundContext.fs.promises.readFile(filepath);
     const bytes = contents instanceof Uint8Array ? contents : new Uint8Array(contents as ArrayBuffer);
     const dataUrl = `data:${mime};base64,${bytesToBase64(bytes)}`;
 

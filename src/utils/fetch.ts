@@ -59,7 +59,7 @@ function isRetryableStatus(status: number): boolean {
 // unpkg files at an exact version). Such responses are served cache-first from
 // a persistent Cache API cache: a hit never touches the network, a miss
 // populates the cache after a successful fetch. Callers register their own
-// prefixes (see module-cdn.ts / NodeModuleFSLayer.ts) to avoid an import cycle
+// prefixes (see module-cdn.ts / RegistryFS.ts) to avoid an import cycle
 // back into this module. Do NOT register endpoints that resolve floating
 // versions (semver ranges, tags): caching those would pin the resolution.
 const immutableUrlPrefixes: string[] = [];

@@ -32,6 +32,7 @@ import {
   asMountRemoveReason,
 } from './mounts/mountState';
 import { APP_ROOT, underAppRoot } from './fsLayout';
+import { withReadOnlyMounts } from './FileSystem/readOnlyMounts';
 import { Debouncer } from './utils/Debouncer';
 import { DisposableStore } from './utils/Disposable';
 import { getDocumentHeight } from './utils/document';
@@ -211,10 +212,18 @@ class SandpackInstance {
     // goes to the parent over the Port — which the parent observes at its
     // `attachFS` hook and reflects in the editor. Async APIs only: the Port
     // bridge is request/response and can't service synchronous fs calls.
-    (globalThis as any).__sandpackSharedFs = bindContext({
-      root: '/',
-      pwd: APP_ROOT,
-    }).fs;
+    // App-facing hardening (R3-48 G0-3 + G0-4): the bundler-owned mounts
+    // `/node_modules` and `/transpiled` are now reachable on this shared fs, but
+    // their contents belong to the bundler. Wrap the bound fs so any app-code write
+    // under those prefixes fails `EROFS` (incl. new-file creation); `/app` writes
+    // still cross the Port to the parent.
+    (globalThis as any).__sandpackSharedFs = withReadOnlyMounts(
+      bindContext({
+        root: '/',
+        pwd: APP_ROOT,
+      }).fs,
+      ['/node_modules', '/transpiled'],
+    );
 
     // Zenfs is ready — safe to create the bundler (CachedFS starts a
     // filesystem watcher that requires zenfs to be configured).
@@ -227,6 +236,13 @@ class SandpackInstance {
       formFactor: this.formFactorService,
       mounts: this.mountService,
     });
+
+    // Assemble the bundler-owned mount table (`/node_modules` CoW over RegistryFS,
+    // `/transpiled` tmpfs, the `/empty.js` shim) before any compile — the preset's
+    // `registerRuntime` writes under `/node_modules` during `initPreset`, which runs
+    // before `compile()`. The Bundler owns this assembly because RegistryFS needs the
+    // bundler's ModuleRegistry (plan §G0-4 note). Idempotent with the compile() guard.
+    await this.bundler.setupModuleMounts();
 
     this.bundler.onStatusChange((newStatus) => {
       this.messageBus.sendMessage('status', { status: newStatus });

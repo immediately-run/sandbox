@@ -9,10 +9,7 @@ import {
 } from '@zenfs/core';
 
 import { APP_ROOT } from '../../fsLayout';
-import { ModuleRegistry } from '../module-registry';
-import { NodeModule } from '../module-registry/NodeModule';
-import { CDNModuleFileType } from '../module-registry/module-cdn';
-import { RegistryFS, RegistryFileFetcher } from '../../FileSystem/RegistryFS';
+import { RegistryFileFetcher } from '../../FileSystem/RegistryFS';
 
 /**
  * R3-48 G0-0 — the booted-bundler integration harness's FOUNDATION (the
@@ -30,8 +27,12 @@ import { RegistryFS, RegistryFileFetcher } from '../../FileSystem/RegistryFS';
  *    traffic that would cross the Port in production, so a test can assert which
  *    paths did (and did NOT) reach the parent-hosted mount — the §9 "zero Port
  *    traffic for `/node_modules`/`/transpiled` reads" criterion;
- *  - a **network spy**: an injected `RegistryFileFetcher` that records the lazy
- *    unpkg fetches `RegistryFS` issues for listed-but-not-inlined module files.
+ *  - a **network spy**: a `RegistryFileFetcher` that records the lazy unpkg fetches
+ *    `RegistryFS` issues for listed-but-not-inlined module files. As of G0-4 the
+ *    **Bundler owns the `/node_modules` mount** (it needs the bundler's
+ *    `ModuleRegistry`), so this harness no longer mounts `/node_modules` itself — it
+ *    only exposes the spy fetcher, which `createBundlerHarness` injects into the
+ *    bundler via `setRegistryFetcher` before compile.
  *
  * Every `[harness]` row in `02-zenfs-unification.md` consumes this; it adds no
  * production behavior.
@@ -83,42 +84,24 @@ function recordingFs(backing: FileSystem, record: (op: PortOp) => void): FileSys
   }) as FileSystem;
 }
 
-const inlined = (content: string): CDNModuleFileType => ({ c: content, d: [], t: false });
-
-/** A registry with one module holding a listed-but-NOT-inlined file → a lazy fetch. */
-function stubRegistry(): ModuleRegistry {
-  const react = new NodeModule(
-    'react',
-    '18.3.1',
-    {
-      'index.js': inlined('module.exports = {};'),
-      'package.json': inlined('{"name":"react","version":"18.3.1"}'),
-      'cjs/react.production.js': 1234, // listed-but-not-inlined → lazy fetch
-    },
-    [],
-  );
-  const map = new Map<string, NodeModule>();
-  map.set(react.name, react);
-  return { modules: map } as unknown as ModuleRegistry;
-}
-
 export interface BundlerFsHarness {
   /** Ops the child issued over the `/app` Port (mount-relative paths). */
   portOps: PortOp[];
   /** Lazy module fetches the network spy recorded. */
   fetchOps: FetchOp[];
-  /** The stub registry backing the `/node_modules` RegistryFS mount. */
-  registry: ModuleRegistry;
+  /** The network-spy fetcher to inject into the bundler (`setRegistryFetcher`); it
+   *  records into `fetchOps` and returns deterministic fetched content. */
+  fetcher: RegistryFileFetcher;
   /** Clear both spies (e.g. after seeding, before the assertions). */
   resetSpies(): void;
-  /** Tear the mount table + ports down. */
+  /** Tear the `/app` mount down. */
   teardown(): Promise<void>;
 }
 
 /**
- * Boot the in-process mount table: `/app` over a loopback Port serving a seeded
- * InMemory fs, `/node_modules` over a `RegistryFS` with the network spy. Returns
- * the spies + teardown.
+ * Boot the in-process `/app` mount over a recorded InMemory stand-in (the
+ * Port-traffic spy) seeded from `fixture`, plus the network-spy fetcher the
+ * bundler-owned `/node_modules` mount consumes. Returns the spies + teardown.
  */
 export async function createBundlerFsHarness(
   fixture: Record<string, string> = FIXTURE_APP,
@@ -143,14 +126,11 @@ export async function createBundlerFsHarness(
     await fs.promises.writeFile(abs, content);
   }
 
-  // --- /node_modules: RegistryFS with the injected network spy -------------
-  const registry = stubRegistry();
+  // --- the network spy: injected into the bundler's RegistryFS via setRegistryFetcher
   const fetcher: RegistryFileFetcher = async (module, version, relPath) => {
     fetchOps.push({ module, version, relPath });
     return `/* fetched ${module}@${version}/${relPath} */`;
   };
-  await fs.promises.mkdir('/node_modules').catch(() => undefined);
-  mount('/node_modules', new RegistryFS(registry, fetcher));
 
   const resetSpies = () => {
     portOps.length = 0;
@@ -159,9 +139,8 @@ export async function createBundlerFsHarness(
   resetSpies(); // drop the seeding writes
 
   const teardown = async () => {
-    try { umount('/node_modules'); } catch { /* not mounted */ }
     try { umount(APP_ROOT); } catch { /* not mounted */ }
   };
 
-  return { portOps, fetchOps, registry, resetSpies, teardown };
+  return { portOps, fetchOps, fetcher, resetSpies, teardown };
 }

@@ -1,8 +1,6 @@
 import { BundlerError } from '../errors/BundlerError';
-import { FileSystem } from '../FileSystem';
-import { MemoryFSLayer } from '../FileSystem/layers/MemoryFSLayer';
-import { NodeModuleFSLayer } from '../FileSystem/layers/NodeModuleFSLayer';
 import { CachedFS } from '../FileSystem/CachedFS';
+import { RegistryFS, RegistryFileFetcher } from '../FileSystem/RegistryFS';
 import { IFrameParentMessageBus } from '../protocol/iframe';
 import { AuthService } from '../auth/AuthService';
 import { ThemeService } from '../theme/ThemeService';
@@ -32,7 +30,7 @@ import { emitPerfMarker } from './perfMarkers';
 import { retryFetch, registerImmutableUrlPrefix } from '../utils/fetch'
 import { basename } from '../utils/path'
 import { FrontmatterParseResult, parseFrontmatter } from './frontmatter';
-import { bindContext, globToRegex } from '@zenfs/core';
+import { bindContext, globToRegex, CopyOnWrite, InMemory, mount, resolveMountConfig, fs as zenfs } from '@zenfs/core';
 
 export type TransformationQueue = NamedPromiseQueue<Module>;
 export type MetadataChange = {
@@ -160,7 +158,7 @@ export class Bundler {
   // code via the SDK at `module.evaluation.module.bundler.mounts`.
   mounts: MountService;
 
-  fs: FileSystem;
+  fs: CachedFS;
   moduleRegistry: ModuleRegistry;
 
   parsedPackageJSON: IPackageJSON | null = null;
@@ -194,7 +192,14 @@ export class Bundler {
   onStatusChange = this.onStatusChangeEmitter.event;
 
   private _previousDepString: string | null = null;
-  private zenFsLayer: CachedFS;
+  // Injectable RegistryFS lazy-fetch function (the G0-0 harness injects a network
+  // spy so a test can observe lazy unpkg fetches). Undefined → RegistryFS uses its
+  // built-in `retryFetch`-through-the-parent-cache default.
+  private registryFetcher?: RegistryFileFetcher;
+  // Guards `setupModuleMounts()` so the bundler-owned mounts are assembled exactly
+  // once (it is called both from `index.ts` after construction and defensively at
+  // the top of `compile()`).
+  private mountsReady = false;
   private lastMetadata: Map<string, Record<string, any>> = new Map();
   // Host-pinned SDK integrity hashes (SDK_PACKAGING_SPEC §5.2), set from
   // IInitConfig before the initial compile; undefined → verification skipped.
@@ -208,21 +213,19 @@ export class Bundler {
    * contents and queues the paths for the next incremental compile.
    */
   markFilesChanged(paths: string[]): void {
-    this.zenFsLayer.markChanged(paths);
+    this.fs.markChanged(paths);
   }
 
   constructor(options: IBundlerOpts) {
     this.transformationQueue = new NamedPromiseQueue(true, 50);
     this.moduleRegistry = new ModuleRegistry(this);
-    const memoryFS = new MemoryFSLayer();
-    // In-memory write resolves synchronously, so we don't need to await it here.
-    void memoryFS.writeFile('//empty.js', 'module.exports = () => {};');
-    // Bind at the filesystem root (not just the repo) so module resolution can
-    // reach the whole tree — the repo lives at `APP_ROOT` and dynamic mounts
-    // (e.g. `/firestore`) appear as siblings. Repo-relative reads below are
-    // anchored to `APP_ROOT` explicitly.
-    this.zenFsLayer = new CachedFS(bindContext({'root': '/', 'pwd': '/'}));
-    this.fs = new FileSystem([memoryFS, this.zenFsLayer, new NodeModuleFSLayer(this.moduleRegistry)]);
+    // R3-48 G0-4: the bundler reads + writes through a single ZenFS bound context.
+    // Bind at the filesystem root (not just the repo) so module resolution can reach
+    // the whole tree — `/app` (Port), `/node_modules` (CoW over RegistryFS) and
+    // `/transpiled` (tmpfs) are mounts assembled by `setupModuleMounts()` before the
+    // first compile; dynamic mounts (`/firestore`) appear as siblings. Repo-relative
+    // reads below are anchored to `APP_ROOT` explicitly.
+    this.fs = new CachedFS(bindContext({ root: '/', pwd: '/' }));
     this.messageBus = options.messageBus;
     this.auth = options.auth;
     this.theme = options.theme;
@@ -250,6 +253,67 @@ export class Bundler {
   /** Run pre-unmount lifecycle actions before a mount is torn down (§11.3). */
   runPreUnmount(ctx: MountContext): Promise<void> {
     return this.mountLifecycle.runUnmount(ctx);
+  }
+
+  /**
+   * Inject the {@link RegistryFS} lazy-fetch function (the G0-0 harness's network
+   * spy). MUST be called before {@link setupModuleMounts} mounts `/node_modules`,
+   * since the fetcher is captured into the `RegistryFS` instance there.
+   */
+  setRegistryFetcher(fetcher: RegistryFileFetcher): void {
+    this.registryFetcher = fetcher;
+  }
+
+  /**
+   * Assemble the bundler-owned mount table (R3-48 G0-4, plan §G0-4 step 1):
+   *
+   *  - `/node_modules` = `CopyOnWrite`: a writable `InMemory` tmpfs over a read-only
+   *    {@link RegistryFS} (over THIS bundler's `ModuleRegistry`). Reads are served
+   *    from the registry / lazy unpkg fetch; the bundler's own writes
+   *    (`registerRuntime` / `addPreloadedModule` / `addLocalModules`) land on the
+   *    writable side. RegistryFS owns no journal — registry files are never deleted.
+   *  - `/transpiled` = `InMemory` tmpfs (consumed in Phase 03; mounted now so the
+   *    spec §3 layout is final).
+   *
+   * The Bundler owns this assembly (not `index.ts`) because `RegistryFS` needs this
+   * bundler's `ModuleRegistry`, which is created in the constructor and circularly
+   * references the bundler (plan §G0-4 note). Idempotent: safe to call from
+   * `index.ts` after construction AND defensively at the top of `compile()`.
+   */
+  async setupModuleMounts(): Promise<void> {
+    if (this.mountsReady) return;
+    this.mountsReady = true;
+
+    const nodeModulesFs = await resolveMountConfig({
+      backend: CopyOnWrite,
+      readable: new RegistryFS(this.moduleRegistry, this.registryFetcher),
+      writable: { backend: InMemory, label: 'node_modules-writable' },
+    });
+    await this.materializeMountPoint('/node_modules');
+    mount('/node_modules', nodeModulesFs);
+
+    const transpiledFs = await resolveMountConfig({ backend: InMemory, label: 'transpiled' });
+    await this.materializeMountPoint('/transpiled');
+    mount('/transpiled', transpiledFs);
+
+    // The resolver's empty-module shim (EMPTY_SHIM = '/empty.js', resolver/utils)
+    // needs a real file to read. It lives on the root tmpfs (not a mount), written
+    // once the mount table exists. Replaces the former `//empty.js` MemoryFSLayer write.
+    await this.fs.writeFile('/empty.js', 'module.exports = () => {};');
+  }
+
+  /**
+   * ZenFS routes paths through its mount table alone — a mount point is invisible to
+   * `readdir` of its parent unless the dir exists in the underlying fs. Materialize
+   * it first (mirrors `index.ts`'s helper); MUST run BEFORE `mount()`, or the mkdir
+   * lands inside the freshly-mounted fs instead of the parent.
+   */
+  private async materializeMountPoint(path: string): Promise<void> {
+    try {
+      await zenfs.promises.mkdir(path, { recursive: true });
+    } catch (err) {
+      logger.error(`Failed to materialize mount point ${path}`, err);
+    }
   }
 
   /** Reset all compilation data */
@@ -661,7 +725,7 @@ export class Bundler {
 
   async preloadMDXMetadata(): Promise<void> {
     const re = globToRegex('/**/*.mdx');
-    const zenFsLayer = this.fs.layers[1] as CachedFS;
+    const zenFsLayer = this.fs;
     // Scan only the repo (`APP_ROOT`), not the whole filesystem — dynamic mounts
     // (e.g. `/firestore`) and virtual node_modules aren't sources of app MDX.
     const mdxFiles = (await zenFsLayer.boundContext.fs.promises.readdir(APP_ROOT, {recursive: true})).map(
@@ -709,13 +773,18 @@ export class Bundler {
    * transform queue re-reads them.
    */
   private collectChangedFiles(): string[] {
-    return this.zenFsLayer.drainPendingChanges();
+    return this.fs.drainPendingChanges();
   }
 
   async compile(): Promise<() => any> {
     if (!this.preset) {
       throw new BundlerError('Cannot compile before preset has been initialized');
     }
+
+    // Ensure the bundler-owned mounts (`/node_modules`, `/transpiled`) exist before
+    // the first read/write. Idempotent — `index.ts` already calls this after
+    // construction; this guard covers the harness path (and any direct `compile()`).
+    await this.setupModuleMounts();
 
     this.onStatusChangeEmitter.fire('installing-dependencies');
 
@@ -758,7 +827,7 @@ export class Bundler {
       await this.addLocalModules();
       // Drain any spurious watcher events that fired during bootstrap so they
       // aren't interpreted as user-driven changes later.
-      this.zenFsLayer.drainPendingChanges();
+      this.fs.drainPendingChanges();
       // Fire the app-root mount lifecycle (§11.3) — runs the MDX-metadata scan
       // (and any future post-mount actions). Replaces the former direct
       // preloadMDXMetadata() call; behaviour is unchanged (MDX is app-root-scoped).

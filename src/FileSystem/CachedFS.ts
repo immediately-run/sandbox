@@ -1,8 +1,8 @@
 import { BoundContext } from '@zenfs/core';
+import gensync, { Gensync } from 'gensync';
 
 import * as logger from '../utils/logger';
 import { Emitter } from '../utils/emitter';
-import { FSLayer } from './FSLayer';
 
 export interface CachedFSChangeEvent {
   path: string;
@@ -10,24 +10,22 @@ export interface CachedFSChangeEvent {
 }
 
 /**
- * Read-memoizing FS layer over a `@zenfs/core` bound context (extracted from the
- * former `ZenFSLayer` — Gate 0 sub-PR G0-2, a behavior-preserving move so the
- * caching/watcher logic has its own home + unit net before the G0-4 mount-table
- * flip wires it onto a single ZenFS-backed read path).
+ * The bundler's filesystem (R3-48 G0-4): a read-memoizing view over a single
+ * `@zenfs/core` bound context whose mount table routes `/app` (Port), `/node_modules`
+ * (CopyOnWrite over RegistryFS) and `/transpiled` (tmpfs) — replacing the former
+ * layered-FS union. Reads under `/node_modules`/`/transpiled` are served by their
+ * mounts (never the Port); `/app` reads cross the Port. Successful reads are memoized
+ * so repeated reads (e.g. `package.json` lookups during resolution) avoid extra
+ * round-trips; the watcher + parent-relayed `markChanged` invalidate. Writes
+ * (`registerRuntime`/`addPreloadedModule`/`addLocalModules` → `/node_modules`, and the
+ * `/empty.js` stub) write THROUGH to the bound context so subsequent reads see them.
  *
- * The parent window hosts the actual zenfs instance and exposes it to the iframe
- * via a `MessagePort` (see `IFrameParentMessageBus.getFsPort`). The bundler mounts
- * that port as the zenfs `Port` backend in `src/index.ts` before this layer is
- * instantiated, so `fs.promises.*` calls here are transparently forwarded to the
- * parent.
- *
- * Successful reads are memoized in an in-memory `fileCache` so repeated reads of the
- * same path (e.g. `package.json` lookups during resolution) avoid extra round-trips to
- * the parent. The watcher invalidates cache entries when the underlying file changes,
- * and `markChanged` mirrors that for parent-relayed writes the watcher can't see across
- * the iframe boundary.
+ * Exposes the gensync `readFile`/`isFile` the resolver consumes (async-only; the sync
+ * handlers throw, as the bundler always resolves via `resolveAsync`).
  */
-export class CachedFS extends FSLayer {
+export class CachedFS {
+  /** Stable name (the asset transform identifies the bundler fs by it). */
+  readonly name = 'zenfs';
   private fileCache: Map<string, string> = new Map();
   private isFileCache: Map<string, boolean> = new Map();
   private pendingChanges: Set<string> = new Set();
@@ -35,8 +33,23 @@ export class CachedFS extends FSLayer {
   onFileChanged = this.onFileChangedEmitter.event;
   private watcherStarted = false;
 
+  /** Gensync wrappers the resolver consumes (async-only — sync handlers throw). */
+  readFile: Gensync<(filepath: string) => string>;
+  isFile: Gensync<(filepath: string) => boolean>;
+
   constructor(public boundContext: BoundContext) {
-    super('zenfs');
+    this.readFile = gensync({
+      sync: (path: string): string => {
+        throw new Error(`Synchronous file reads are not supported (path: ${path})`);
+      },
+      async: this.readFileAsync.bind(this),
+    });
+    this.isFile = gensync({
+      sync: (path: string): boolean => {
+        throw new Error(`Synchronous file existence checks are not supported (path: ${path})`);
+      },
+      async: this.isFileAsync.bind(this),
+    });
     this.startWatcher().catch((err) => {
       logger.error('CachedFS: failed to start filesystem watcher', err);
     });
@@ -94,17 +107,24 @@ export class CachedFS extends FSLayer {
     return changes;
   }
 
-  shouldSkipLayer(path: string): boolean {
-    return path.includes('node_modules');
-  }
-
   resetCache(): void {
     this.isFileCache = new Map();
   }
 
-  writeFile(path: string, content: string): Promise<void> {
+  /**
+   * Write THROUGH to the bound context (the mount table) — `/node_modules` writes
+   * land on the CopyOnWrite writable side, `/empty.js` on the root tmpfs — then
+   * update the read memo. Parent dirs are materialized first (the writable tmpfs
+   * does not auto-create them). No bundler writes target `/app` (spec §3.4).
+   */
+  async writeFile(path: string, content: string): Promise<void> {
+    const dir = path.slice(0, path.lastIndexOf('/'));
+    if (dir) {
+      await this.boundContext.fs.promises.mkdir(dir, { recursive: true }).catch(() => undefined);
+    }
+    await this.boundContext.fs.promises.writeFile(path, content);
     this.fileCache.set(path, content);
-    return Promise.resolve();
+    this.isFileCache.set(path, true);
   }
 
   async readFileAsync(path: string): Promise<string> {

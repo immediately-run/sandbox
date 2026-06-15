@@ -1,3 +1,5 @@
+import { umount } from '@zenfs/core';
+
 import { Bundler } from '../bundler';
 import type { AuthService } from '../../auth/AuthService';
 import type { ThemeService } from '../../theme/ThemeService';
@@ -22,10 +24,11 @@ import { createBabelLoopback, type BabelLoopback } from './babelLoopback';
  * the entry module + its LOCAL import graph over the harness fs. Full `compile()`
  * additionally vendors the platform SDK (network) and injects the react-refresh HMR
  * runtime (`react-refresh/runtime` + react), i.e. needs the whole module environment —
- * out of scope for an in-process FS-routing/transpile smoke. And today's (pre-`G0-4`)
- * bundler resolves `/node_modules` via its own `NodeModuleFSLayer`/`moduleRegistry`,
- * not the mounted `RegistryFS`, so the "node_modules off the mount, zero `/app` Port
- * traffic" assertion belongs to the G0-4 flip (the network spy is staged for it).
+ * out of scope for an in-process FS-routing/transpile smoke. As of G0-4 the bundler
+ * owns `/node_modules` (a `CopyOnWrite` over `RegistryFS` mounted by
+ * `setupModuleMounts`); the network spy is injected via `setRegistryFetcher` so the
+ * "node_modules off the mount, zero `/app` Port traffic" + lazy-fetch assertions live
+ * in `bundlerHarness.nodeModules.test.ts`.
  */
 
 /** A local-only fixture: an entry `.ts` importing one local `.ts`. `.ts` files get the
@@ -141,6 +144,13 @@ export async function createBundlerHarness(
     mounts: stub<MountService>(),
   });
 
+  // The bundler owns `/node_modules` + `/transpiled` now (G0-4). Inject the network
+  // spy BEFORE assembling the mounts (the fetcher is captured into RegistryFS there),
+  // then assemble them BEFORE any `initPreset`/`compile` — `initPreset` writes the HMR
+  // runtime under `/node_modules`, so the mount must exist first.
+  bundler.setRegistryFetcher(fsHarness.fetcher);
+  await bundler.setupModuleMounts();
+
   if (opts.forCompile) {
     // SDK vendoring fetches `@immediately-run/sdk` from the self-host origin (network,
     // no transport under jest) and is out of scope for an FS-routing/transpile compile.
@@ -157,6 +167,10 @@ export async function createBundlerHarness(
     sentMessages,
     teardown: async () => {
       babel.dispose();
+      // Drop the bundler-owned mounts so the next test's fresh bundler can re-mount
+      // (ZenFS `configure()` does not clear the table; `mount()` throws if in use).
+      try { umount('/node_modules'); } catch { /* not mounted */ }
+      try { umount('/transpiled'); } catch { /* not mounted */ }
       await fsHarness.teardown();
     },
   };

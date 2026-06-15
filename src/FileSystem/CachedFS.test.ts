@@ -36,12 +36,18 @@ function makeContext(opts?: {
   readFile?: jest.Mock;
   stat?: jest.Mock;
   watch?: () => AsyncIterable<{ filename: string; eventType: string }>;
+  writeFile?: jest.Mock;
+  mkdir?: jest.Mock;
 }) {
   const readFile = opts?.readFile ?? jest.fn(async () => 'CONTENT');
   const stat = opts?.stat ?? jest.fn(async () => ({ isFile: () => true }));
   const watch = opts?.watch ?? (() => controllableWatch().iterable);
-  const context = { fs: { promises: { readFile, stat, watch } } } as unknown as BoundContext;
-  return { context, readFile, stat };
+  // writeFile now writes THROUGH to the bound context (mkdir -p + writeFile), so the
+  // fake context needs both — see CachedFS.writeFile.
+  const writeFile = opts?.writeFile ?? jest.fn(async () => undefined);
+  const mkdir = opts?.mkdir ?? jest.fn(async () => undefined);
+  const context = { fs: { promises: { readFile, stat, watch, writeFile, mkdir } } } as unknown as BoundContext;
+  return { context, readFile, stat, writeFile, mkdir };
 }
 
 /** Let the fire-and-forget watcher `for await` loop drain a pushed event. */
@@ -96,7 +102,7 @@ describe('CachedFS (G0-2 — read memoization + change invalidation)', () => {
     expect(fs.drainPendingChanges()).toEqual(['/a.js']);
   });
 
-  it('skips node_modules paths in markChanged and shouldSkipLayer', async () => {
+  it('skips node_modules paths in markChanged (the mount has no watcher)', async () => {
     const { context } = makeContext();
     const fs = new CachedFS(context);
     const events: CachedFSChangeEvent[] = [];
@@ -106,8 +112,6 @@ describe('CachedFS (G0-2 — read memoization + change invalidation)', () => {
 
     expect(events).toEqual([{ path: '/src/App.tsx', eventType: 'change' }]); // node_modules dropped
     expect(fs.drainPendingChanges()).toEqual(['/src/App.tsx']);
-    expect(fs.shouldSkipLayer('/node_modules/react/index.js')).toBe(true);
-    expect(fs.shouldSkipLayer('/src/App.tsx')).toBe(false);
   });
 
   it('drainPendingChanges drains once: a second drain is empty', async () => {
@@ -164,6 +168,21 @@ describe('CachedFS (G0-2 — read memoization + change invalidation)', () => {
     await fs.writeFile('/b.js', 'x');
     expect(await fs.isFileAsync('/b.js')).toBe(true);
     expect(stat).toHaveBeenCalledTimes(1);
+    expect(readFile).not.toHaveBeenCalled();
+  });
+
+  it('writeFile writes THROUGH to the bound context (mkdir -p + writeFile) and memoizes', async () => {
+    const { context, readFile, writeFile, mkdir } = makeContext();
+    const fs = new CachedFS(context);
+
+    await fs.writeFile('/node_modules/react/index.js', 'module.exports = {};');
+
+    // parent dirs are materialized first, then the file is written through
+    expect(mkdir).toHaveBeenCalledWith('/node_modules/react', { recursive: true });
+    expect(writeFile).toHaveBeenCalledWith('/node_modules/react/index.js', 'module.exports = {};');
+
+    // the write is memoized: a subsequent read is served from the cache (no backend read)
+    expect(await fs.readFileAsync('/node_modules/react/index.js')).toBe('module.exports = {};');
     expect(readFile).not.toHaveBeenCalled();
   });
 });
