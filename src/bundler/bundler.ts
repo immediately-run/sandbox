@@ -28,6 +28,7 @@ import { collectLocalEntrySideEffects } from './sideEffectImports';
 import { Module } from './module/Module';
 import { Preset } from './presets/Preset';
 import { getPreset } from './presets/registry';
+import { emitPerfMarker } from './perfMarkers';
 import { retryFetch, registerImmutableUrlPrefix } from '../utils/fetch'
 import { basename } from '../utils/path'
 import { FrontmatterParseResult, parseFrontmatter } from './frontmatter';
@@ -795,6 +796,13 @@ export class Bundler {
       this._previousDepString = depString;
 
       await this.loadNodeModules();
+
+      // ir.deps (R3-46): node-module resolution finished. depCount is the declared
+      // dependency count; the host orders marks by timestamp and derives the phase
+      // duration from the surrounding marks.
+      emitPerfMarker(this.messageBus, 'ir.deps', {
+        depCount: Object.keys(this.parsedPackageJSON?.dependencies || {}).length,
+      });
     }
 
     this.onStatusChangeEmitter.fire('transpiling');
@@ -870,6 +878,10 @@ export class Bundler {
 
     this.messageBus.sendMessage('state', { state: { transpiledModules } });
 
+    // ir.transpile (R3-46): the babel transform pass is complete and the compiled
+    // module graph has been forwarded. moduleCount is the size of that graph.
+    emitPerfMarker(this.messageBus, 'ir.transpile', { moduleCount: this.modules.size });
+
     return () => {
       // Evaluate
       logger.debug('Evaluating...');
@@ -900,6 +912,13 @@ export class Bundler {
         }
 
         entryModule.evaluate();
+
+        // ir.eval (R3-46): first-load module evaluation finished — the last
+        // bundler phase before the app's own root render (the SDK then marks
+        // ir.fmp/ir.interactive). moduleCount is the evaluated graph size. Marked
+        // only on first load: the canonical request→interactive boot stream.
+        emitPerfMarker(this.messageBus, 'ir.eval', { moduleCount: this.modules.size });
+
         this.isFirstLoad = false;
       } else {
         this.modules.forEach((module) => {
