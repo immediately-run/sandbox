@@ -160,7 +160,7 @@ export class Bundler {
   // code via the SDK at `module.evaluation.module.bundler.mounts`.
   mounts: MountService;
 
-  fs: FileSystem;
+  fs: CachedFS;
   moduleRegistry: ModuleRegistry;
 
   parsedPackageJSON: IPackageJSON | null = null;
@@ -194,7 +194,6 @@ export class Bundler {
   onStatusChange = this.onStatusChangeEmitter.event;
 
   private _previousDepString: string | null = null;
-  private zenFsLayer: CachedFS;
   private lastMetadata: Map<string, Record<string, any>> = new Map();
   // Host-pinned SDK integrity hashes (SDK_PACKAGING_SPEC §5.2), set from
   // IInitConfig before the initial compile; undefined → verification skipped.
@@ -208,21 +207,19 @@ export class Bundler {
    * contents and queues the paths for the next incremental compile.
    */
   markFilesChanged(paths: string[]): void {
-    this.zenFsLayer.markChanged(paths);
+    this.fs.markChanged(paths);
   }
 
   constructor(options: IBundlerOpts) {
     this.transformationQueue = new NamedPromiseQueue(true, 50);
     this.moduleRegistry = new ModuleRegistry(this);
-    const memoryFS = new MemoryFSLayer();
-    // In-memory write resolves synchronously, so we don't need to await it here.
-    void memoryFS.writeFile('//empty.js', 'module.exports = () => {};');
-    // Bind at the filesystem root (not just the repo) so module resolution can
-    // reach the whole tree — the repo lives at `APP_ROOT` and dynamic mounts
-    // (e.g. `/firestore`) appear as siblings. Repo-relative reads below are
-    // anchored to `APP_ROOT` explicitly.
-    this.zenFsLayer = new CachedFS(bindContext({'root': '/', 'pwd': '/'}));
-    this.fs = new FileSystem([memoryFS, this.zenFsLayer, new NodeModuleFSLayer(this.moduleRegistry)]);
+    // R3-48 G0-4: the bundler reads + writes through a single ZenFS bound context.
+    // Bind at the filesystem root (not just the repo) so module resolution can reach
+    // the whole tree — `/app` (Port), `/node_modules` (CoW over RegistryFS) and
+    // `/transpiled` (tmpfs) are mounts assembled by `setupModuleMounts()` before the
+    // first compile; dynamic mounts (`/firestore`) appear as siblings. Repo-relative
+    // reads below are anchored to `APP_ROOT` explicitly.
+    this.fs = new CachedFS(bindContext({ root: '/', pwd: '/' }));
     this.messageBus = options.messageBus;
     this.auth = options.auth;
     this.theme = options.theme;
@@ -661,7 +658,7 @@ export class Bundler {
 
   async preloadMDXMetadata(): Promise<void> {
     const re = globToRegex('/**/*.mdx');
-    const zenFsLayer = this.fs.layers[1] as CachedFS;
+    const zenFsLayer = this.fs;
     // Scan only the repo (`APP_ROOT`), not the whole filesystem — dynamic mounts
     // (e.g. `/firestore`) and virtual node_modules aren't sources of app MDX.
     const mdxFiles = (await zenFsLayer.boundContext.fs.promises.readdir(APP_ROOT, {recursive: true})).map(
@@ -709,7 +706,7 @@ export class Bundler {
    * transform queue re-reads them.
    */
   private collectChangedFiles(): string[] {
-    return this.zenFsLayer.drainPendingChanges();
+    return this.fs.drainPendingChanges();
   }
 
   async compile(): Promise<() => any> {
@@ -758,7 +755,7 @@ export class Bundler {
       await this.addLocalModules();
       // Drain any spurious watcher events that fired during bootstrap so they
       // aren't interpreted as user-driven changes later.
-      this.zenFsLayer.drainPendingChanges();
+      this.fs.drainPendingChanges();
       // Fire the app-root mount lifecycle (§11.3) — runs the MDX-metadata scan
       // (and any future post-mount actions). Replaces the former direct
       // preloadMDXMetadata() call; behaviour is unchanged (MDX is app-root-scoped).
