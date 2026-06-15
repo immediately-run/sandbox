@@ -289,6 +289,8 @@ class SandpackInstance {
     // Host-pinned SDK integrity (SDK_PACKAGING_SPEC §5.2): hand it to the bundler
     // so addLocalModules verifies self-hosted SDK bytes before evaluation.
     this.bundler.setSdkIntegrity(initConfig.sdkIntegrity);
+    // The §5.2 dirty set: paths the seeding path must never seed from artifacts.
+    this.bundler.setDirtyPaths(initConfig.dirtyPaths);
 
     // Kick off the initial compile.
     this.compileDebouncer.debounce(() => this.runCompile());

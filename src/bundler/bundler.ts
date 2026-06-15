@@ -205,6 +205,12 @@ export class Bundler {
   // IInitConfig before the initial compile; undefined → verification skipped.
   private sdkIntegrity?: SdkIntegrity;
 
+  // The §5.2 dirty set: repo-relative paths in the COW writable layer (edited in
+  // a previous session) + the journal's deleted set, pushed by the host on
+  // register-frame. Consulted by artifact seeding so a dirty path is never seeded
+  // (its `/app` content no longer matches the zip the artifact was built from).
+  private dirtyPaths: Set<string> = new Set();
+
   /**
    * Records files the parent reported as changed. ZenFS's `Port` backend does
    * not forward watch events across the iframe boundary, so the bundler cannot
@@ -664,6 +670,17 @@ export class Bundler {
    *  before the initial compile. Undefined → verification skipped (not wired). */
   setSdkIntegrity(integrity: SdkIntegrity | undefined): void {
     this.sdkIntegrity = integrity;
+  }
+
+  /** The §5.2 dirty set, set from IInitConfig before the initial compile.
+   *  Undefined/empty → nothing dirty (every artifact eligible). */
+  setDirtyPaths(paths: string[] | undefined): void {
+    this.dirtyPaths = new Set(paths ?? []);
+  }
+
+  /** True if a repo-relative path is dirty (must not be seeded from artifacts). */
+  isDirtyPath(repoRelPath: string): boolean {
+    return this.dirtyPaths.has(repoRelPath);
   }
 
   async addLocalModules(): Promise<void> {

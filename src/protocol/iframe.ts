@@ -42,6 +42,9 @@ export class IFrameParentMessageBus {
         // Forwarded verbatim by the sandpack client's `register({...config})`
         // (no fork change needed); present only once the host wires delivery.
         sdkIntegrity: data.sdkIntegrity,
+        // The §5.2 dirty set (writable-layer + journal-deleted repo-relative
+        // paths); absent until the host wires delivery.
+        dirtyPaths: data.dirtyPaths,
       };
       this.initConfig = config;
       const configResolvers = this.initConfigResolvers;
