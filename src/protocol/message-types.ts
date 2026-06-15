@@ -22,6 +22,11 @@ export interface IInitConfig {
   // was built from. Optional — absent until the host wires delivery; absence
   // means "nothing dirty" (every artifact eligible, subject to the other checks).
   dirtyPaths?: string[];
+  // The parent's §5.7 distrust mark for this (repo coordinates, commitSha): when
+  // true, the bundler treats the zip's artifact section as absent (seeds nothing,
+  // live-transpiles everything). Set by the parent from its persisted store after a
+  // prior spot-verify mismatch; cleared by a new commit.
+  distrustArtifacts?: boolean;
 }
 
 export type BundlerStatus =

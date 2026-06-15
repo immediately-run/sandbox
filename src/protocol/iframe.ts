@@ -45,6 +45,8 @@ export class IFrameParentMessageBus {
         // The §5.2 dirty set (writable-layer + journal-deleted repo-relative
         // paths); absent until the host wires delivery.
         dirtyPaths: data.dirtyPaths,
+        // The §5.7 distrust mark for this (coords, commitSha).
+        distrustArtifacts: data.distrustArtifacts,
       };
       this.initConfig = config;
       const configResolvers = this.initConfigResolvers;

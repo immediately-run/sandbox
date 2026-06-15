@@ -711,6 +711,35 @@ export class Bundler {
     return this.dirtyPaths.has(repoRelPath);
   }
 
+  /** Schedule §5.7 spot-verification at idle so it never competes with boot/input. */
+  private scheduleSpotVerify(): void {
+    const ric = (globalThis as { requestIdleCallback?: (cb: () => void) => void }).requestIdleCallback;
+    if (typeof ric === 'function') {
+      ric(() => void this.runSpotVerify());
+    } else {
+      setTimeout(() => void this.runSpotVerify(), 0);
+    }
+  }
+
+  /**
+   * Run §5.7 spot-verification: re-transpile a random sample of consumed artifacts
+   * and byte-compare. On a mismatch, the store discards the whole section (live
+   * transpile from here) and we report the verdict to the parent, which persists
+   * the distrust mark for this `(coords, commitSha)` so later boots don't re-consume.
+   */
+  async runSpotVerify(): Promise<void> {
+    const verdict = await this.artifactStore.spotVerify();
+    if (!verdict.tampered) return;
+    // §8.14 security event (logged here; the actionable channel is the message below).
+    logger.warn(
+      `Artifact spot-verify mismatch at ${verdict.path} — all artifacts discarded for this session (UI_AS_APPS §8.14).`,
+    );
+    this.messageBus.sendMessage('artifact-distrust', {
+      commitSha: this.artifactStore.getCommitSha(),
+      reason: 'spot-verify-mismatch',
+    });
+  }
+
   async addLocalModules(): Promise<void> {
     // Resolve each self-hosted module (the SDK) from its versioned gh-pages
     // location and register its files as local modules. IMPLICIT (no opt-in):
@@ -1051,6 +1080,11 @@ export class Bundler {
         emitPerfMarker(this.messageBus, 'ir.eval', { moduleCount: this.modules.size });
 
         this.isFirstLoad = false;
+        // §5.7 mandatory spot-verification: on a boot that consumed artifacts,
+        // verify a random sample at idle — never blocking boot or input handling.
+        if (this.artifactStore.consumedCount() > 0) {
+          this.scheduleSpotVerify();
+        }
       } else {
         this.modules.forEach((module) => {
           if (module.hot.hmrConfig?.isDirty()) {
