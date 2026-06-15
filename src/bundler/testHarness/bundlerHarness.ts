@@ -58,6 +58,43 @@ const REACT_REFRESH_RUNTIME_STUB =
   'isLikelyComponentType(){ return false; }, getFamilyByType(){}, setSignature(){}, ' +
   'collectCustomHooksForSignature(){} };';
 
+/** An EVALUATE fixture whose entry records a global side effect, so a test can assert
+ *  the compiled graph actually EXECUTED (and resolved its import) — not just compiled.
+ *  Re-editing `answer` + recompiling lets a test assert the edit is picked up. */
+export const EVAL_FIXTURE: Record<string, string> = {
+  'package.json': JSON.stringify({ name: 'eval-fixture', main: 'src/main' }),
+  'index.html': '<!doctype html><div id="root"></div>',
+  'src/main.ts':
+    "import answer from './answer';\n" +
+    "(globalThis as Record<string, unknown>).__evalResult = answer + 1;\n" +
+    'export default 1;\n',
+  'src/answer.ts': 'const answer: number = 41;\nexport default answer;\n',
+};
+
+/** Install the minimal browser globals the bundler's `evaluate()` reads at run time
+ *  (the compiled app + the react-refresh runtime touch `location`/`window`/`document`).
+ *  Returns a restore fn — the jest node env has none of these, and leaving `window`
+ *  defined would change `typeof window` for other suites. */
+export function installEvalGlobals(): () => void {
+  const g = globalThis as Record<string, unknown>;
+  const prev = { location: g.location, window: g.window, document: g.document };
+  g.location = { href: 'http://localhost/', protocol: 'http:', host: 'localhost', pathname: '/', search: '', hash: '', origin: 'http://localhost', reload() {} };
+  g.window = globalThis;
+  g.document = {
+    createElement: () => ({ setAttribute() {}, appendChild() {}, style: {} }),
+    head: { appendChild() {} },
+    body: { appendChild() {} },
+    getElementById: () => null,
+    querySelector: () => null,
+    createTextNode: () => ({}),
+  };
+  return () => {
+    g.location = prev.location;
+    g.window = prev.window;
+    g.document = prev.document;
+  };
+}
+
 const stub = <T,>(): T => ({}) as unknown as T;
 
 export interface BundlerHarness extends BundlerFsHarness {
