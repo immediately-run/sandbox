@@ -105,6 +105,11 @@ export class Module {
     this.compiled = null;
     this.evaluation = null;
 
+    // §5.3 reset-delete: drop any `/transpiled/<path>.js` for this module so an
+    // invalidated module can never resurrect stale output. The async unlink is
+    // tracked by the store; a queued re-transform's consult awaits it.
+    this.bundler.artifactStore.invalidate(this.filepath);
+
     if (this.hot.hmrConfig && this.hot.hmrConfig.isHot()) {
       this.hot.hmrConfig.setDirty(true);
     } else {
