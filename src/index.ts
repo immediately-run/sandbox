@@ -291,6 +291,10 @@ class SandpackInstance {
     this.bundler.setSdkIntegrity(initConfig.sdkIntegrity);
     // The §5.2 dirty set: paths the seeding path must never seed from artifacts.
     this.bundler.setDirtyPaths(initConfig.dirtyPaths);
+    // The §5.7 parent distrust mark: treat this zip's artifact section as absent.
+    if (initConfig.distrustArtifacts) {
+      this.bundler.artifactStore.markDistrusted();
+    }
 
     // Kick off the initial compile.
     this.compileDebouncer.debounce(() => this.runCompile());
