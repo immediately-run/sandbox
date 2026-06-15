@@ -293,7 +293,7 @@ describe('resolve', () => {
         isFile,
         readFile,
       });
-      expect(resolved).toBe('//empty.js');
+      expect(resolved).toBe('/empty.js');
     });
 
     it('should only resolve package.browser: false if ', () => {
@@ -311,7 +311,7 @@ describe('resolve', () => {
         isFile,
         readFile,
       });
-      expect(exactResolved).toBe('//empty.js');
+      expect(exactResolved).toBe('/empty.js');
     });
   });
 
@@ -373,7 +373,7 @@ describe('resolve', () => {
         isFile,
         readFile,
       });
-      expect(resolved).toBe('//empty.js');
+      expect(resolved).toBe('/empty.js');
     });
   });
 
@@ -446,7 +446,7 @@ describe('resolve', () => {
         isFile,
         readFile,
       });
-      expect(resolved).toBe('//empty.js');
+      expect(resolved).toBe('/empty.js');
     });
 
     it('should not load exports from the root package.json', () => {
