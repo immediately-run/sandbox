@@ -127,6 +127,17 @@ export class CachedFS {
     this.isFileCache.set(path, true);
   }
 
+  /**
+   * Delete a file from the bound context (used to drop `/transpiled/<path>.js` on
+   * `resetCompilation`, PRETRANSPILED_ARTIFACTS_SPEC §5.3) and update the memo.
+   * Tolerates a missing file (the entry may never have been written through).
+   */
+  async deleteFile(path: string): Promise<void> {
+    await this.boundContext.fs.promises.unlink(path).catch(() => undefined);
+    this.fileCache.delete(path);
+    this.isFileCache.set(path, false);
+  }
+
   async readFileAsync(path: string): Promise<string> {
     const cached = this.fileCache.get(path);
     if (cached !== undefined) {

@@ -9,6 +9,9 @@ import { EditorContextService } from '../editor/EditorContextService';
 import { CatalogService } from '../catalog/CatalogService';
 import { MountService } from '../mounts/MountService';
 import { APP_ROOT, MANIFEST_SIDECAR_PATH, underAppRoot, stripAppRoot } from '../fsLayout';
+import { isTransformable } from '@immediately-run/transpiler';
+import { ArtifactStore } from './artifacts/artifactStore';
+import { getEmbeddedToolchain } from './artifacts/embeddedToolchain';
 import { BundlerStatus } from '../protocol/message-types';
 import { ResolverCache, resolveAsync } from '../resolver/resolver';
 import { resolveSelfHostVersion, fetchVendoredModule, SelfHostResolutionError } from './registryResolvedModules';
@@ -159,6 +162,8 @@ export class Bundler {
   mounts: MountService;
 
   fs: CachedFS;
+  /** Pre-transpiled artifact seeding/consult/write-through (§5.1, §5.3). */
+  artifactStore: ArtifactStore;
   moduleRegistry: ModuleRegistry;
 
   parsedPackageJSON: IPackageJSON | null = null;
@@ -232,6 +237,7 @@ export class Bundler {
     // first compile; dynamic mounts (`/firestore`) appear as siblings. Repo-relative
     // reads below are anchored to `APP_ROOT` explicitly.
     this.fs = new CachedFS(bindContext({ root: '/', pwd: '/' }));
+    this.artifactStore = new ArtifactStore(this.fs, getEmbeddedToolchain());
     this.messageBus = options.messageBus;
     this.auth = options.auth;
     this.theme = options.theme;
@@ -501,12 +507,34 @@ export class Bundler {
         module.source = await this.fs.readFileAsync(path);
       }
     } else {
+      // §5.3 consult: a covered app source may already be transpiled in
+      // `/transpiled` (seeded at boot, or written through earlier this session). A
+      // HIT skips the Babel chain entirely — a seeded module is never transpiled
+      // live (the §9 "zero babel transforms" criterion). Continue graph traversal
+      // from the index's deps exactly as a precompiled CDN module does.
+      if (isTransformable(path)) {
+        const hit = await this.artifactStore.consult(path);
+        if (hit) {
+          const seededModule = new Module(path, hit.content, true, this);
+          this.modules.set(path, seededModule);
+          await Promise.all(hit.deps.map((dep) => seededModule.addDependency(dep)));
+          for (const dep of seededModule.dependencies) {
+            this.transformModule(dep);
+          }
+          return seededModule;
+        }
+      }
       const content = await this.fs.readFileAsync(path);
       module = new Module(path, content, false, this);
       this.modules.set(path, module);
     }
     this.refreshMetadata(path, module.source);
     await module.compile();
+    // §5.3 write-through: cache a live-transpiled covered source so an in-session
+    // re-read that didn't reset THIS module hits the tmpfs instead of the chain.
+    if (module.compiled != null && module.compilationError == null && isTransformable(path)) {
+      await this.artifactStore.writeThrough(path, module.compiled, [...module.dependencyMap.keys()]);
+    }
     for (let dep of module.dependencies) {
       const resolvedDependency = await this.resolveAsync(dep, module.filepath);
       this.transformModule(resolvedDependency);
@@ -898,6 +926,23 @@ export class Bundler {
       for (const runtime of this.runtimes) {
         await this.transformModule(runtime);
         await this.moduleFinishedPromise(runtime);
+      }
+    }
+
+    // §5.1 seed `/transpiled` from the cache zip's pre-transpiled artifacts before
+    // entrypoint traversal, so covered sources are consulted (not transpiled)
+    // below. Absent/invalid/stamp-mismatched artifacts are a no-op (live boot).
+    if (this.isFirstLoad) {
+      const seedResult = await this.artifactStore.seed({
+        dirtySet: this.dirtyPaths,
+        writableLayer: this.dirtyPaths,
+      });
+      if (seedResult.securityReject) {
+        // §8.14: a seeding input was present in the writable layer — the whole
+        // section is rejected (live transpile for everything this session).
+        logger.warn(`Artifact seeding rejected (${seedResult.securityReject}); live transpiling.`);
+      } else if (seedResult.seeded > 0) {
+        logger.debug(`Seeded ${seedResult.seeded} pre-transpiled artifacts into /transpiled`);
       }
     }
 
