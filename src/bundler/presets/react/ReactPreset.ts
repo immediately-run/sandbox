@@ -1,3 +1,8 @@
+import {
+  augmentDependencies as augmentReactDependencies,
+  PLAIN_BABEL_CONFIG,
+  REACT_REFRESH_BABEL_CONFIG,
+} from '@immediately-run/transpiler';
 import { Bundler } from '../../bundler';
 import { DepMap } from '../../module-registry';
 import { Module } from '../../module/Module';
@@ -37,23 +42,7 @@ export class ReactPreset extends Preset {
   mapTransformers(module: Module): Array<[string, any]> {
     if (/^(?!\/node_modules\/).*\.(((m|c)?jsx?)|tsx|mdx?)$/i.test(module.filepath)) {
       const transfomers: Array<[string, any]> = [
-        [
-          'babel-transformer',
-          {
-            presets: [
-              [
-                'react',
-                {
-                  runtime: 'automatic',
-                },
-              ],
-            ],
-            plugins: [
-              ['react-refresh/babel', { skipEnvCheck: true }],
-              '@babel/plugin-proposal-explicit-resource-management',
-            ],
-          },
-        ],
+        ['babel-transformer', REACT_REFRESH_BABEL_CONFIG],
         ['react-refresh-transformer', {}],
       ];
       if (/.*\.(mdx?)$/i.test(module.filepath)) {
@@ -63,21 +52,7 @@ export class ReactPreset extends Preset {
     }
 
     if (/\.(m|c)?(t|j)sx?$/.test(module.filepath) && !module.filepath.endsWith('.d.ts')) {
-      return [
-        [
-          'babel-transformer',
-          {
-            presets: [
-              [
-                'react',
-                {
-                  runtime: 'automatic',
-                },
-              ],
-            ],
-          },
-        ],
-      ];
+      return [['babel-transformer', PLAIN_BABEL_CONFIG]];
     }
 
     if (/\.css$/.test(module.filepath)) {
@@ -95,11 +70,6 @@ export class ReactPreset extends Preset {
   }
 
   augmentDependencies(dependencies: DepMap): DepMap {
-    if (!dependencies['react-refresh']) {
-      dependencies['react-refresh'] = '^0.11.0';
-    }
-    dependencies['core-js'] = '3.22.7';
-    dependencies['react-error-boundary'] = '^6.1.0';
-    return dependencies;
+    return augmentReactDependencies(dependencies);
   }
 }
