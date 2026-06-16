@@ -24,6 +24,7 @@ import * as logger from '../utils/logger';
 import { NamedPromiseQueue } from '../utils/NamedPromiseQueue';
 import { nullthrows } from '../utils/nullthrows';
 import { ModuleRegistry } from './module-registry';
+import { resolveFromCdnLayout } from './module-registry/cdnLayoutResolve';
 import { LocksetSection, validateLockset } from './module-registry/lockset';
 import { collectLocalEntrySideEffects } from './sideEffectImports';
 import { Module } from './module/Module';
@@ -179,6 +180,12 @@ export class Bundler {
   // dir resolve a given specifier identically: keying by dirname dedups them. Reset
   // per compile alongside resolverCache, so edits get fresh resolution.
   resolutionCache: Map<string, Promise<string>> = new Map();
+  // R3-49d CDN-layout fast path: per-package alias-eligibility verdict (immutable
+  // for the closure) + fast-hit/fall-through counters (diagnostic, logged once at
+  // boot). Reset per compile alongside the resolution caches.
+  private cdnLayoutEligibility: Map<string, boolean> = new Map();
+  private cdnFastHits = 0;
+  private cdnFallThroughs = 0;
   // Filepaths of modules whose evaluation is in progress (synchronous require
   // chain), used by Module.evaluate to detect import cycles instead of
   // recursing into a stack overflow.
@@ -498,6 +505,24 @@ export class Bundler {
     const key = `${dirname(filename)}\0${specifier}\0${extensions.join(',')}`;
     const cached = this.resolutionCache.get(key);
     if (cached) return cached;
+    // R3-49d: resolve relative imports inside precompiled node_modules packages
+    // directly from the CDN module layout, skipping the resolution algorithm
+    // entirely. Null = the fast path can't/shouldn't handle it → fall through to
+    // the full resolver below (correctness degrades gracefully, never breaks).
+    const fast = resolveFromCdnLayout(
+      specifier,
+      filename,
+      extensions,
+      this.moduleRegistry.modules,
+      this.cdnLayoutEligibility,
+    );
+    if (fast !== null) {
+      this.cdnFastHits++;
+      const fastPromise = Promise.resolve(fast);
+      this.resolutionCache.set(key, fastPromise);
+      return fastPromise;
+    }
+    this.cdnFallThroughs++;
     const promise = resolveAsync(specifier, {
       filename,
       extensions,
@@ -922,6 +947,9 @@ export class Bundler {
     // Reset resolver cache
     this.resolverCache = new Map();
     this.resolutionCache = new Map();
+    this.cdnLayoutEligibility = new Map();
+    this.cdnFastHits = 0;
+    this.cdnFallThroughs = 0;
     this.fs.resetCache();
 
     let changedFiles: string[] = [];
@@ -1009,6 +1037,10 @@ export class Bundler {
         const breakdown = bootPhases.map(([n, ms]) => `${n} ${ms}ms`).join(' · ');
         // eslint-disable-next-line no-console
         console.info(`[ir-perf:boot] ${breakdown} → ir.deps (Σ ${total}ms)`);
+        // R3-49d: CDN-layout fast-path coverage (fast hits skip resolveAsync;
+        // fall-throughs ran the full resolver).
+        // eslint-disable-next-line no-console
+        console.info(`[ir-perf:cdn-resolve] fastHits ${this.cdnFastHits} · fallThroughs ${this.cdnFallThroughs}`);
       }
 
       // ir.deps (R3-46): node-module resolution finished. depCount is the declared
