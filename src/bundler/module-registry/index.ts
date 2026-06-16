@@ -4,7 +4,13 @@ import { Bundler } from '../bundler';
 import { Module } from '../module/Module';
 import { filterBuildDeps } from './build-dep';
 import { depMapsEqual, locksetClosureValid, LocksetSection } from './lockset';
-import { ICDNModuleFile, IResolvedDependency, fetchManifest, fetchModule } from './module-cdn';
+import { ICDNModule, ICDNModuleFile, IResolvedDependency, fetchManifest, fetchModule } from './module-cdn';
+import {
+  bundledIndexPath,
+  bundledPackagePath,
+  decodeBundledModule,
+  parseBundledIndex,
+} from './bundledPackages';
 import { NodeModule } from './NodeModule';
 
 // dependency => version range
@@ -16,10 +22,43 @@ export class ModuleRegistry {
 
   manifest: IResolvedDependency[] = [];
 
+  // Bundled-package index (R3-49a): `name@version` → in-zip filename. `undefined`
+  // = not yet loaded; `null` = no bundle present / malformed (resolve live).
+  private bundledIndex: Map<string, string> | null | undefined = undefined;
+
   bundler: Bundler;
 
   constructor(bundler: Bundler) {
     this.bundler = bundler;
+  }
+
+  // Load the bundled-package index once from the mounted zip. Never throws: a
+  // missing/unreadable/malformed index just means "no bundled packages" and every
+  // dependency resolves live from the CDN exactly as before.
+  private async ensureBundledIndex(): Promise<Map<string, string> | null> {
+    if (this.bundledIndex !== undefined) return this.bundledIndex;
+    try {
+      this.bundledIndex = parseBundledIndex(await this.bundler.fs.readFileAsync(bundledIndexPath()));
+    } catch {
+      this.bundledIndex = null;
+    }
+    return this.bundledIndex;
+  }
+
+  // Return the bundled `ICDNModule` for a package if one is present in the zip,
+  // else null (→ live CDN fetch). A read/decode failure falls back to the CDN too,
+  // so a corrupt bundle degrades to the old path rather than breaking the boot.
+  private async _fetchBundledModule(name: string, version: string): Promise<ICDNModule | null> {
+    const relPath = (await this.ensureBundledIndex())?.get(`${name}@${version}`);
+    if (!relPath) return null;
+    try {
+      const module = decodeBundledModule(await this.bundler.fs.readBytesAsync(bundledPackagePath(relPath)));
+      logger.debug('using bundled package (R3-49a), skipping CDN fetch', name, version);
+      return module;
+    } catch (err) {
+      logger.warn('bundled package read failed; falling back to CDN', name, version, err);
+      return null;
+    }
   }
 
   async fetchManifest(deps: DepMap, shouldFilterBuildDeps = true, lockset?: LocksetSection): Promise<void> {
@@ -68,7 +107,8 @@ export class ModuleRegistry {
   }
 
   private async _fetchModule(name: string, version: string): Promise<NodeModule> {
-    const module = await fetchModule(name, version);
+    // Prefer the zip-bundled content (R3-49a); fall back to the live CDN fetch.
+    const module = (await this._fetchBundledModule(name, version)) ?? (await fetchModule(name, version));
     const processedNodeModule = new NodeModule(name, version, module.f, module.m);
     this.modules.set(name, processedNodeModule);
     logger.debug('fetched module', name, version, module);
