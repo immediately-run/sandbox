@@ -861,6 +861,16 @@ export class Bundler {
       throw new BundlerError('Cannot compile before preset has been initialized');
     }
 
+    // ir.sandbox.boot (R3-46, LOAD_PROFILING_SPEC §3 phase 3): the sandbox is
+    // constructed + preset-initialized and the FIRST compile is beginning. This is
+    // the earliest in-sandbox instant the bus is guaranteed live, so it brackets
+    // "iframe create → ready" (ir.open → here) from the compile-prep + node-module
+    // load that follows (here → ir.deps) — the stretch where cold boot spends most
+    // of its time. Only on the first load; incremental recompiles are not boot.
+    if (this.isFirstLoad) {
+      emitPerfMarker(this.messageBus, 'ir.sandbox.boot');
+    }
+
     // Ensure the bundler-owned mounts (`/node_modules`, `/transpiled`) exist before
     // the first read/write. Idempotent — `index.ts` already calls this after
     // construction; this guard covers the harness path (and any direct `compile()`).
