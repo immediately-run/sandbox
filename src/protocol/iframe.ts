@@ -47,6 +47,9 @@ export class IFrameParentMessageBus {
         dirtyPaths: data.dirtyPaths,
         // The §5.7 distrust mark for this (coords, commitSha).
         distrustArtifacts: data.distrustArtifacts,
+        // R3-49b batch-hydration snapshot of the mounted tree; absent until the
+        // host wires delivery.
+        fsSnapshot: data.fsSnapshot,
       };
       this.initConfig = config;
       const configResolvers = this.initConfigResolvers;

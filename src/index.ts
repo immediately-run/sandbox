@@ -295,6 +295,15 @@ class SandpackInstance {
     if (initConfig.distrustArtifacts) {
       this.bundler.artifactStore.markDistrusted();
     }
+    // R3-49b ZenFS batch hydration: warm the bundler's read caches from the host's
+    // bulk snapshot BEFORE the first compile, so `/app` source + bundled
+    // `/node_modules` packages are read from memory instead of one Port round-trip
+    // per file (loadNodeModules — ~99% of cold boot). Coherence is unchanged: a
+    // later edit invalidates the entry via the relayed `fs-change`/`markChanged`.
+    if (initConfig.fsSnapshot?.length) {
+      const n = this.bundler.fs.hydrate(initConfig.fsSnapshot);
+      logger.debug(`[ir-perf:hydrate] warmed ${n} files from the host snapshot`);
+    }
 
     // Kick off the initial compile.
     this.compileDebouncer.debounce(() => this.runCompile());
