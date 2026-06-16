@@ -66,7 +66,9 @@ describe('CachedFS (G0-2 — read memoization + change invalidation)', () => {
 
   it('memoizes a not-found: repeated reads of a missing file throw without re-hitting the backend', async () => {
     const readFile = jest.fn(async () => {
-      throw new Error('ENOENT');
+      // A genuine filesystem not-found carries `code: 'ENOENT'` (kerium/zenfs errno);
+      // only such errors are negatively memoized (a transient error must not poison).
+      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
     });
     const { context } = makeContext({ readFile });
     const fs = new CachedFS(context);
@@ -75,6 +77,39 @@ describe('CachedFS (G0-2 — read memoization + change invalidation)', () => {
     await expect(fs.readFileAsync('/missing.js')).rejects.toThrow('not found'); // isFileCache=false short-circuit
 
     expect(readFile).toHaveBeenCalledTimes(1);
+  });
+
+  it('does NOT negatively cache a transient (non-ENOENT) error — a later read retries and succeeds', async () => {
+    // Reproduces the R3-49d failure mode: a zenfs detached-ArrayBuffer TypeError under
+    // concurrent reads must not permanently mark an existing file as missing.
+    let calls = 0;
+    const readFile = jest.fn(async () => {
+      calls++;
+      if (calls === 1) throw new TypeError('Cannot perform Construct on a detached ArrayBuffer');
+      return 'RECOVERED';
+    });
+    const { context } = makeContext({ readFile });
+    const fs = new CachedFS(context);
+
+    await expect(fs.readFileAsync('/flaky.js')).rejects.toThrow('detached');
+    // NOT short-circuited as "not found" — the retry actually hits the backend again.
+    expect(await fs.readFileAsync('/flaky.js')).toBe('RECOVERED');
+    expect(readFile).toHaveBeenCalledTimes(2);
+  });
+
+  it('dedupes concurrent reads of the same path into one backend round-trip', async () => {
+    let resolveRead: ((v: string) => void) | null = null;
+    const readFile = jest.fn(() => new Promise<string>((res) => { resolveRead = res; }));
+    const { context } = makeContext({ readFile });
+    const fs = new CachedFS(context);
+
+    const a = fs.readFileAsync('/shared.js');
+    const b = fs.readFileAsync('/shared.js');
+    resolveRead!('CONTENT');
+
+    expect(await a).toBe('CONTENT');
+    expect(await b).toBe('CONTENT');
+    expect(readFile).toHaveBeenCalledTimes(1); // one shared in-flight read
   });
 
   it('markChanged invalidates the cache, queues the path, and fires onFileChanged', async () => {
