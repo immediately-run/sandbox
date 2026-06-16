@@ -186,3 +186,61 @@ describe('CachedFS (G0-2 — read memoization + change invalidation)', () => {
     expect(readFile).not.toHaveBeenCalled();
   });
 });
+
+describe('CachedFS — batch hydration (R3-49b)', () => {
+  it('serves a hydrated text file from memory with no Port round-trip', async () => {
+    const { context, readFile } = makeContext();
+    const fs = new CachedFS(context);
+
+    const n = fs.hydrate([{ path: '/app/src/App.tsx', content: 'export const App = 1;' }]);
+    expect(n).toBe(1);
+
+    expect(await fs.readFileAsync('/app/src/App.tsx')).toBe('export const App = 1;');
+    expect(await fs.isFileAsync('/app/src/App.tsx')).toBe(true);
+    expect(readFile).not.toHaveBeenCalled(); // never crossed the Port
+  });
+
+  it('serves a hydrated binary file (bundled package msgpack) from memory', async () => {
+    const { context, readFile } = makeContext();
+    const fs = new CachedFS(context);
+    const bytes = new Uint8Array([1, 2, 3, 4]);
+
+    fs.hydrate([{ path: '/app/.tinkerable/packages/react.msgpack', content: bytes }]);
+
+    expect(await fs.readBytesAsync('/app/.tinkerable/packages/react.msgpack')).toBe(bytes);
+    expect(readFile).not.toHaveBeenCalled();
+  });
+
+  it('normalizes a leading-slash-less hydrated path', async () => {
+    const { context } = makeContext();
+    const fs = new CachedFS(context);
+    fs.hydrate([{ path: 'app/x.ts', content: 'x' }]);
+    expect(await fs.readFileAsync('/app/x.ts')).toBe('x');
+  });
+
+  it('invalidates a hydrated entry on markChanged — the next read crosses the Port', async () => {
+    const readFile = jest.fn(async () => 'EDITED');
+    const { context } = makeContext({ readFile });
+    const fs = new CachedFS(context);
+
+    fs.hydrate([{ path: '/app/src/App.tsx', content: 'ORIGINAL' }]);
+    expect(await fs.readFileAsync('/app/src/App.tsx')).toBe('ORIGINAL');
+    expect(readFile).not.toHaveBeenCalled();
+
+    fs.markChanged(['/app/src/App.tsx']); // parent-relayed edit
+    expect(await fs.readFileAsync('/app/src/App.tsx')).toBe('EDITED');
+    expect(readFile).toHaveBeenCalledTimes(1); // re-read from the Port after invalidation
+  });
+
+  it('invalidates a hydrated binary entry on markChanged', async () => {
+    const readFile = jest.fn(async () => new Uint8Array([9]));
+    const { context } = makeContext({ readFile });
+    const fs = new CachedFS(context);
+
+    fs.hydrate([{ path: '/app/pkg.msgpack', content: new Uint8Array([1]) }]);
+    expect(await fs.readBytesAsync('/app/pkg.msgpack')).toEqual(new Uint8Array([1]));
+    fs.markChanged(['/app/pkg.msgpack']);
+    expect(await fs.readBytesAsync('/app/pkg.msgpack')).toEqual(new Uint8Array([9]));
+    expect(readFile).toHaveBeenCalledTimes(1);
+  });
+});
