@@ -302,7 +302,10 @@ class SandpackInstance {
     // later edit invalidates the entry via the relayed `fs-change`/`markChanged`.
     if (initConfig.fsSnapshot?.length) {
       const n = this.bundler.fs.hydrate(initConfig.fsSnapshot);
-      logger.debug(`[ir-perf:hydrate] warmed ${n} files from the host snapshot`);
+      // console.info (not logger.debug): visible regardless of Sandpack log level,
+      // matching the host [ir-perf:hydrate]/[ir-perf:boot] perf-log convention.
+      // eslint-disable-next-line no-console
+      console.info(`[ir-perf:hydrate] warmed ${n} files from the host snapshot`);
     }
 
     // Kick off the initial compile.
