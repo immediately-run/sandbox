@@ -22,7 +22,7 @@ import { REQUEST_FORM_FACTOR_MESSAGE } from './formFactor/formFactorState';
 // from the SDK at build time (scripts/gen-sdk-versions.mjs) rather than imported
 // from the package — no need to drag the SDK barrel into the bundle or take a
 // build-time dependency on its built dist/.
-import { SDK_VERSION, SDK_PROTOCOL_VERSION } from './generated/sdkVersions';
+import { SDK_PROTOCOL_VERSION } from './generated/sdkVersions';
 import { MountService } from './mounts/MountService';
 import {
   MOUNT_ADD_MESSAGE,
@@ -300,11 +300,13 @@ class SandpackInstance {
     this.compileDebouncer.debounce(() => this.runCompile());
   }
 
-  // SDK_PACKAGING_SPEC §6 — announce the (vendored) SDK version + protocol to the
-  // host so it can record + version-check (T45).
+  // SDK_PACKAGING_SPEC §6 — announce the wire protocol the SDK speaks so the host
+  // can version-check it (T45). The SDK *package* version is deliberately NOT sent:
+  // it gated nothing (the protocol is the compatibility contract) and, baked from
+  // the sandbox's build-time SDK checkout, it didn't even reflect the per-app SDK
+  // version that actually resolved (resolveSelfHostVersion).
   private announceHandshake() {
     this.messageBus.sendMessage('sdk-handshake', {
-      sdkVersion: SDK_VERSION,
       protocolVersion: SDK_PROTOCOL_VERSION,
     });
   }

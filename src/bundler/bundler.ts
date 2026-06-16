@@ -58,7 +58,7 @@ const SELF_HOST_BASES: Record<string, string> = {
 // specifier fails closed instead, see resolveSelfHostVersion). Must be a
 // version the SDK release CI has published to `/v/<version>/`. Bump on SDK
 // releases.
-const DEFAULT_SDK_VERSION = '0.4.0';
+const DEFAULT_SDK_VERSION = '0.11.0';
 
 // Oldest version each self-hosted module may pin (SDK_PACKAGING_SPEC §5.1(b)).
 // Pins below the floor fail closed at resolve time: 0.2.7 ships a fatal
