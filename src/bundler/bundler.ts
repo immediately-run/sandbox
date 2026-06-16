@@ -31,7 +31,7 @@ import { Preset } from './presets/Preset';
 import { getPreset } from './presets/registry';
 import { emitPerfMarker } from './perfMarkers';
 import { retryFetch, registerImmutableUrlPrefix } from '../utils/fetch'
-import { basename } from '../utils/path'
+import { basename, dirname } from '../utils/path'
 import { FrontmatterParseResult, parseFrontmatter } from './frontmatter';
 import { bindContext, globToRegex, CopyOnWrite, InMemory, mount, resolveMountConfig, fs as zenfs } from '@zenfs/core';
 
@@ -171,6 +171,14 @@ export class Bundler {
   modules: Map<string, Module> = new Map();
   transformationQueue: TransformationQueue;
   resolverCache: ResolverCache = new Map();
+  // Resolution-RESULT cache (specifier+dir → resolved path), distinct from
+  // resolverCache (which memoizes package.json/tsconfig *content*, not results).
+  // The resolution algorithm is the cold-boot cost — ~3k resolveAsync calls over the
+  // precompiled node_modules closure, each re-running candidate generation + probes
+  // even with cached reads. Node resolution is dir-relative, so two files in the same
+  // dir resolve a given specifier identically: keying by dirname dedups them. Reset
+  // per compile alongside resolverCache, so edits get fresh resolution.
+  resolutionCache: Map<string, Promise<string>> = new Map();
   // Filepaths of modules whose evaluation is in progress (synchronous require
   // chain), used by Module.evaluate to detect import cycles instead of
   // recursing into a stack overflow.
@@ -333,6 +341,7 @@ export class Bundler {
     this.preset = undefined;
     this.modules = new Map();
     this.resolverCache = new Map();
+    this.resolutionCache = new Map();
   }
 
   async initPreset(preset: string): Promise<void> {
@@ -479,15 +488,27 @@ export class Bundler {
     filename: string,
     extensions: string[] = ['.js', '.jsx', '.mjs', '.cjs', '.ts', '.tsx', '.mdx']
   ): Promise<string> {
+    // Resolution result is a pure function of (specifier, the dir chain from
+    // `filename` up, extensions) for the FS snapshot of this compile — node
+    // resolution is dir-relative, so two files in the same dir resolve a specifier
+    // identically. Memoize on that key to avoid re-running the algorithm for every
+    // edge across the closure (the cold-boot cost). Cache the promise so concurrent
+    // identical resolutions share one run; drop it on rejection so a miss isn't
+    // cached as a permanent failure.
+    const key = `${dirname(filename)}\0${specifier}\0${extensions.join(',')}`;
+    const cached = this.resolutionCache.get(key);
+    if (cached) return cached;
+    const promise = resolveAsync(specifier, {
+      filename,
+      extensions,
+      isFile: this.fs.isFile,
+      readFile: this.fs.readFile,
+      resolverCache: this.resolverCache,
+    });
+    this.resolutionCache.set(key, promise);
+    promise.catch(() => this.resolutionCache.delete(key));
     try {
-      const resolved = await resolveAsync(specifier, {
-        filename,
-        extensions,
-        isFile: this.fs.isFile,
-        readFile: this.fs.readFile,
-        resolverCache: this.resolverCache,
-      });
-      return resolved;
+      return await promise;
     } catch (err) {
       // Resolution failure is re-thrown for the caller to handle. Some callers
       // probe for *optional* files (e.g. the `src/main`/`main` local-entry
@@ -900,6 +921,7 @@ export class Bundler {
     // TODO: Have more fine-grained cache invalidation for the resolver
     // Reset resolver cache
     this.resolverCache = new Map();
+    this.resolutionCache = new Map();
     this.fs.resetCache();
 
     let changedFiles: string[] = [];
