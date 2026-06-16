@@ -92,11 +92,10 @@ describe('RawCjsTransformer', () => {
     // Modern syntax preset-env WOULD lower (optional chaining) — proving no transpile.
     const code = 'var react=require("react");var s=require("scheduler");module.exports=react?.render;';
     const result = await new RawCjsTransformer().transform({ module: mod('/node_modules/react-dom/index.js', code), code });
-    if ('code' in result) {
-      expect(result.code).toBe(code);
-      expect([...result.dependencies]).toEqual(['react', 'scheduler']);
-    } else {
+    if (!('dependencies' in result)) {
       throw new Error('expected a transpilation result, got a BundlerError');
     }
+    expect(result.code).toBe(code);
+    expect([...result.dependencies]).toEqual(['react', 'scheduler']);
   });
 });
