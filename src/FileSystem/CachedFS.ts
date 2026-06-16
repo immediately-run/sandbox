@@ -160,6 +160,14 @@ export class CachedFS {
     }
   }
 
+  /** Read a file as raw bytes (no utf8 decode) — for binary payloads such as the
+   *  bundled `/package/` msgpack (R3-49a). Not memoized in the string `fileCache`
+   *  (these are read once at boot). */
+  async readBytesAsync(path: string): Promise<Uint8Array> {
+    const content = await this.boundContext.fs.promises.readFile(path);
+    return content as unknown as Uint8Array;
+  }
+
   async isFileAsync(path: string): Promise<boolean> {
     if (this.fileCache.has(path)) {
       return true;
