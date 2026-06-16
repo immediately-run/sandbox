@@ -489,9 +489,15 @@ export class Bundler {
       });
       return resolved;
     } catch (err) {
-      logger.error(err);
-      logger.error(Array.from(this.modules));
-      // logger.error(Array.from(this.fs.files));
+      // Resolution failure is re-thrown for the caller to handle. Some callers
+      // probe for *optional* files (e.g. the `src/main`/`main` local-entry
+      // convention in collectLocalEntrySideEffects) and catch this as expected
+      // control flow — so logging at `error` here spams the console (and the
+      // operator security-events stream) for a non-error. Genuine unresolved
+      // imports on the compile path are surfaced + logged at the compile
+      // boundary (runCompile's catch → show-error overlay). Keep the resolver
+      // trace at `debug` only.
+      logger.debug('resolveAsync failed', err);
       throw err;
     }
   }
