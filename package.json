@@ -82,6 +82,7 @@
     "remark-gfm": "^4.0.1",
     "settle-promise": "^1.0.0",
     "solid-refresh": "^0.4.0",
+    "source-map": "^0.6.1",
     "strip-json-comments": "^4.0.0",
     "unified": "^11.0.5",
     "url-join": "^5.0.0",
