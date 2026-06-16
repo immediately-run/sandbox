@@ -11,9 +11,9 @@ import { underAppRoot } from '../../fsLayout';
 import type { ICDNModule } from './module-cdn';
 
 // In-zip layout written by the CLI (mirrors immediately-run-cli/src/commands/cacheZip).
-// NB: still under `.tinkerable/` — the planned `.immediately.run/` rename moves the
-// whole sidecar (manifest + artifacts + packages) together, so this constant tracks it.
-export const BUNDLED_PACKAGES_DIR = '.tinkerable/packages';
+// The whole platform sidecar (manifest + artifacts + packages) lives under
+// `.immediately.run/` (renamed from `.tinkerable/`); this constant tracks it.
+export const BUNDLED_PACKAGES_DIR = '.immediately.run/packages';
 
 /** App-rooted path of the bundled-package index (`{cdnVersion, packages:[{n,v,key,path}]}`). */
 export const bundledIndexPath = (): string => underAppRoot(`/${BUNDLED_PACKAGES_DIR}/index.json`);

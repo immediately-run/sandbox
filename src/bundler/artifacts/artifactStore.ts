@@ -92,7 +92,7 @@ export class ArtifactStore {
   ) {}
 
   /**
-   * Seed `/transpiled` from `/app/.tinkerable/artifacts/index.json` (§5.1). Returns
+   * Seed `/transpiled` from `/app/.immediately.run/artifacts/index.json` (§5.1). Returns
    * the count seeded; a no-op (0) when the index is absent/invalid, the toolchain
    * stamp mismatches, or the readable-layer-only gate fails. Per-file failures
    * (dirty, srcSha mismatch, bad path, …) skip just that file (§5.5).
@@ -118,7 +118,7 @@ export class ArtifactStore {
     // rejects the WHOLE section (a planted artifact could survive a clean Refresh).
     const seedingInputs = [INDEX_REPO_PATH, MANIFEST_SIDECAR_PATH];
     for (const entry of Object.values(index.files)) {
-      // `entry.out` is relative to `.tinkerable/artifacts/`; confine it (a `..`
+      // `entry.out` is relative to `.immediately.run/artifacts/`; confine it (a `..`
       // entry can't reach a writable-layer file outside the dir) then take its
       // repo-relative form `/<confined>`.
       const confined = outWithinArtifacts(entry.out);
@@ -135,7 +135,7 @@ export class ArtifactStore {
       if (!v.ok) continue;
       let content: string;
       try {
-        // v.out is the confined `.tinkerable/artifacts/...` path; read it from /app.
+        // v.out is the confined `.immediately.run/artifacts/...` path; read it from /app.
         content = await this.fs.readFileAsync(underAppRoot(`/${v.out}`));
       } catch {
         continue;

@@ -20,12 +20,12 @@ const genuineArtifact = async (): Promise<string> => {
 const fixtureWith = (artifactContent: string): Record<string, string> => ({
   'package.json': JSON.stringify({ name: 'g26', main: 'src/util.ts' }),
   'src/util.ts': UTIL_SOURCE,
-  '.tinkerable/contribute-manifest.json': JSON.stringify({
+  '.immediately.run/contribute-manifest.json': JSON.stringify({
     schemaVersion: 1,
     commitSha: COMMIT,
     entries: [{ path: 'src/util.ts', sha: 'sha-util', type: 'blob' }],
   }),
-  '.tinkerable/artifacts/index.json': JSON.stringify({
+  '.immediately.run/artifacts/index.json': JSON.stringify({
     schemaVersion: 1,
     toolchain: {
       transpiler: '@immediately-run/transpiler',
@@ -35,7 +35,7 @@ const fixtureWith = (artifactContent: string): Record<string, string> => ({
     },
     files: { '/src/util.ts': { srcSha: 'sha-util', out: 'transpiled/src/util.ts.js', deps: [] } },
   }),
-  '.tinkerable/artifacts/transpiled/src/util.ts.js': artifactContent,
+  '.immediately.run/artifacts/transpiled/src/util.ts.js': artifactContent,
 });
 
 describe('G2-6 spot-verification', () => {
