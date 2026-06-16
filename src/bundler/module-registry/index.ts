@@ -143,9 +143,14 @@ export class ModuleRegistry {
     return file.d.map((dep) => {
       return async () => {
         await module.addDependency(dep);
-
-        for (let dep of module.dependencies) {
-          this.bundler.transformModule(dep);
+        // Transform ONLY the dependency just added (its resolved path), not the whole
+        // (growing) dependency set on every add — the latter is ~O(deps²) per module
+        // (177k calls vs 3k for a real closure, measured). Each dep is still transformed
+        // exactly once across the callbacks; transformModule is idempotent (precompiled
+        // modules short-circuit on `compiled != null`).
+        const resolved = module.dependencyMap.get(dep);
+        if (resolved) {
+          this.bundler.transformModule(resolved);
         }
       };
     });
