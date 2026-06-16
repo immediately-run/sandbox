@@ -19,7 +19,7 @@ import { absolute, normalize } from '../../utils/path';
 export const ARTIFACT_INDEX_SCHEMA_VERSION = 1;
 
 /** Artifacts live under this repo-relative directory in the readable (zip) layer (§4.1). */
-export const ARTIFACTS_DIR = '.tinkerable/artifacts';
+export const ARTIFACTS_DIR = '.immediately.run/artifacts';
 const ARTIFACTS_PREFIX = `${ARTIFACTS_DIR}/`;
 
 /** `index.json` `toolchain` block — the byte-identity stamp (§4.4). */
@@ -34,7 +34,7 @@ export interface ArtifactToolchain {
 export interface ArtifactFileEntry {
   /** Git blob SHA of the source — MUST equal the manifest entry's `sha` (§4.2). */
   srcSha: string;
-  /** Output path, relative to `.tinkerable/artifacts/` (e.g. `transpiled/src/App.tsx.js`). */
+  /** Output path, relative to `.immediately.run/artifacts/` (e.g. `transpiled/src/App.tsx.js`). */
   out: string;
   /** Raw dependency specifiers as the dep-collector reported them (§4.2). */
   deps: string[];
@@ -142,7 +142,7 @@ export function normalizeRepoRelPath(key: string): string | null {
 }
 
 /**
- * Confine an entry's `out` to `.tinkerable/artifacts/` (§5.1, §5.7): reject
+ * Confine an entry's `out` to `.immediately.run/artifacts/` (§5.1, §5.7): reject
  * absolute `out` and any value that normalizes outside the artifacts dir (`..`
  * traversal). Returns the confined repo-relative artifact path, or `null`.
  */

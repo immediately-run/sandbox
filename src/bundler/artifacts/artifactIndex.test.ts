@@ -84,7 +84,7 @@ describe('normalizeRepoRelPath (§5.1/§5.7 path confinement)', () => {
 
 describe('outWithinArtifacts (§5.1/§5.7 out confinement)', () => {
   it('accepts a path inside the artifacts dir', () => {
-    expect(outWithinArtifacts('transpiled/src/App.tsx.js')).toBe('.tinkerable/artifacts/transpiled/src/App.tsx.js');
+    expect(outWithinArtifacts('transpiled/src/App.tsx.js')).toBe('.immediately.run/artifacts/transpiled/src/App.tsx.js');
   });
 
   it('rejects traversal out of the artifacts dir', () => {
@@ -107,7 +107,7 @@ describe('validateSeedEntry (§5.1 per-file seeding rules)', () => {
     expect(r).toEqual({
       ok: true,
       path: '/src/App.tsx',
-      out: '.tinkerable/artifacts/transpiled/src/App.tsx.js',
+      out: '.immediately.run/artifacts/transpiled/src/App.tsx.js',
       deps: ['react'],
     });
   });
@@ -142,13 +142,13 @@ describe('validateSeedEntry (§5.1 per-file seeding rules)', () => {
 
 describe('readableLayerOnly (§5.1 PT2-4)', () => {
   it('passes when no seeding input is in the writable layer', () => {
-    const inputs = ['/.tinkerable/artifacts/index.json', '/.tinkerable/artifacts/transpiled/src/App.tsx.js'];
+    const inputs = ['/.immediately.run/artifacts/index.json', '/.immediately.run/artifacts/transpiled/src/App.tsx.js'];
     expect(readableLayerOnly(inputs, new Set(['/src/App.tsx']))).toBe(true);
   });
 
   it('rejects the whole section if ANY input is writable-layer present', () => {
-    const inputs = ['/.tinkerable/artifacts/index.json', '/.tinkerable/artifacts/transpiled/src/App.tsx.js'];
-    const writable = new Set(['/.tinkerable/artifacts/transpiled/src/App.tsx.js']);
+    const inputs = ['/.immediately.run/artifacts/index.json', '/.immediately.run/artifacts/transpiled/src/App.tsx.js'];
+    const writable = new Set(['/.immediately.run/artifacts/transpiled/src/App.tsx.js']);
     expect(readableLayerOnly(inputs, writable)).toBe(false);
   });
 });

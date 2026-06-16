@@ -240,9 +240,9 @@ describe('CachedFS — batch hydration (R3-49b)', () => {
     const fs = new CachedFS(context);
     const bytes = new Uint8Array([1, 2, 3, 4]);
 
-    fs.hydrate([{ path: '/app/.tinkerable/packages/react.msgpack', content: bytes }]);
+    fs.hydrate([{ path: '/app/.immediately.run/packages/react.msgpack', content: bytes }]);
 
-    expect(await fs.readBytesAsync('/app/.tinkerable/packages/react.msgpack')).toBe(bytes);
+    expect(await fs.readBytesAsync('/app/.immediately.run/packages/react.msgpack')).toBe(bytes);
     expect(readFile).not.toHaveBeenCalled();
   });
 

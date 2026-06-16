@@ -15,14 +15,14 @@ const baseFixture = (over: { toolchainHash?: string; srcShaUtil?: string } = {})
   'package.json': JSON.stringify({ name: 'g25', main: 'src/index.ts' }),
   'src/index.ts': `import { x } from './util';\nexport const y = x + 1;\n`,
   'src/util.ts': `export const x = 42;\n`,
-  '.tinkerable/contribute-manifest.json': JSON.stringify({
+  '.immediately.run/contribute-manifest.json': JSON.stringify({
     schemaVersion: 1,
     entries: [
       { path: 'src/index.ts', sha: 'sha-index', type: 'blob' },
       { path: 'src/util.ts', sha: 'sha-util', type: 'blob' },
     ],
   }),
-  '.tinkerable/artifacts/index.json': JSON.stringify({
+  '.immediately.run/artifacts/index.json': JSON.stringify({
     schemaVersion: 1,
     toolchain: {
       transpiler: '@immediately-run/transpiler',
@@ -34,7 +34,7 @@ const baseFixture = (over: { toolchainHash?: string; srcShaUtil?: string } = {})
       '/src/util.ts': { srcSha: over.srcShaUtil ?? 'sha-util', out: 'transpiled/src/util.ts.js', deps: [] },
     },
   }),
-  '.tinkerable/artifacts/transpiled/src/util.ts.js': UTIL_ARTIFACT,
+  '.immediately.run/artifacts/transpiled/src/util.ts.js': UTIL_ARTIFACT,
 });
 
 describe('G2-5 artifact seeding + consult', () => {
@@ -95,7 +95,7 @@ describe('G2-5 artifact seeding + consult', () => {
     h = await createBundlerHarness(baseFixture(), { forCompile: true });
     const result = await h.bundler.artifactStore.seed({
       dirtySet: new Set(),
-      writableLayer: new Set(['/.tinkerable/artifacts/transpiled/src/util.ts.js']),
+      writableLayer: new Set(['/.immediately.run/artifacts/transpiled/src/util.ts.js']),
     });
     expect(result.securityReject).toBe('writable-layer-artifact');
     expect(result.seeded).toBe(0);
