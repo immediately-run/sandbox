@@ -27,6 +27,13 @@ export interface IInitConfig {
   // live-transpiles everything). Set by the parent from its persisted store after a
   // prior spot-verify mismatch; cleared by a new commit.
   distrustArtifacts?: boolean;
+  // R3-49b ZenFS batch hydration: a bulk snapshot of the mounted tree (`/app` source
+  // + bundled `/node_modules` packages) the host serializes at mount. Applied via
+  // `CachedFS.hydrate` before the first compile so the bundler reads from memory
+  // instead of one Port round-trip per file (`loadNodeModules` — ~99% of cold boot).
+  // Optional — absent until the host wires delivery; reads then cross the Port as
+  // before. `content` is text for source, bytes for the package msgpack.
+  fsSnapshot?: Array<{ path: string; content: string | Uint8Array }>;
 }
 
 export type BundlerStatus =
