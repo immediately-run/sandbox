@@ -39,6 +39,14 @@ export class CachedFS {
   private fileCache: Map<string, string> = new Map();
   private bytesCache: Map<string, Uint8Array> = new Map();
   private isFileCache: Map<string, boolean> = new Map();
+  // In-flight reads, keyed by path: concurrent reads of the SAME path share one
+  // underlying `boundContext` read. Without this, N concurrent reads of one file
+  // (e.g. every node_modules resolution reading the same package.json under the
+  // R3-49d fast path's higher concurrency) issue N overlapping zenfs reads, and
+  // zenfs reuses/detaches the read buffer between them — `buffer.set()` then throws
+  // "Construct on a detached ArrayBuffer", which (mis)caches the file as absent and
+  // breaks resolution. Deduping serializes same-path reads (and saves duplicate work).
+  private readInflight: Map<string, Promise<string>> = new Map();
   private pendingChanges: Set<string> = new Set();
   private onFileChangedEmitter = new Emitter<CachedFSChangeEvent>();
   onFileChanged = this.onFileChangedEmitter.event;
@@ -183,16 +191,32 @@ export class CachedFS {
       throw new Error(`File ${path} not found`);
     }
 
-    try {
-      const content = await this.boundContext.fs.promises.readFile(path, 'utf8');
-      const str = content as unknown as string;
-      this.fileCache.set(path, str);
-      this.isFileCache.set(path, true);
-      return str;
-    } catch (err) {
-      this.isFileCache.set(path, false);
-      throw err;
-    }
+    // Share one underlying read across concurrent callers for the same path.
+    const inflight = this.readInflight.get(path);
+    if (inflight) return inflight;
+
+    const promise = (async (): Promise<string> => {
+      try {
+        const content = await this.boundContext.fs.promises.readFile(path, 'utf8');
+        const str = content as unknown as string;
+        this.fileCache.set(path, str);
+        this.isFileCache.set(path, true);
+        return str;
+      } catch (err) {
+        // Only a GENUINE absence may negatively cache the path. A transient error
+        // (e.g. a zenfs detached-buffer TypeError under concurrent reads) must not
+        // permanently mark an existing file as missing — leave it uncached so a
+        // later read retries.
+        if (isNotFoundError(err)) {
+          this.isFileCache.set(path, false);
+        }
+        throw err;
+      } finally {
+        this.readInflight.delete(path);
+      }
+    })();
+    this.readInflight.set(path, promise);
+    return promise;
   }
 
   /** Read a file as raw bytes (no utf8 decode) — for binary payloads such as the
@@ -225,9 +249,20 @@ export class CachedFS {
       const isFile = stats.isFile();
       this.isFileCache.set(path, isFile);
       return isFile;
-    } catch {
-      this.isFileCache.set(path, false);
+    } catch (err) {
+      // A genuine absence is cached as "not a file"; a transient/unexpected error
+      // is NOT cached (else a one-off failure permanently hides an existing file),
+      // and is reported as "not currently a file" without poisoning the cache.
+      if (isNotFoundError(err)) {
+        this.isFileCache.set(path, false);
+      }
       return false;
     }
   }
+}
+
+/** True for a genuine filesystem "not found" (vs a transient/unexpected error). */
+function isNotFoundError(err: unknown): boolean {
+  const code = (err as { code?: unknown } | null)?.code;
+  return code === 'ENOENT' || code === 'ENOTDIR';
 }
