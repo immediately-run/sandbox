@@ -871,10 +871,29 @@ export class Bundler {
       emitPerfMarker(this.messageBus, 'ir.sandbox.boot');
     }
 
+    // First-load boot sub-phase timing (R3-46 diagnostic): the ir.sandbox.boot→ir.deps
+    // span is where cold boot spends most of its time, but it bundles several awaits
+    // (module-mount setup, SDK vendoring, MDX scan, package.json parse, node-module
+    // load). Lap each so the hot one is visible in the console on the next live run;
+    // the /app source-read + transpile cost lives in the separate ir.deps→ir.transpile
+    // span. Lapping is a no-op off the first load.
+    const bootNow = (): number =>
+      typeof performance !== 'undefined' && typeof performance.now === 'function'
+        ? performance.now()
+        : Date.now();
+    const bootPhases: Array<[string, number]> = [];
+    let bootLast = bootNow();
+    const bootLap = (name: string): void => {
+      if (!this.isFirstLoad) return;
+      bootPhases.push([name, Math.round(bootNow() - bootLast)]);
+      bootLast = bootNow();
+    };
+
     // Ensure the bundler-owned mounts (`/node_modules`, `/transpiled`) exist before
     // the first read/write. Idempotent — `index.ts` already calls this after
     // construction; this guard covers the harness path (and any direct `compile()`).
     await this.setupModuleMounts();
+    bootLap('setupModuleMounts');
 
     this.onStatusChangeEmitter.fire('installing-dependencies');
 
@@ -914,7 +933,9 @@ export class Bundler {
       // from the entrypoint. Only preloaded/local node_modules are written up
       // front here.
       await this.preloadModules();
+      bootLap('preloadModules');
       await this.addLocalModules();
+      bootLap('addLocalModules');
       // Drain any spurious watcher events that fired during bootstrap so they
       // aren't interpreted as user-driven changes later.
       this.fs.drainPendingChanges();
@@ -922,6 +943,7 @@ export class Bundler {
       // (and any future post-mount actions). Replaces the former direct
       // preloadMDXMetadata() call; behaviour is unchanged (MDX is app-root-scoped).
       await this.runPostMount({ path: APP_ROOT, isAppRoot: true });
+      bootLap('runPostMount');
     }
 
     if (changedFiles.length) {
@@ -940,6 +962,7 @@ export class Bundler {
     if (this.isFirstLoad || pkgJsonChanged) {
       logger.debug('Loading node modules');
       await this.processPackageJSON();
+      bootLap('processPackageJSON');
 
       const depString = Object.entries(this.parsedPackageJSON?.dependencies || {})
         .map((v) => `${v[0]}:${v[1]}`)
@@ -955,6 +978,16 @@ export class Bundler {
       this._previousDepString = depString;
 
       await this.loadNodeModules();
+      bootLap('loadNodeModules');
+
+      // R3-46 diagnostic: one console line breaking down the boot→deps span by
+      // sub-phase, so the next live run shows which await dominates cold boot.
+      if (this.isFirstLoad) {
+        const total = bootPhases.reduce((sum, [, ms]) => sum + ms, 0);
+        const breakdown = bootPhases.map(([n, ms]) => `${n} ${ms}ms`).join(' · ');
+        // eslint-disable-next-line no-console
+        console.info(`[ir-perf:boot] ${breakdown} → ir.deps (Σ ${total}ms)`);
+      }
 
       // ir.deps (R3-46): node-module resolution finished. depCount is the declared
       // dependency count; the host orders marks by timestamp and derives the phase
