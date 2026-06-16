@@ -9,6 +9,16 @@ export interface CachedFSChangeEvent {
   eventType: 'rename' | 'change';
 }
 
+/** One hydrated file: an `/app`-rooted path + its content (text for source, bytes
+ *  for binary payloads like the bundled `/package/` msgpack). */
+export interface FsSnapshotEntry {
+  path: string;
+  content: string | Uint8Array;
+}
+/** A bulk filesystem snapshot the host pushes at mount so the bundler reads from
+ *  memory instead of per-file Port round-trips (R3-49b ZenFS batch hydration). */
+export type FsSnapshot = FsSnapshotEntry[];
+
 /**
  * The bundler's filesystem (R3-48 G0-4): a read-memoizing view over a single
  * `@zenfs/core` bound context whose mount table routes `/app` (Port), `/node_modules`
@@ -27,6 +37,7 @@ export class CachedFS {
   /** Stable name (the asset transform identifies the bundler fs by it). */
   readonly name = 'zenfs';
   private fileCache: Map<string, string> = new Map();
+  private bytesCache: Map<string, Uint8Array> = new Map();
   private isFileCache: Map<string, boolean> = new Map();
   private pendingChanges: Set<string> = new Set();
   private onFileChangedEmitter = new Emitter<CachedFSChangeEvent>();
@@ -70,6 +81,7 @@ export class CachedFS {
         if (normalized.includes('node_modules')) continue;
 
         this.fileCache.delete(normalized);
+        this.bytesCache.delete(normalized);
         this.isFileCache.delete(normalized);
         this.pendingChanges.add(normalized);
         this.onFileChangedEmitter.fire({
@@ -94,6 +106,7 @@ export class CachedFS {
       if (normalized.includes('node_modules')) continue;
 
       this.fileCache.delete(normalized);
+      this.bytesCache.delete(normalized);
       this.isFileCache.delete(normalized);
       this.pendingChanges.add(normalized);
       this.onFileChangedEmitter.fire({ path: normalized, eventType: 'change' });
@@ -135,7 +148,29 @@ export class CachedFS {
   async deleteFile(path: string): Promise<void> {
     await this.boundContext.fs.promises.unlink(path).catch(() => undefined);
     this.fileCache.delete(path);
+    this.bytesCache.delete(path);
     this.isFileCache.set(path, false);
+  }
+
+  /**
+   * Batch hydration (R3-49b): pre-warm the read caches from a bulk snapshot the
+   * host pushes at mount, so the bundler reads `/app` source + the bundled
+   * `/node_modules` packages from memory instead of one Port round-trip per file
+   * (the `loadNodeModules` cost — ~99% of cold boot). Coherence is unchanged: a
+   * later edit invalidates the entry via `markChanged`/the watcher, exactly as for
+   * a Port-read entry. Returns the number of files hydrated. Idempotent.
+   */
+  hydrate(snapshot: FsSnapshot): number {
+    for (const { path, content } of snapshot) {
+      const normalized = path.startsWith('/') ? path : `/${path}`;
+      if (typeof content === 'string') {
+        this.fileCache.set(normalized, content);
+      } else {
+        this.bytesCache.set(normalized, content);
+      }
+      this.isFileCache.set(normalized, true);
+    }
+    return snapshot.length;
   }
 
   async readFileAsync(path: string): Promise<string> {
@@ -161,11 +196,18 @@ export class CachedFS {
   }
 
   /** Read a file as raw bytes (no utf8 decode) — for binary payloads such as the
-   *  bundled `/package/` msgpack (R3-49a). Not memoized in the string `fileCache`
-   *  (these are read once at boot). */
+   *  bundled `/package/` msgpack (R3-49a). Served from the bytes cache when present
+   *  (batch-hydrated or previously read), so a hydrated package never crosses the
+   *  Port; invalidated alongside the text cache on change. */
   async readBytesAsync(path: string): Promise<Uint8Array> {
-    const content = await this.boundContext.fs.promises.readFile(path);
-    return content as unknown as Uint8Array;
+    const cached = this.bytesCache.get(path);
+    if (cached !== undefined) {
+      return cached;
+    }
+    const content = (await this.boundContext.fs.promises.readFile(path)) as unknown as Uint8Array;
+    this.bytesCache.set(path, content);
+    this.isFileCache.set(path, true);
+    return content;
   }
 
   async isFileAsync(path: string): Promise<boolean> {
