@@ -34,6 +34,13 @@ export interface IInitConfig {
   // Optional — absent until the host wires delivery; reads then cross the Port as
   // before. `content` is text for source, bytes for the package msgpack.
   fsSnapshot?: Array<{ path: string; content: string | Uint8Array }>;
+  // The chrome region this app instance occupies, e.g. `"panel.agent"` or
+  // `"stage.conversation"` (R3-114). Descriptive only — a non-secret string the
+  // host already holds; it grants and gates nothing. Surfaced to the app on the
+  // `__immediatelyRun__` runtime global so one repo mounted in two regions can
+  // render the slots differently (read via the SDK's `getRegion()`/`useRegion()`).
+  // Absent for standalone apps / older hosts that don't report it.
+  region?: string;
 }
 
 export type BundlerStatus =

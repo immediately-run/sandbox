@@ -50,6 +50,9 @@ export class IFrameParentMessageBus {
         // R3-49b batch-hydration snapshot of the mounted tree; absent until the
         // host wires delivery.
         fsSnapshot: data.fsSnapshot,
+        // The chrome region this frame occupies (R3-114); absent for standalone /
+        // older hosts. Forwarded verbatim by the sandpack client's `register(...)`.
+        region: data.region,
       };
       this.initConfig = config;
       const configResolvers = this.initConfigResolvers;
