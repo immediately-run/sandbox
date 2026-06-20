@@ -28,4 +28,18 @@ describe('IFrameParentMessageBus register-frame', () => {
     const config = await bus.getInitConfig();
     expect(config.dirtyPaths).toBeUndefined();
   });
+
+  it('reads the chrome region into the init config (R3-114)', async () => {
+    const bus = new IFrameParentMessageBus();
+    registerFrame({ region: 'stage.conversation' });
+    const config = await bus.getInitConfig();
+    expect(config.region).toBe('stage.conversation');
+  });
+
+  it('leaves region undefined for standalone / older hosts', async () => {
+    const bus = new IFrameParentMessageBus();
+    registerFrame({});
+    const config = await bus.getInitConfig();
+    expect(config.region).toBeUndefined();
+  });
 });

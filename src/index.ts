@@ -286,6 +286,15 @@ class SandpackInstance {
       logger.setLogLevel(initConfig.logLevel);
     }
     this.template = initConfig.template;
+    // Surface the chrome region this frame occupies (R3-114) on the runtime
+    // discovery global, beside appMountPath, so the SDK's getRegion()/useRegion()
+    // can read it. Set here — after the register-frame initConfig resolves but
+    // before the first compile evaluates app code — so the value is in place by
+    // the time the app calls getRegion(). Absent ⇒ left unset (getRegion() → null).
+    if (initConfig.region != null) {
+      const g = (globalThis as { __immediatelyRun__?: { region?: string } }).__immediatelyRun__;
+      if (g) g.region = initConfig.region;
+    }
     // Host-pinned SDK integrity (SDK_PACKAGING_SPEC §5.2): hand it to the bundler
     // so addLocalModules verifies self-hosted SDK bytes before evaluation.
     this.bundler.setSdkIntegrity(initConfig.sdkIntegrity);
