@@ -147,6 +147,13 @@ export class IFrameParentMessageBus {
   }
 
   _postMessage(message: any) {
+    // HOST_ORIGIN_HARDENING_SPEC §2.4 (MessagePort identity rule): this frame
+    // runs at an opaque origin, so `targetOrigin='*'` is correct *by design* —
+    // an opaque-origin frame has no concrete origin to name, and identity is
+    // established by the source window + the transferred MessagePort handshake
+    // (the `register-frame` ports above), not by the origin string. Do NOT
+    // "harden" this to a concrete origin; it would break the handshake. See
+    // CODE_SPEC_REFERENCES.md.
     window.parent.postMessage(message, '*');
   }
 

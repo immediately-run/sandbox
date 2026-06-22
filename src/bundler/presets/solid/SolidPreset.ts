@@ -6,6 +6,11 @@ import { CSSTransformer } from '../../transforms/css';
 import { StyleTransformer } from '../../transforms/style';
 import { Preset } from '../Preset';
 
+// DEAD-CANDIDATE(2026-06): entire SolidJS preset is inherited Sandpack/CodeSandbox
+// surface immediately.run never adopted (React-only). Not registered in
+// presets/registry.ts (commented out), so unreachable on any live path. Drags in
+// the `babel-preset-solid` + `solid-refresh` deps. Kept, not removed — see
+// DEPRECATION_CANDIDATES.md.
 export class SolidPreset extends Preset {
   defaultHtmlBody = '<div id="app"></div>';
 

@@ -1,3 +1,8 @@
+// DEAD-CANDIDATE(2026-06): local-only Fastify prod-test server (`npm start`,
+// inherited from upstream sandpack-bundler). The immediately.run deploy path is
+// Firebase Hosting serving `dist/` (firebase.json) — server.js is never invoked in
+// production. Kept for local prod-build testing, not removed. See
+// DEPRECATION_CANDIDATES.md.
 const fastify = require("fastify");
 const fastifyStatic = require("fastify-static");
 const path = require("path");
