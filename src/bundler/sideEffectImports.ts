@@ -6,7 +6,7 @@
  * `create-vite` repo rendered *unstyled* on the platform: the #1 silent
  * failure.
  *
- * This module lets the kernel harvest the local entry's **side-effect imports**
+ * This module lets the host (kernel) harvest the local entry's **side-effect imports**
  * (`import './index.css'`, `import 'some-polyfill'`) and fold the resolved
  * modules into the graph so they're applied — WITHOUT running `main.tsx`'s
  * `createRoot(...).render(...)` call (which would double-render the app).
@@ -18,7 +18,7 @@ import { underAppRoot } from '../fsLayout';
 
 /**
  * Local-entry filenames, by Vite/CRA convention, whose side-effect imports the
- * kernel applies even though it never executes them as the render entry.
+ * host (kernel) applies even though it never executes them as the render entry.
  * Ordered most-specific first; repo-relative (resolved under `APP_ROOT`).
  */
 export const LOCAL_ENTRY_CANDIDATES = ['src/main', 'main'];

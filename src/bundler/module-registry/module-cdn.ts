@@ -4,6 +4,12 @@ import urlJoin from 'url-join';
 import { retryFetch, registerImmutableUrlPrefix } from '../../utils/fetch';
 import { DepMap } from '.';
 
+// NOTE(2026-06): this is the live, load-bearing dependency-resolution CDN
+// (PRETRANSPILED_ARTIFACTS_SPEC §0/§5.4 reference its `/dep_tree/` endpoint), NOT
+// dead code — used on every compile via fetchManifest/fetchModule. It is a
+// CodeSandbox-lineage host (`blazingly.io`) and currently points at a `-staging`
+// subdomain; verify it is the intended prod CDN + on the HOST_ORIGIN_HARDENING
+// connect-src allowlist. See CODE_SPEC_REFERENCES.md (kept, not a deprecation).
 const CDN_ROOT = 'https://sandpack-cdn-staging.blazingly.io/';
 
 // /package/<name@exact-version> responses never change for a given URL, so
