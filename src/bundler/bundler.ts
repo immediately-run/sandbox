@@ -906,13 +906,46 @@ export class Bundler {
   async preloadMDXMetadata(): Promise<void> {
     const re = globToRegex('/**/*.mdx');
     const zenFsLayer = this.fs;
-    // Scan only the repo (`APP_ROOT`), not the whole filesystem — dynamic mounts
-    // (e.g. `/firestore`) and virtual node_modules aren't sources of app MDX.
-    const mdxFiles = (await zenFsLayer.boundContext.fs.promises.readdir(APP_ROOT, {recursive: true})).map(
-      i => underAppRoot('/' + i)).filter(p => p.match(re));
+    const fsp = zenFsLayer.boundContext.fs.promises;
+
+    // Walk `APP_ROOT` MANUALLY instead of with readdir's `{recursive:true}`.
+    // `/app` is a port-backed COW mount (the parent-hosted working tree); ZenFS's
+    // recursive walk descends by calling the MOUNTED fs directly per sub-entry,
+    // which throws `ENOENT '/app'` across that mount boundary (single-path reads
+    // like `/app/package.json` work — only the recursive enumeration breaks).
+    // Resolving each absolute subpath through the vfs (the way file reads already
+    // do) avoids it; a subdirectory that still can't be listed is skipped rather
+    // than aborting the whole scan. Scope stays the repo (`APP_ROOT`) — dynamic
+    // mounts (e.g. `/firestore`) and virtual node_modules aren't app-MDX sources.
+    const mdxFiles: string[] = [];
+    const walk = async (dir: string): Promise<void> => {
+      let names: string[];
+      try {
+        names = await fsp.readdir(dir);
+      } catch {
+        return; // unreadable directory — skip, never fail the scan
+      }
+      await Promise.all(names.map(async (name) => {
+        const full = `${dir}/${name}`;
+        let isDir: boolean;
+        try {
+          isDir = (await fsp.stat(full)).isDirectory();
+        } catch {
+          return; // vanished between readdir and stat — skip
+        }
+        if (isDir) await walk(full);
+        else if (full.match(re)) mdxFiles.push(full);
+      }));
+    };
+    await walk(APP_ROOT);
+
     await Promise.all(mdxFiles.map(async (filepath) => {
-      const source = await zenFsLayer.readFileAsync(filepath);
-      this.refreshMetadata(filepath, source);
+      try {
+        const source = await zenFsLayer.readFileAsync(filepath);
+        this.refreshMetadata(filepath, source);
+      } catch {
+        /* file vanished mid-scan — ignore (lazy refreshMetadata still covers it) */
+      }
     }));
   }
 
