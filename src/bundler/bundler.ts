@@ -14,7 +14,14 @@ import { ArtifactStore } from './artifacts/artifactStore';
 import { getEmbeddedToolchain } from './artifacts/embeddedToolchain';
 import { BundlerStatus } from '../protocol/message-types';
 import { ResolverCache, resolveAsync } from '../resolver/resolver';
-import { resolveSelfHostVersion, fetchVendoredModule, SelfHostResolutionError } from './registryResolvedModules';
+import { resolveSelfHostVersion, fetchVendoredModule, SelfHostResolutionError, type VendorTiming } from './registryResolvedModules';
+
+// Module-level monotonic clock for the `[ir-perf:addlocal]` sub-phase breakdown
+// (LOAD_PROFILING_SPEC §2 phase 3) — falls back to Date.now when unavailable.
+const vendorBootNow = (): number =>
+  typeof performance !== 'undefined' && typeof performance.now === 'function'
+    ? performance.now()
+    : Date.now();
 import { verifyVendoredFiles, decideIntegrity, type SdkIntegrity, type FileHashes } from './sdkIntegrity';
 import { MountLifecycle, type MountContext } from './mountLifecycle';
 import { IPackageJSON, ISandboxFile } from '../types';
@@ -729,16 +736,19 @@ export class Bundler {
     moduleName: string,
     baseUrl: string,
     expectedHashes?: FileHashes,
+    timing?: VendorTiming,
   ): Promise<void> {
     const vendored = await fetchVendoredModule(
       moduleName,
       baseUrl,
       (url, integrity) => this.fetchSource(url, integrity),
       expectedHashes,
+      timing,
     );
     // SDK_PACKAGING_SPEC §5.2: when the host pinned hashes for this version,
     // verify the fetched bytes BEFORE writing/registering anything — fail the
     // boot closed on any mismatch (a tampered self-host origin must not run).
+    const tVerify0 = vendorBootNow();
     if (expectedHashes) {
       const prefix = `/node_modules/${moduleName}/`;
       const result = await verifyVendoredFiles(
@@ -757,11 +767,16 @@ export class Bundler {
         );
       }
     }
+    const tWrite0 = vendorBootNow();
     for (const { path, content, isModule } of vendored) {
       await this.fs.writeFile(path, content);
       if (isModule) {
         this.modules.set(path, new Module(path, content, false, this));
       }
+    }
+    if (timing) {
+      timing.verifyMs += tWrite0 - tVerify0;
+      timing.writeMs += vendorBootNow() - tWrite0;
     }
   }
 
@@ -827,6 +842,9 @@ export class Bundler {
     // (copy-sdk.sh vendoring) is gone. Read package.json directly because this
     // runs before `processPackageJSON`.
     const raw = await this.readPackageJsonRaw();
+    // [ir-perf:addlocal] sub-phase breakdown of SDK vendoring (the dominant
+    // addLocalModules cost; LOAD_PROFILING_SPEC §2). Accumulated across modules.
+    const timing: VendorTiming = { manifestMs: 0, filesMs: 0, fileCount: 0, verifyMs: 0, writeMs: 0 };
     for (const [moduleName, base] of Object.entries(SELF_HOST_BASES)) {
       // Fails closed (SelfHostResolutionError) on a below-floor or
       // non-concrete pin — surfaced as a boot error, never a silent
@@ -859,6 +877,15 @@ export class Bundler {
         moduleName,
         baseUrl,
         decision.action === 'verify' ? decision.hashes : undefined,
+        timing,
+      );
+    }
+    if (this.isFirstLoad) {
+      // eslint-disable-next-line no-console
+      console.info(
+        `[ir-perf:addlocal] manifestFetch ${Math.round(timing.manifestMs)}ms · ` +
+          `filesFetch(${timing.fileCount}) ${Math.round(timing.filesMs)}ms · ` +
+          `verify ${Math.round(timing.verifyMs)}ms · writeRegister ${Math.round(timing.writeMs)}ms`,
       );
     }
   }
