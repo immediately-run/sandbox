@@ -300,6 +300,9 @@ class SandpackInstance {
     this.bundler.setSdkIntegrity(initConfig.sdkIntegrity);
     // The §5.2 dirty set: paths the seeding path must never seed from artifacts.
     this.bundler.setDirtyPaths(initConfig.dirtyPaths);
+    // BOOT_SCAFFOLDING_SPEC §3: the host-resolved package.json delivered
+    // out-of-band, so the bundler need not read a synthesized one from the FS.
+    this.bundler.setConfigPackageJSON(initConfig.packageJSON);
     // The §5.7 parent distrust mark: treat this zip's artifact section as absent.
     if (initConfig.distrustArtifacts) {
       this.bundler.artifactStore.markDistrusted();

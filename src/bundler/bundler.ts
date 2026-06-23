@@ -168,6 +168,12 @@ export class Bundler {
   moduleRegistry: ModuleRegistry;
 
   parsedPackageJSON: IPackageJSON | null = null;
+  // The host-resolved root package.json delivered out-of-band via IInitConfig
+  // (BOOT_SCAFFOLDING_SPEC §3). When set, it is the authoritative source for the
+  // app manifest and the bundler does NOT read `/app/package.json` from the FS —
+  // so the host need not write a synthesized `package.json` into the CoW. Null on
+  // standalone Sandpack / older hosts, where the FS read remains the source.
+  configPackageJSON: IPackageJSON | null = null;
   // Map filepath => Module
   modules: Map<string, Module> = new Map();
   transformationQueue: TransformationQueue;
@@ -385,6 +391,13 @@ export class Bundler {
   }
 
   async processPackageJSON(): Promise<void> {
+    // BOOT_SCAFFOLDING_SPEC §3.3 — prefer the host-resolved package.json delivered
+    // out-of-band; only fall back to the filesystem read when it is absent
+    // (standalone Sandpack / older host).
+    if (this.configPackageJSON) {
+      this.parsedPackageJSON = this.configPackageJSON;
+      return;
+    }
     const foundPackageJSON = await this.fs.readFileAsync(underAppRoot('/package.json'));
     try {
       this.parsedPackageJSON = JSON.parse(foundPackageJSON);
@@ -693,6 +706,12 @@ export class Bundler {
    * treat it as "no opt-in" and the default injection path is preserved.
    */
   private async readPackageJsonRaw(): Promise<string> {
+    // Honour the out-of-band package.json here too (BOOT_SCAFFOLDING_SPEC §3.3):
+    // addLocalModules runs before processPackageJSON, so it can't read
+    // `this.parsedPackageJSON` yet — consult the config object directly.
+    if (this.configPackageJSON) {
+      return JSON.stringify(this.configPackageJSON);
+    }
     try {
       return await this.fs.readFileAsync(underAppRoot('/package.json'));
     } catch {
@@ -756,6 +775,13 @@ export class Bundler {
    *  Undefined/empty → nothing dirty (every artifact eligible). */
   setDirtyPaths(paths: string[] | undefined): void {
     this.dirtyPaths = new Set(paths ?? []);
+  }
+
+  /** The out-of-band host-resolved package.json (BOOT_SCAFFOLDING_SPEC §3), set
+   *  from IInitConfig before the initial compile. Undefined → the bundler reads
+   *  `/app/package.json` from the filesystem as before (standalone fallback). */
+  setConfigPackageJSON(pkg: IPackageJSON | undefined): void {
+    this.configPackageJSON = pkg ?? null;
   }
 
   /** True if a repo-relative path is dirty (must not be seeded from artifacts). */
