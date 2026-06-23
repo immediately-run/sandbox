@@ -64,9 +64,10 @@ const SELF_HOST_BASES: Record<string, string> = {
 // The version fetched for a self-hosted module when the app declares no SDK
 // dependency at all (SDK_PACKAGING_SPEC §5.1(c) — a declared-but-non-concrete
 // specifier fails closed instead, see resolveSelfHostVersion). Must be a
-// version the SDK release CI has published to `/v/<version>/`. Bump on SDK
-// releases.
-const DEFAULT_SDK_VERSION = '0.11.0';
+// version the SDK release CI has published to `/v/<version>/`. Should always
+// track the latest published SDK at deploy time; bump it on every SDK release
+// (the host's sdk-integrity manifest auto-covers up to the newest tag).
+const DEFAULT_SDK_VERSION = '0.16.0';
 
 // Oldest version each self-hosted module may pin (SDK_PACKAGING_SPEC §5.1(b)).
 // Pins below the floor fail closed at resolve time: 0.2.7 ships a fatal
