@@ -125,6 +125,22 @@ export interface VendoredFile {
  * Pure but for the injected `fetchSource`, so the manifest-driven fetch + path
  * derivation is unit-testable without a bundler.
  */
+/** Optional sub-phase timing sink for `[ir-perf:addlocal]` boot profiling
+ *  (LOAD_PROFILING_SPEC §2 phase 3). Accumulated across modules; never affects
+ *  behaviour. */
+export interface VendorTiming {
+  manifestMs: number;
+  filesMs: number;
+  fileCount: number;
+  verifyMs: number;
+  writeMs: number;
+}
+
+const vendorNow = (): number =>
+  typeof performance !== 'undefined' && typeof performance.now === 'function'
+    ? performance.now()
+    : Date.now();
+
 export async function fetchVendoredModule(
   moduleName: string,
   baseUrl: string,
@@ -134,8 +150,11 @@ export async function fetchVendoredModule(
    *  (cache-poisoning prevention). Keyed by the same rel paths as the manifest
    *  (incl. `manifest.json`). Omitted when the host wired no pin for the version. */
   expected?: Record<string, string>,
+  /** Boot-profiling sink (optional); accumulates manifest- vs files-fetch ms. */
+  timing?: VendorTiming,
 ): Promise<VendoredFile[]> {
   let manifestRaw: string;
+  const tManifest0 = vendorNow();
   try {
     manifestRaw = await fetchSource(`${baseUrl}/manifest.json`, expected?.['manifest.json']);
   } catch (err) {
@@ -149,8 +168,15 @@ export async function fetchVendoredModule(
         `(SDK_PACKAGING_SPEC §5.1: resolution fails closed, no fallback.)`,
     );
   }
+  const tManifest1 = vendorNow();
   const { files } = JSON.parse(manifestRaw) as { files: string[] };
   const contents = await Promise.all(files.map((rel) => fetchSource(`${baseUrl}/${rel}`, expected?.[rel])));
+  const tFiles1 = vendorNow();
+  if (timing) {
+    timing.manifestMs += tManifest1 - tManifest0;
+    timing.filesMs += tFiles1 - tManifest1;
+    timing.fileCount += files.length;
+  }
   const vendored = files.map((rel, ix) => ({
     path: `/node_modules/${moduleName}/${rel}`,
     content: contents[ix],
