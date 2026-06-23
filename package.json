@@ -23,6 +23,8 @@
     "build:parcel": "parcel build ./src/index.html --target default --no-scope-hoist",
     "build:babel-worker": "parcel build --target babelWorker --no-scope-hoist --cache-dir .parcel-cache-worker",
     "sync:babel-worker": "./scripts/sync-babel-worker.sh",
+    "build:authoring-worker": "parcel build --target authoringWorker --no-scope-hoist --cache-dir .parcel-cache-authoring-worker",
+    "sync:authoring-worker": "./scripts/sync-authoring-worker.sh",
     "test": "jest",
     "typecheck": "tsc --noEmit",
     "format": "prettier --write \"./src/**/*.{ts,tsx,js,jsx,json}\"",
@@ -50,6 +52,16 @@
     "babelWorker": {
       "source": "src/bundler/transforms/babel/babel-worker.ts",
       "distDir": "dist-worker",
+      "context": "web-worker",
+      "outputFormat": "global",
+      "isLibrary": false,
+      "optimize": true,
+      "sourceMap": false,
+      "includeNodeModules": true
+    },
+    "authoringWorker": {
+      "source": "src/services/authoring/authoring-worker.ts",
+      "distDir": "dist-authoring-worker",
       "context": "web-worker",
       "outputFormat": "global",
       "isLibrary": false,
