@@ -233,4 +233,61 @@ describe('fetchVendoredModule', () => {
       },
     ]);
   });
+
+  // --- FAST PATH (host-pinned): the pin's keys are the authoritative file list,
+  //     so the serial manifest-first round-trip is skipped. ---
+
+  it('FAST PATH (pinned): derives the file set from the pin, not the fetched manifest', async () => {
+    const base = 'https://immediately-run.github.io/immediately-run-sdk/v/0.9.0';
+    // The fetched manifest lists a ROGUE file NOT in the pin (and absent from the
+    // tree). If the fast path trusted the manifest's `files`, it would try to fetch
+    // ROGUE.js and throw "unexpected fetch". It must use the pin instead.
+    const tree: Record<string, string> = {
+      [`${base}/manifest.json`]: JSON.stringify({ files: ['index.js', 'ROGUE.js'] }),
+      [`${base}/index.js`]: 'export const a = 1;',
+      [`${base}/package.json`]: '{}',
+    };
+    const calls: string[] = [];
+    const fetchSource = async (url: string) => {
+      calls.push(url);
+      if (!(url in tree)) throw new Error(`unexpected fetch ${url}`);
+      return tree[url];
+    };
+    const expected = { 'manifest.json': 'sha384-M', 'index.js': 'sha384-I', 'package.json': 'sha384-P' };
+    const vendored = await fetchVendoredModule('@immediately-run/sdk', base, fetchSource, expected);
+    // Fetched EXACTLY the pinned set (manifest.json included), and never the rogue.
+    expect([...calls].sort()).toEqual([
+      `${base}/index.js`,
+      `${base}/manifest.json`,
+      `${base}/package.json`,
+    ]);
+    expect(calls).not.toContain(`${base}/ROGUE.js`);
+    // manifest.json is vendored (written) but not registered as a module.
+    expect(vendored.find((v) => v.path.endsWith('/manifest.json'))?.isModule).toBe(false);
+    expect(vendored.find((v) => v.path.endsWith('/index.js'))?.isModule).toBe(true);
+  });
+
+  it('FAST PATH (pinned): records manifestMs 0 — no serial manifest round-trip', async () => {
+    const base = 'https://immediately-run.github.io/immediately-run-sdk/v/0.9.0';
+    const { fetchSource } = makeFetch(base);
+    const expected = {
+      'manifest.json': 'h',
+      'index.js': 'h',
+      'components/Include.js': 'h',
+      'package.json': 'h',
+    };
+    const timing = { manifestMs: 0, filesMs: 0, fileCount: 0, verifyMs: 0, writeMs: 0 };
+    await fetchVendoredModule('@immediately-run/sdk', base, fetchSource, expected, timing);
+    expect(timing.manifestMs).toBe(0);
+    expect(timing.fileCount).toBe(4); // all pinned files fetched in one batch
+  });
+
+  it('SLOW PATH (unpinned): still records a separate manifest fetch (manifestMs path)', async () => {
+    const base = 'https://immediately-run.github.io/immediately-run-sdk/v/0.2.8';
+    const { fetchSource, calls } = makeFetch(base);
+    const timing = { manifestMs: 0, filesMs: 0, fileCount: 0, verifyMs: 0, writeMs: 0 };
+    await fetchVendoredModule('@immediately-run/sdk', base, fetchSource, undefined, timing);
+    expect(calls[0]).toBe(`${base}/manifest.json`); // manifest fetched first, serially
+    expect(timing.fileCount).toBe(3); // the manifest's `files` list
+  });
 });
