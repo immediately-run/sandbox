@@ -63,7 +63,8 @@ const CATEGORY: Record<ts.DiagnosticCategory, Diag['category']> = {
   [ts.DiagnosticCategory.Message]: 'message',
 };
 
-function validateFiles(raw: unknown): TypecheckFile[] {
+/** Validate + bound an in-memory `{ path, content }[]` request (shared by lint). */
+export function validateFiles(raw: unknown): TypecheckFile[] {
   if (!Array.isArray(raw) || raw.length === 0) throw new ServiceInputError('files must be a non-empty array');
   if (raw.length > MAX_FILES) throw new ServiceInputError(`too many files (max ${MAX_FILES})`);
   let total = 0;

@@ -12,6 +12,7 @@
 
 import { runFormat, type FormatRequest } from './format';
 import { runTypecheck, type TypecheckRequest } from './typecheck';
+import { runLint, type LintRequest } from './lint';
 
 interface WireRequest {
   id?: number;
@@ -27,6 +28,8 @@ export function handleMessage(req: WireRequest): { id: number; result?: unknown;
         return { id, result: runFormat((req.params ?? {}) as FormatRequest) };
       case 'typecheck':
         return { id, result: runTypecheck((req.params ?? {}) as TypecheckRequest) };
+      case 'lint':
+        return { id, result: runLint((req.params ?? {}) as LintRequest) };
       default:
         return { id, error: `unknown method ${JSON.stringify(req.method)}` };
     }
