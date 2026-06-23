@@ -1,4 +1,5 @@
 import { SandpackLogLevel } from '../utils/logger';
+import { IPackageJSON } from '../types';
 
 /**
  * Bootstrap configuration delivered once via the `register-frame` handshake
@@ -41,6 +42,13 @@ export interface IInitConfig {
   // render the slots differently (read via the SDK's `getRegion()`/`useRegion()`).
   // Absent for standalone apps / older hosts that don't report it.
   region?: string;
+  // The host-resolved root package.json for the app being booted, delivered
+  // out-of-band (BOOT_SCAFFOLDING_SPEC §3): the parsed object the bundler would
+  // otherwise read from `/app/package.json`. The immediately.run host supplies
+  // it so no synthesized `package.json` need be written into the CoW writable
+  // layer. Optional — absent on standalone Sandpack / older hosts, where the
+  // bundler falls back to the filesystem read (`processPackageJSON`).
+  packageJSON?: IPackageJSON;
 }
 
 export type BundlerStatus =
