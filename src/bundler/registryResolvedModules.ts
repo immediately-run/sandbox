@@ -153,11 +153,13 @@ export async function fetchVendoredModule(
   /** Boot-profiling sink (optional); accumulates manifest- vs files-fetch ms. */
   timing?: VendorTiming,
 ): Promise<VendoredFile[]> {
-  let manifestRaw: string;
-  const tManifest0 = vendorNow();
-  try {
-    manifestRaw = await fetchSource(`${baseUrl}/manifest.json`, expected?.['manifest.json']);
-  } catch (err) {
+  const toVendored = (rel: string, content: string): VendoredFile => ({
+    path: `/node_modules/${moduleName}/${rel}`,
+    content,
+    // `manifest.json` (and any non-`.js`) is written but not registered as a Module.
+    isModule: rel.endsWith('.js'),
+  });
+  const unavailable = (): never => {
     // A pinned version that 404s (or is unreachable) FAILS CLOSED with a clear
     // boot error — never a silent fallback to another version
     // (SDK_PACKAGING_SPEC §5.1(a)).
@@ -167,31 +169,56 @@ export async function fetchVendoredModule(
         `self-hosted origin. Fix the pin in package.json or publish the version. ` +
         `(SDK_PACKAGING_SPEC §5.1: resolution fails closed, no fallback.)`,
     );
+  };
+
+  // FAST PATH — the host pinned this version (`expected` provided). The pin's keys
+  // ARE the authoritative file list (`manifest.json` + every module file), so fetch
+  // them all in ONE parallel batch and skip the serial `manifest.json`-first
+  // round-trip that otherwise gates boot on a cold cross-origin connection — the
+  // dominant `addLocalModules` cost (LOAD_PROFILING_SPEC §2 phase 3:
+  // manifestFetch ~332ms cold vs the parallel file batch ~19ms). It's also a small
+  // security win: the trusted pin — not the fetched manifest's `files` array —
+  // decides what gets fetched, so a tampered manifest can't influence the fetch set
+  // (every file, manifest included, is hash-verified downstream regardless).
+  if (expected) {
+    const rels = Object.keys(expected);
+    const tFiles0 = vendorNow();
+    let contents: string[];
+    try {
+      contents = await Promise.all(rels.map((rel) => fetchSource(`${baseUrl}/${rel}`, expected[rel])));
+    } catch (err) {
+      unavailable();
+    }
+    if (timing) {
+      // manifestMs stays 0 — there is no serial manifest round-trip on this path.
+      timing.filesMs += vendorNow() - tFiles0;
+      timing.fileCount += rels.length;
+    }
+    return rels.map((rel, ix) => toVendored(rel, contents![ix]));
+  }
+
+  // SLOW PATH — unpinned (standalone / no host integrity wired). We don't know the
+  // file list ahead of time, so fetch `manifest.json` first to learn it, then the
+  // files. (The manifest is still vendored: `verifyVendoredFiles` — when integrity
+  // is later wired — requires every pinned file present, and the manifest doesn't
+  // list itself in `files`.)
+  let manifestRaw: string;
+  const tManifest0 = vendorNow();
+  try {
+    manifestRaw = await fetchSource(`${baseUrl}/manifest.json`);
+  } catch (err) {
+    unavailable();
   }
   const tManifest1 = vendorNow();
-  const { files } = JSON.parse(manifestRaw) as { files: string[] };
-  const contents = await Promise.all(files.map((rel) => fetchSource(`${baseUrl}/${rel}`, expected?.[rel])));
+  const { files } = JSON.parse(manifestRaw!) as { files: string[] };
+  const contents = await Promise.all(files.map((rel) => fetchSource(`${baseUrl}/${rel}`)));
   const tFiles1 = vendorNow();
   if (timing) {
     timing.manifestMs += tManifest1 - tManifest0;
     timing.filesMs += tFiles1 - tManifest1;
     timing.fileCount += files.length;
   }
-  const vendored = files.map((rel, ix) => ({
-    path: `/node_modules/${moduleName}/${rel}`,
-    content: contents[ix],
-    isModule: rel.endsWith('.js'),
-  }));
-  // Include `manifest.json` itself in the vendored set. The host pins it in
-  // `sdk-integrity.json` (it locks the file LIST — a tampered manifest can't add
-  // or drop files), and `verifyVendoredFiles` requires every pinned file to be
-  // present. The manifest doesn't list itself in `files`, so without this entry
-  // its pin is reported "missing" and EVERY version fails closed once integrity
-  // is enforced. We already have its bytes (`manifestRaw`), so verify them too.
-  vendored.unshift({
-    path: `/node_modules/${moduleName}/manifest.json`,
-    content: manifestRaw,
-    isModule: false,
-  });
+  const vendored = files.map((rel, ix) => toVendored(rel, contents[ix]));
+  vendored.unshift(toVendored('manifest.json', manifestRaw!));
   return vendored;
 }
