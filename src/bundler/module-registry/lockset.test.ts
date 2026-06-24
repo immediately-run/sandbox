@@ -20,8 +20,14 @@ jest.mock('./module-cdn', () => ({
 
 const mockedFetchManifest = fetchManifest as jest.MockedFunction<typeof fetchManifest>;
 
+// A realistic resolved set: every declared dep present at depth 0 (the registry
+// now enforces this completeness on the lockset path too — a lockset missing a
+// declared dep is the silent-drop bug it guards against), plus a transitive.
 const RESOLVED = [
+  { n: 'core-js', v: '3.22.7', d: 0 },
   { n: 'react', v: '18.3.1', d: 0 },
+  { n: 'react-error-boundary', v: '6.1.0', d: 0 },
+  { n: 'react-refresh', v: '0.11.0', d: 0 },
   { n: 'scheduler', v: '0.23.0', d: 1 },
 ];
 
@@ -95,7 +101,14 @@ describe('ModuleRegistry.fetchManifest with a lockset', () => {
 
   beforeEach(() => {
     mockedFetchManifest.mockReset();
-    mockedFetchManifest.mockResolvedValue([{ n: 'live', v: '1.0.0', d: 0 }]);
+    // The live CDN echoes every requested top-level dep back in the resolved
+    // manifest; stub it that way so the resolution-completeness invariant
+    // (assertDependenciesResolved) holds. These tests exercise the lockset-vs-live
+    // decision; the silent-drop failure mode itself is unit-tested in the shared
+    // @immediately-run/transpiler package (depmap.test.mjs).
+    mockedFetchManifest.mockImplementation(async (deps) =>
+      Object.keys(deps).map((n) => ({ n, v: '1.0.0', d: 0 })),
+    );
   });
 
   it('uses a matching lockset and skips the dep_tree request', async () => {
@@ -118,7 +131,8 @@ describe('ModuleRegistry.fetchManifest with a lockset', () => {
     const r = registry();
     await r.fetchManifest({ ...DEPS, zod: '^3.0.0' }, true, lockset());
     expect(mockedFetchManifest).toHaveBeenCalledTimes(1);
-    expect(r.manifest).toEqual([{ n: 'live', v: '1.0.0', d: 0 }]);
+    // Live resolution, not the lockset's RESOLVED: includes the edited-in dep.
+    expect(r.manifest.map((d) => d.n)).toContain('zod');
   });
 
   it('resolves live with no lockset', async () => {
@@ -134,6 +148,21 @@ describe('ModuleRegistry.fetchManifest with a lockset', () => {
     const poisoned = lockset({ resolved: [...RESOLVED, { n: 'evil-pkg', v: '1.0.0', d: 0 }] });
     await r.fetchManifest({ ...DEPS }, true, poisoned as never);
     expect(mockedFetchManifest).toHaveBeenCalledTimes(1);
-    expect(r.manifest).toEqual([{ n: 'live', v: '1.0.0', d: 0 }]);
+    // Came from live resolution, not the rejected lockset (no smuggled evil-pkg).
+    expect(r.manifest.map((d) => d.n)).not.toContain('evil-pkg');
+    expect(r.manifest.map((d) => d.n)).toEqual(Object.keys(DEPS).sort());
+  });
+
+  it('catches a lockset MISSING a declared dep (baked-in CDN drop), not silently skipping it', async () => {
+    const r = registry();
+    // The CLI builds the sidecar lockset against the SAME primary CDN, so if the
+    // CDN drops a package at build time it is frozen out of `resolved`. The echo
+    // matches and closure passes (closure only rejects INJECTED roots), so this
+    // would silently skip before — now the completeness guard fires on the
+    // lockset path too. (Fallback disabled by default → the clear error.)
+    const deps = { ...DEPS, 'lucide-react': '^1.21.0' };
+    const incomplete = lockset({ dependencies: { ...deps } }); // resolved=RESOLVED lacks lucide-react
+    await expect(r.fetchManifest(deps, true, incomplete)).rejects.toThrow(/Could not resolve.*lucide-react@\^1\.21\.0/);
+    expect(mockedFetchManifest).not.toHaveBeenCalled(); // lockset echo matched; no live fetch attempted
   });
 });
