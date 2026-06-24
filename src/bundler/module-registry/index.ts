@@ -1,3 +1,5 @@
+import { assertDependenciesResolved } from '@immediately-run/transpiler';
+
 import * as logger from '../../utils/logger';
 import { sortObj } from '../../utils/object';
 import { Bundler } from '../bundler';
@@ -11,10 +13,21 @@ import {
   decodeBundledModule,
   parseBundledIndex,
 } from './bundledPackages';
+import {
+  EsmFallbackLoader,
+  ESM_FALLBACK_GLOBAL,
+  esmFallbackUrl,
+  synthesizeEsmFallbackModule,
+} from './esm-fallback';
 import { NodeModule } from './NodeModule';
 
 // dependency => version range
 export type DepMap = { [depName: string]: string };
+
+// The resolution-completeness guard (`assertDependenciesResolved`) lives in
+// @immediately-run/transpiler alongside `computeInputDepMap`, the single source
+// of truth shared with the CLI cache-zip builder (PRETRANSPILED_ARTIFACTS_SPEC
+// §4.4) so a silently-dropped package reads identically at boot and at build time.
 
 export class ModuleRegistry {
   modules: Map<string, NodeModule> = new Map();
@@ -26,9 +39,25 @@ export class ModuleRegistry {
   // = not yet loaded; `null` = no bundle present / malformed (resolve live).
   private bundledIndex: Map<string, string> | null | undefined = undefined;
 
+  // Packages the primary CDN dropped that we route through the esm.sh fallback
+  // (name → requested range). Consulted in `_fetchModule` to synthesize the
+  // bridge package instead of fetching from the primary CDN.
+  private esmFallbacks: Map<string, string> = new Map();
+
   bundler: Bundler;
 
-  constructor(bundler: Bundler) {
+  // esm.sh fallback for primary-CDN-dropped packages. DISABLED by default
+  // (`null`): live verification (2026-06-23) showed a fallback package gets its
+  // own esm.sh React instance, so any package using a hook — incl. lucide-react,
+  // whose icons read `IconContext` via `useContext` — crashes at render with a
+  // null dispatcher. Until a shared-React bridge lands (see esm-fallback.ts), a
+  // dropped package failing fast via `assertDependenciesResolved` is the better UX.
+  // Pass `nativeEsmFallbackLoader` to enable it (correct today only for packages
+  // that touch no React hooks), or a stub loader in tests.
+  constructor(
+    bundler: Bundler,
+    private esmFallbackLoader: EsmFallbackLoader | null = null,
+  ) {
     this.bundler = bundler;
   }
 
@@ -73,6 +102,7 @@ export class ModuleRegistry {
     // stale or foreign lockset can never be applied. `validateLockset` has
     // already checked shape + cdnVersion; the dependency echo is checked here
     // because this is where the final (filtered) input DepMap exists.
+    let resolvedFromLockset = false;
     if (lockset) {
       if (depMapsEqual(sortedDeps, lockset.dependencies)) {
         // The echo matches the INPUT, but a lockset could still inject extra
@@ -82,9 +112,10 @@ export class ModuleRegistry {
         if (locksetClosureValid(lockset)) {
           logger.debug('Using sidecar lockset, skipping dep_tree resolution', lockset.resolved);
           this.manifest = lockset.resolved;
-          return;
+          resolvedFromLockset = true;
+        } else {
+          logger.warn('Sidecar lockset failed closure validation (resolved not closed over declared deps); resolving live');
         }
-        logger.warn('Sidecar lockset failed closure validation (resolved not closed over declared deps); resolving live');
       } else {
         logger.debug('Sidecar lockset dependency echo does not match; resolving live', {
           computed: sortedDeps,
@@ -93,9 +124,36 @@ export class ModuleRegistry {
       }
     }
 
-    logger.debug('Fetching manifest', sortedDeps);
-    this.manifest = await fetchManifest(sortedDeps);
-    logger.debug('fetched manifest', this.manifest);
+    if (!resolvedFromLockset) {
+      logger.debug('Fetching manifest', sortedDeps);
+      this.manifest = await fetchManifest(sortedDeps);
+      logger.debug('fetched manifest', this.manifest);
+    }
+
+    // Completeness applies to BOTH paths. A package the primary CDN drops is
+    // missing whether resolved live OR baked into a sidecar lockset — the CLI
+    // builds the lockset against the SAME CDN (PRETRANSPILED_ARTIFACTS_SPEC
+    // §5.4), so a build-time drop is frozen into `lockset.resolved` and
+    // `locksetClosureValid` (which only rejects INJECTED top-level packages, not
+    // MISSING ones) won't catch it. Register esm.sh fallbacks (no-op when
+    // disabled) then guard, so a dropped dep surfaces the clear error rather than
+    // a cryptic undefined import — on either path.
+    this.registerEsmFallbacks(sortedDeps);
+    assertDependenciesResolved(sortedDeps, this.manifest);
+  }
+
+  // For every requested top-level dep the primary CDN silently dropped, register
+  // an esm.sh fallback and append a manifest entry so `preloadModules` fetches
+  // it. No-op when the fallback is disabled (`esmFallbackLoader === null`).
+  private registerEsmFallbacks(requested: DepMap): void {
+    if (!this.esmFallbackLoader) return;
+    const resolved = new Set(this.manifest.map((dep) => dep.n));
+    for (const [name, range] of Object.entries(requested)) {
+      if (resolved.has(name)) continue;
+      this.esmFallbacks.set(name, range);
+      this.manifest.push({ n: name, v: range, d: 0 });
+      logger.warn(`Primary CDN did not resolve "${name}@${range}"; routing through the esm.sh fallback`);
+    }
   }
 
   async preloadModules(): Promise<void> {
@@ -107,11 +165,41 @@ export class ModuleRegistry {
   }
 
   private async _fetchModule(name: string, version: string): Promise<NodeModule> {
+    const fallbackRange = this.esmFallbacks.get(name);
+    if (fallbackRange !== undefined) {
+      return this._fetchEsmFallbackModule(name, fallbackRange);
+    }
     // Prefer the zip-bundled content (R3-49a); fall back to the live CDN fetch.
     const module = (await this._fetchBundledModule(name, version)) ?? (await fetchModule(name, version));
     const processedNodeModule = new NodeModule(name, version, module.f, module.m);
     this.modules.set(name, processedNodeModule);
     logger.debug('fetched module', name, version, module);
+    return processedNodeModule;
+  }
+
+  // Load a primary-CDN-dropped package from esm.sh as a native ES module, stash
+  // its namespace on the global for the shim to read, and register a synthetic
+  // bridge package (see esm-fallback.ts). A loader failure (404, CSP block,
+  // offline) surfaces as a clear error naming the package — never a silent
+  // undefined import.
+  private async _fetchEsmFallbackModule(name: string, range: string): Promise<NodeModule> {
+    const url = esmFallbackUrl(name, range, this.manifest);
+    let namespace: Record<string, unknown>;
+    try {
+      namespace = await this.esmFallbackLoader!(url);
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        `Could not resolve "${name}@${range}" from the package CDN, and the esm.sh fallback (${url}) also failed: ${reason}`,
+      );
+    }
+    const g = globalThis as unknown as Record<string, Record<string, unknown>>;
+    (g[ESM_FALLBACK_GLOBAL] ??= {})[name] = namespace;
+
+    const module = synthesizeEsmFallbackModule(name, range);
+    const processedNodeModule = new NodeModule(name, range, module.f, module.m);
+    this.modules.set(name, processedNodeModule);
+    logger.debug('resolved module via esm.sh fallback', name, range, url);
     return processedNodeModule;
   }
 
