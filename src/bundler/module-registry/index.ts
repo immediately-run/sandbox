@@ -1,4 +1,4 @@
-import { assertDependenciesResolved } from '@immediately-run/transpiler';
+import { assertDependenciesResolved, transformFile } from '@immediately-run/transpiler';
 
 import * as logger from '../../utils/logger';
 import { sortObj } from '../../utils/object';
@@ -14,9 +14,11 @@ import {
   parseBundledIndex,
 } from './bundledPackages';
 import {
-  EsmFallbackLoader,
-  ESM_FALLBACK_GLOBAL,
-  esmFallbackUrl,
+  EsmFallbackFetcher,
+  esmFallbackEntryUrl,
+  esmFallbackModulePath,
+  fetchEsmFallbackSource,
+  nativeEsmFallbackFetcher,
   synthesizeEsmFallbackModule,
 } from './esm-fallback';
 import { NodeModule } from './NodeModule';
@@ -46,17 +48,18 @@ export class ModuleRegistry {
 
   bundler: Bundler;
 
-  // esm.sh fallback for primary-CDN-dropped packages. DISABLED by default
-  // (`null`): live verification (2026-06-23) showed a fallback package gets its
-  // own esm.sh React instance, so any package using a hook — incl. lucide-react,
-  // whose icons read `IconContext` via `useContext` — crashes at render with a
-  // null dispatcher. Until a shared-React bridge lands (see esm-fallback.ts), a
-  // dropped package failing fast via `assertDependenciesResolved` is the better UX.
-  // Pass `nativeEsmFallbackLoader` to enable it (correct today only for packages
-  // that touch no React hooks), or a stub loader in tests.
+  // esm.sh fallback for primary-CDN-dropped packages, ENABLED by default. It
+  // fetches the package's esm.sh source with the resolved deps externalized and
+  // transpiles it through the bundler's own chain, so its `require("react")`
+  // binds to the APP's React — sharing the one instance (see esm-fallback.ts).
+  // This fixes the dual-React render crash the earlier native-import approach hit
+  // (lucide-react@1.x icons read `IconContext` via `useContext`). Only fires when
+  // the primary CDN actually drops a package; on failure (esm.sh down, a
+  // multi-chunk package) it throws the clear `assertDependenciesResolved`-style
+  // error. Pass `null` to disable, or a stub fetcher in tests.
   constructor(
     bundler: Bundler,
-    private esmFallbackLoader: EsmFallbackLoader | null = null,
+    private esmFallbackFetcher: EsmFallbackFetcher | null = nativeEsmFallbackFetcher,
   ) {
     this.bundler = bundler;
   }
@@ -146,7 +149,7 @@ export class ModuleRegistry {
   // an esm.sh fallback and append a manifest entry so `preloadModules` fetches
   // it. No-op when the fallback is disabled (`esmFallbackLoader === null`).
   private registerEsmFallbacks(requested: DepMap): void {
-    if (!this.esmFallbackLoader) return;
+    if (!this.esmFallbackFetcher) return;
     const resolved = new Set(this.manifest.map((dep) => dep.n));
     for (const [name, range] of Object.entries(requested)) {
       if (resolved.has(name)) continue;
@@ -183,23 +186,35 @@ export class ModuleRegistry {
   // offline) surfaces as a clear error naming the package — never a silent
   // undefined import.
   private async _fetchEsmFallbackModule(name: string, range: string): Promise<NodeModule> {
-    const url = esmFallbackUrl(name, range, this.manifest);
-    let namespace: Record<string, unknown>;
+    // Externalize every already-resolved dep (excluding this package) so esm.sh
+    // emits bare imports the bundler resolves to the SHARED instances (esp.
+    // react/react-dom) instead of bundling duplicates — see esm-fallback.ts.
+    const externals = [...new Set(this.manifest.map((d) => d.n))].filter((n) => n !== name);
+    const entryUrl = esmFallbackEntryUrl(name, range, externals);
+
+    let source: string;
     try {
-      namespace = await this.esmFallbackLoader!(url);
+      source = await fetchEsmFallbackSource(entryUrl, this.esmFallbackFetcher!);
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       throw new Error(
-        `Could not resolve "${name}@${range}" from the package CDN, and the esm.sh fallback (${url}) also failed: ${reason}`,
+        `Could not resolve "${name}@${range}" from the package CDN, and the esm.sh fallback (${entryUrl}) also failed: ${reason}`,
       );
     }
-    const g = globalThis as unknown as Record<string, Record<string, unknown>>;
-    (g[ESM_FALLBACK_GLOBAL] ??= {})[name] = namespace;
 
-    const module = synthesizeEsmFallbackModule(name, range);
+    // Transpile the esm.sh ES module through the SAME chain the bundler runs, so
+    // its `require("react")` binds to the app's React, not a second instance.
+    const transformed = await transformFile({ path: esmFallbackModulePath(name), code: source });
+    if ('error' in transformed) {
+      throw new Error(
+        `Could not use the esm.sh fallback for "${name}@${range}": transpile failed: ${transformed.error.message}`,
+      );
+    }
+
+    const module = synthesizeEsmFallbackModule(name, range, transformed.code, transformed.deps);
     const processedNodeModule = new NodeModule(name, range, module.f, module.m);
     this.modules.set(name, processedNodeModule);
-    logger.debug('resolved module via esm.sh fallback', name, range, url);
+    logger.debug('resolved module via esm.sh fallback (shared-React transpile)', name, range, entryUrl);
     return processedNodeModule;
   }
 

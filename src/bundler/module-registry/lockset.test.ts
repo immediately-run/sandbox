@@ -154,12 +154,13 @@ describe('ModuleRegistry.fetchManifest with a lockset', () => {
   });
 
   it('catches a lockset MISSING a declared dep (baked-in CDN drop), not silently skipping it', async () => {
-    const r = registry();
-    // The CLI builds the sidecar lockset against the SAME primary CDN, so if the
-    // CDN drops a package at build time it is frozen out of `resolved`. The echo
-    // matches and closure passes (closure only rejects INJECTED roots), so this
-    // would silently skip before — now the completeness guard fires on the
-    // lockset path too. (Fallback disabled by default → the clear error.)
+    // Fallback disabled (null) to isolate the completeness guard: the CLI builds
+    // the sidecar lockset against the SAME primary CDN, so a CDN drop is frozen
+    // out of `resolved`. The echo matches and closure passes (closure only rejects
+    // INJECTED roots), so this would silently skip before — now the guard fires on
+    // the lockset path too. (With the fallback enabled it would instead route the
+    // dropped dep to esm.sh; that path is covered in esmFallback.test.ts.)
+    const r = new ModuleRegistry({} as Bundler, null);
     const deps = { ...DEPS, 'lucide-react': '^1.21.0' };
     const incomplete = lockset({ dependencies: { ...deps } }); // resolved=RESOLVED lacks lucide-react
     await expect(r.fetchManifest(deps, true, incomplete)).rejects.toThrow(/Could not resolve.*lucide-react@\^1\.21\.0/);
