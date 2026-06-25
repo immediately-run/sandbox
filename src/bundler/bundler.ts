@@ -8,7 +8,7 @@ import { FormFactorService } from '../formFactor/FormFactorService';
 import { EditorContextService } from '../editor/EditorContextService';
 import { CatalogService } from '../catalog/CatalogService';
 import { MountService } from '../mounts/MountService';
-import { APP_ROOT, MANIFEST_SIDECAR_PATH, underAppRoot, stripAppRoot } from '../fsLayout';
+import { APP_ROOT, MANIFEST_SIDECAR_PATH, underAppRoot } from '../fsLayout';
 import { isTransformable } from '@immediately-run/transpiler';
 import { ArtifactStore } from './artifacts/artifactStore';
 import { getEmbeddedToolchain } from './artifacts/embeddedToolchain';
@@ -958,10 +958,13 @@ export class Bundler {
   private refreshMetadata(path: string, source: string): void {
     const parsed = extractMetadata({ path, code: source });
     const next = parsed ? parsed.data : undefined;
-    // Metadata is keyed by the repo-relative path apps and the URL space use
-    // (the bundler fs is rooted at `/`, so module paths are `/app/...`).
-    const publicPath = stripAppRoot(path);
-    const prev = this.lastMetadata.get(publicPath);
+    // Metadata is keyed by the file's ABSOLUTE module/fs path (e.g.
+    // `/app/content/x.mdx`) — the same identifier `module.dynamicImport`, `fs`,
+    // and the SDK `<Include>` use. Keeping the metadata key in the file space
+    // (rather than stripping `APP_ROOT` into the URL space) means an app reads a
+    // file's metadata and renders it with the SAME path; the URL layer owns the
+    // `/files`↔`APP_ROOT` translation (FILES_PREFIX / underAppRoot).
+    const prev = this.lastMetadata.get(path);
 
     const prevKey = prev ? JSON.stringify(prev) : undefined;
     const nextKey = next ? JSON.stringify(next) : undefined;
@@ -970,13 +973,13 @@ export class Bundler {
     }
 
     if (next) {
-      this.lastMetadata.set(publicPath, next);
+      this.lastMetadata.set(path, next);
     } else {
-      this.lastMetadata.delete(publicPath);
+      this.lastMetadata.delete(path);
     }
     this.onMetadataChangeEmitter.fire({
       type: 'metadata-update',
-      update: { [publicPath]: next ?? {} },
+      update: { [path]: next ?? {} },
     });
   }
 
