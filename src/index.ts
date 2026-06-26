@@ -11,6 +11,7 @@ import { IFrameParentMessageBus } from './protocol/iframe';
 import { AuthService } from './auth/AuthService';
 import { REQUEST_AUTH_STATE_MESSAGE } from './auth/authState';
 import { ThemeService } from './theme/ThemeService';
+import { applyThemeCanvas } from './theme/themeCanvas';
 import { REQUEST_THEME_MESSAGE } from './theme/themeState';
 import { EditorContextService } from './editor/EditorContextService';
 import { REQUEST_EDITOR_CONTEXT_MESSAGE } from './editor/editorContextState';
@@ -87,6 +88,10 @@ class SandpackInstance {
     // Likewise for the host theme, so a `theme` message that arrives early is
     // captured rather than dropped (baseline `theme:read`, §5.4).
     this.themeService = new ThemeService(this.messageBus);
+    // Paint the iframe's base canvas to the host theme so the pre-paint / in-app
+    // Suspense gap is never the UA's default white between the host skeleton and
+    // the app (LOADING_UX_SPEC §7 / I3). Theme-aware + follows live theme switches.
+    applyThemeCanvas(this.themeService);
     // Editor context (the dirty set, §5.3) — captured early so an `editor-context`
     // message arriving before the bundler exists isn't dropped. Elevated
     // `editor:read`; the parent only sends it to iframes that hold the capability.
