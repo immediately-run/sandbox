@@ -15,6 +15,7 @@ import { getEmbeddedToolchain } from './artifacts/embeddedToolchain';
 import { BundlerStatus } from '../protocol/message-types';
 import { ResolverCache, resolveAsync } from '../resolver/resolver';
 import { resolveSelfHostVersion, fetchVendoredModule, SelfHostResolutionError, type VendorTiming } from './registryResolvedModules';
+import { gitDependencyNames } from './gitDependency';
 
 // Module-level monotonic clock for the `[ir-perf:addlocal]` sub-phase breakdown
 // (LOAD_PROFILING_SPEC §2 phase 3) — falls back to Date.now when unavailable.
@@ -781,6 +782,35 @@ export class Bundler {
     }
   }
 
+  /**
+   * Register a git-dependency library's files as a LOCAL module under
+   * `/node_modules/<name>/` (LIBRARY_MOUNTS_SPEC §2.1 L2). This is the
+   * registration path that settles Q2: the library is delivered the same proven
+   * way `addLocalModules`/`vendorModuleFrom` deliver the SDK — write the files on
+   * the CoW writable side and register the module files as bundler `Module`s — so
+   * the resolver finds the package by standard node resolution AHEAD of the
+   * RegistryFS/CDN (NOT a ZenFS sub-mount under the existing `/node_modules` CoW,
+   * whose precedence is uncertain).
+   *
+   * `files[].path` is relative to the package root (e.g. `package.json`,
+   * `dist/index.js`). The name is stripped from the CDN `/dep_tree/` query by
+   * `registryResolvedNames()` (git deps). Not wired into the boot sequence — L3's
+   * host-mount step calls this; L2 provides it and proves resolution + no-CDN.
+   */
+  async addGitDependencyModule(
+    name: string,
+    files: { path: string; content: string; isModule?: boolean }[],
+  ): Promise<void> {
+    for (const { path, content, isModule } of files) {
+      const rel = path.replace(/^\/+/, '');
+      const fullPath = `/node_modules/${name}/${rel}`;
+      await this.fs.writeFile(fullPath, content);
+      if (isModule) {
+        this.modules.set(fullPath, new Module(fullPath, content, false, this));
+      }
+    }
+  }
+
   /** Host-pinned SDK integrity (SDK_PACKAGING_SPEC §5.2), set from IInitConfig
    *  before the initial compile. Undefined → verification skipped (not wired). */
   setSdkIntegrity(integrity: SdkIntegrity | undefined): void {
@@ -898,9 +928,21 @@ export class Bundler {
    * replicated npm→CDN would fail resolution for the whole app. Mirrors the CLI
    * lockset's `computeInputDepMap` stripping so the lockset echo-match still
    * holds. Self-hosting is implicit, so every `SELF_HOST_BASES` key is stripped.
+   *
+   * LIBRARY_MOUNTS_SPEC §2.1/§4 L2: also strip any dependency whose value is a
+   * git-form specifier (`github:owner/repo#ref`, …). A git dep resolves from a
+   * registered local module under `/node_modules/<name>/`
+   * (`addGitDependencyModule`), NOT from the CDN — and `concreteVersion()` would
+   * reject/mis-default a `github:` value if it reached the `/dep_tree/` query, so
+   * it MUST be stripped here. (Runs in `loadNodeModules`, after
+   * `processPackageJSON`, so `parsedPackageJSON` is available.)
    */
   private registryResolvedNames(): Set<string> {
-    return new Set(Object.keys(SELF_HOST_BASES));
+    const names = new Set(Object.keys(SELF_HOST_BASES));
+    for (const name of gitDependencyNames(this.parsedPackageJSON?.dependencies)) {
+      names.add(name);
+    }
+    return names;
   }
 
   async preloadMDXMetadata(): Promise<void> {
