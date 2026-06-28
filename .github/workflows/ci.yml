@@ -7,44 +7,45 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Setup | Checkout
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
 
       - name: Setup | Install Node.js
-        uses: actions/setup-node@v2
+        uses: actions/setup-node@v4
         with:
-          node-version: '16'
+          node-version: '20'
+          cache: 'npm'
 
-      - name: Setup | Yarn
-        uses: bahmutov/npm-install@v1
-        
+      - name: Setup | Install dependencies
+        run: npm ci
+
       - name: Lint | Eslint Check
-        run: yarn lint
+        run: npm run lint
 
       - name: Format | Prettier Check
-        run: yarn format --check
+        run: npm run format -- --check
 
       - name: Test | Verify types
-        run: yarn typecheck
+        run: npm run typecheck
 
       - name: Test | Jest
-        run: yarn test --forceExit
+        run: npm test -- --forceExit
 
   build:
     runs-on: ubuntu-latest
     steps:
       - name: Setup | Checkout
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
 
       - name: Setup | Node.js
-        uses: actions/setup-node@v2
+        uses: actions/setup-node@v4
         with:
-          node-version: '16'
+          node-version: '20'
+          cache: 'npm'
 
-      - name: Setup | Yarn Install
-        uses: bahmutov/npm-install@v1
+      - name: Setup | Install dependencies
+        run: npm ci
 
       - name: Build | Build application
-        run: yarn build
-        
+        run: npm run build
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
