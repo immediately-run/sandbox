@@ -811,6 +811,144 @@ export class Bundler {
     }
   }
 
+  /**
+   * Receive a host-pushed git-library mount and register it as a LOCAL module
+   * under `/node_modules/<moduleName>/` (LIBRARY_MOUNTS_SPEC L3 / Q2 registration).
+   * The host mounts a git-library repo's read-only fs at `mountPath` (`/mnt/<hash>`)
+   * and tags the `mount-add` with `moduleName` (= the `dependencies` key); this
+   * walks the mounted tree and feeds it to `addGitDependencyModule`, so the bundler
+   * resolves the bare import from the mounted repo AHEAD of the CDN — no CDN fetch.
+   * Called from `handleMountAdd` when an arrived mount carries `moduleName`, and
+   * from `registerDeclaredGitLibraries()` at boot for a mount that already arrived.
+   *
+   * Idempotent-friendly: re-registering overwrites the same files
+   * (`addGitDependencyModule` writes by path).
+   *
+   * Traversal safety: the relative paths are built only from `readdir` entry names
+   * under `mountPath`; an entry named `.`/`..`, or containing `/`, `\`, or NUL, is
+   * skipped (defense in depth), so a gathered rel path can never escape the package
+   * root. Total files/bytes are capped and unreadable entries are skipped, so a
+   * pathological tree degrades the one library rather than aborting boot.
+   */
+  async registerGitLibraryMount(moduleName: string, mountPath: string): Promise<void> {
+    const fsp = this.fs.boundContext.fs.promises;
+    const MODULE_EXTS = new Set(['.js', '.jsx', '.ts', '.tsx', '.mjs', '.cjs']);
+    const MAX_FILES = 5000;
+    const MAX_TOTAL_BYTES = 64 * 1024 * 1024; // 64 MiB — skip absurdly large trees
+
+    const files: { path: string; content: string; isModule: boolean }[] = [];
+    let totalBytes = 0;
+    let capped = false;
+
+    // Reject an entry name that could escape the package root or carry control
+    // chars. `readdir` should never yield `/`-bearing names, but screen anyway.
+    const isSafeName = (name: string): boolean => {
+      if (name === '.' || name === '..') return false;
+      if (name.includes('/') || name.includes('\\')) return false;
+      if (name.includes('\0')) return false;
+      return true;
+    };
+
+    const walk = async (absDir: string, relDir: string): Promise<void> => {
+      if (capped) return;
+      let entries: string[];
+      try {
+        entries = await fsp.readdir(absDir);
+      } catch {
+        return; // unreadable directory — skip, never abort the boot
+      }
+      for (const name of entries) {
+        if (capped) return;
+        if (!isSafeName(name)) continue; // defense in depth (see doc-comment)
+        const abs = `${absDir}/${name}`;
+        const rel = relDir ? `${relDir}/${name}` : name;
+        let isDir: boolean;
+        try {
+          isDir = (await fsp.stat(abs)).isDirectory();
+        } catch {
+          continue; // vanished between readdir and stat — skip
+        }
+        if (isDir) {
+          await walk(abs, rel);
+          continue;
+        }
+        if (files.length >= MAX_FILES) {
+          capped = true;
+          return;
+        }
+        let content: string;
+        try {
+          content = await fsp.readFile(abs, 'utf8');
+        } catch {
+          continue; // unreadable file — skip rather than throw
+        }
+        totalBytes += content.length;
+        if (totalBytes > MAX_TOTAL_BYTES) {
+          capped = true;
+          return;
+        }
+        const dot = name.lastIndexOf('.');
+        const ext = dot === -1 ? '' : name.slice(dot).toLowerCase();
+        files.push({ path: rel, content, isModule: MODULE_EXTS.has(ext) });
+      }
+    };
+
+    await walk(mountPath, '');
+    if (capped) {
+      logger.warn(
+        `Git-library '${moduleName}' at ${mountPath} exceeded the registration cap ` +
+          `(${MAX_FILES} files / ${MAX_TOTAL_BYTES} bytes); registered a truncated subset.`,
+      );
+    }
+    await this.addGitDependencyModule(moduleName, files);
+  }
+
+  /**
+   * Boot step (LIBRARY_MOUNTS_SPEC L3): for every declared git-form dependency
+   * (`gitDependencyNames`), if it is NOT already registered under
+   * `/node_modules/<name>/package.json` (an arrived mount may have registered it
+   * already via `handleMountAdd`), look up a mount whose `moduleName === name` in
+   * the `MountService` and register it now. This makes boot deterministic for the
+   * common host-push-before-compile case. No polling: a declared git lib with
+   * neither a registered module nor a known mount logs a concise warning and is
+   * left to fail resolution normally (a robust wait-for-arrival is a follow-up).
+   *
+   * Wired into `compile()` AFTER `processPackageJSON()` (deps known) and BEFORE
+   * `loadNodeModules()` (CDN), guarded by `isFirstLoad`.
+   */
+  private async registerDeclaredGitLibraries(): Promise<void> {
+    const names = gitDependencyNames(this.parsedPackageJSON?.dependencies);
+    if (names.size === 0) return;
+    const fsp = this.fs.boundContext.fs.promises;
+    const mounts = this.mounts?.getMounts?.() ?? [];
+    for (const name of names) {
+      // Already registered (by an arrived mount or a prior pass)? Leave it.
+      let alreadyRegistered = false;
+      try {
+        await fsp.stat(`/node_modules/${name}/package.json`);
+        alreadyRegistered = true;
+      } catch {
+        /* not registered yet */
+      }
+      if (alreadyRegistered) continue;
+
+      const descriptor = mounts.find((m) => m.moduleName === name);
+      if (!descriptor) {
+        logger.warn(
+          `Git-library dependency '${name}' declared but no mount has arrived to ` +
+            `register it; the import will resolve normally (likely fail). ` +
+            `(LIBRARY_MOUNTS_SPEC L3 — wait-for-arrival is a follow-up.)`,
+        );
+        continue;
+      }
+      try {
+        await this.registerGitLibraryMount(name, descriptor.path);
+      } catch (e) {
+        logger.warn(`Failed to register git-library '${name}' from ${descriptor.path}`, e);
+      }
+    }
+  }
+
   /** Host-pinned SDK integrity (SDK_PACKAGING_SPEC §5.2), set from IInitConfig
    *  before the initial compile. Undefined → verification skipped (not wired). */
   setSdkIntegrity(integrity: SdkIntegrity | undefined): void {
@@ -1158,6 +1296,14 @@ export class Bundler {
       }
 
       this._previousDepString = depString;
+
+      // LIBRARY_MOUNTS_SPEC L3: register any declared git-library whose mount has
+      // already arrived under `/node_modules/<name>/` BEFORE the CDN pass, so the
+      // bare import resolves from the mounted repo (no CDN fetch). Best-effort.
+      if (this.isFirstLoad) {
+        await this.registerDeclaredGitLibraries();
+        bootLap('registerDeclaredGitLibraries');
+      }
 
       await this.loadNodeModules();
       bootLap('loadNodeModules');
