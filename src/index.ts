@@ -408,6 +408,18 @@ class SandpackInstance {
     await materializeMountPoint(mountDescriptor.path);
     mount(mountDescriptor.path, mountfs);
     this.mountService.add(mountDescriptor);
+    // LIBRARY_MOUNTS_SPEC L3: a git-library mount is tagged with `moduleName` (the
+    // package name = the `dependencies` key). Register the just-mounted repo under
+    // `/node_modules/<moduleName>/` so the bundler resolves the bare import from it
+    // with no CDN fetch. Best-effort, mirroring runPostMount: a failure logs and
+    // does not abort the mount.
+    if (typeof mountDescriptor.moduleName === 'string' && mountDescriptor.moduleName.length > 0) {
+      try {
+        await this.bundler.registerGitLibraryMount(mountDescriptor.moduleName, mountDescriptor.path);
+      } catch (e) {
+        logger.error('registerGitLibraryMount failed', e);
+      }
+    }
     // Post-mount lifecycle hooks (§11.3) — best-effort, never blocks the mount.
     // (No registered action targets non-app-root mounts today; this is the hook
     // point for future ones.)
