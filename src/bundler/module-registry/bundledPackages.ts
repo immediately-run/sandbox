@@ -7,13 +7,15 @@
 // R3-49b) a single bulk transfer. See plans/dependency-loading-optimization.md.
 
 import { decode as decodeMsgPack } from '@msgpack/msgpack';
+import { PACKAGES_DIR } from '@immediately-run/platform-constants';
 import { underAppRoot } from '../../fsLayout';
 import type { ICDNModule } from './module-cdn';
 
 // In-zip layout written by the CLI (mirrors immediately-run-cli/src/commands/cacheZip).
-// The whole platform sidecar (manifest + artifacts + packages) lives under
-// `.immediately.run/` (renamed from `.tinkerable/`); this constant tracks it.
-export const BUNDLED_PACKAGES_DIR = '.immediately.run/packages';
+// The whole platform sidecar (manifest + artifacts + packages) lives under the sidecar
+// dir, owned by @immediately-run/platform-constants (R3-104); re-exported under the
+// existing name so this module's importers are unchanged.
+export const BUNDLED_PACKAGES_DIR = PACKAGES_DIR;
 
 /** App-rooted path of the bundled-package index (`{cdnVersion, packages:[{n,v,key,path}]}`). */
 export const bundledIndexPath = (): string => underAppRoot(`/${BUNDLED_PACKAGES_DIR}/index.json`);

@@ -1,3 +1,5 @@
+import { ARTIFACTS_DIR } from '@immediately-run/platform-constants';
+
 import { absolute, normalize } from '../../utils/path';
 
 /**
@@ -18,8 +20,10 @@ import { absolute, normalize } from '../../utils/path';
 /** The only artifact-index `schemaVersion` this runtime understands (§4.2). */
 export const ARTIFACT_INDEX_SCHEMA_VERSION = 1;
 
-/** Artifacts live under this repo-relative directory in the readable (zip) layer (§4.1). */
-export const ARTIFACTS_DIR = '.immediately.run/artifacts';
+/** Artifacts live under this repo-relative directory in the readable (zip) layer (§4.1).
+ *  The literal is owned by @immediately-run/platform-constants (R3-104); re-exported
+ *  here so existing importers of `ARTIFACTS_DIR` from this module keep working. */
+export { ARTIFACTS_DIR };
 const ARTIFACTS_PREFIX = `${ARTIFACTS_DIR}/`;
 
 /** `index.json` `toolchain` block — the byte-identity stamp (§4.4). */
