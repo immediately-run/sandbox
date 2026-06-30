@@ -1,60 +1,41 @@
+import { compileMdx, MdxCompileError } from '@immediately-run/transpiler';
+
 import { Bundler } from '../../bundler';
 import { ITranspilationContext, ITranspilationResult, Transformer } from '../Transformer';
-import { compile } from '@mdx-js/mdx'
-import { VFile } from 'vfile'
-
 import { BundlerError } from '../../../errors/BundlerError';
-import {VFileMessage} from 'vfile-message'
-import remarkGfm from 'remark-gfm'
-import { PluggableList } from 'unified';
-import { parseFrontmatter } from '../../frontmatter';
 
+// The MDX compile (the `@mdx-js/mdx`/`remark-gfm`/`unified` pipeline + the
+// frontmatter strip) now lives in @immediately-run/transpiler so the CLI can
+// pre-transpile `.mdx` through the identical chain and the emitted bytes are
+// byte-identical (MDX_CONTENT_COLLECTIONS_SPEC §1.1). This transformer is now a
+// thin wrapper — the same shape `BabelTransformer` already has over
+// `transformBabel` — keeping only the sandbox `BundlerError` translation.
+//
+// Dependencies stay an empty set here: the chain runs `babel-transformer` next
+// (ReactPreset.mapTransformers), whose dep-collector records the provider /
+// jsx-runtime / in-body imports the MDX compile emitted — unchanged from before.
 export class MDXTransformer extends Transformer {
-
-  private recmaPlugins:PluggableList = [];
-  private rehypePlugins:PluggableList = [];
-  private remarkPlugins:PluggableList = [
-    [remarkGfm]
-  ];
-
   constructor() {
     super('mdx-transformer');
   }
 
-  async init(bundler: Bundler): Promise<void> {
-
-  }
+  async init(bundler: Bundler): Promise<void> {}
 
   async transform(ctx: ITranspilationContext, config: any): Promise<ITranspilationResult> {
-    const {content} = parseFrontmatter(ctx.code);
-    const file = new VFile({
-      path: ctx.module.filepath,
-      value: content
-    })
     try {
-      const compilerOutput = await compile(file, {
-        development: true,
-        jsx: true,
-        providerImportSource: '@immediately-run/sdk/MDXProvider',
-        outputFormat: 'program',
-        recmaPlugins: this.recmaPlugins,
-        rehypePlugins: this.rehypePlugins,
-        remarkPlugins: this.remarkPlugins
-      })
-
+      const code = await compileMdx(ctx.code, ctx.module.filepath);
       return {
-        code: String(compilerOutput.value),
-        // TODO: get required modeuls
+        code,
         dependencies: new Set([]),
       };
     } catch (e) {
-      const err = new BundlerError(String(e), ctx.module.filepath)
-      if (e instanceof VFileMessage) {
-        err.line = e.line;
-        err.column = e.column;
-        err.message = e.message;
+      const message = e instanceof MdxCompileError ? e.message : String(e);
+      const err = new BundlerError(message, ctx.module.filepath);
+      if (e instanceof MdxCompileError) {
+        if (e.line !== undefined) err.line = e.line;
+        if (e.column !== undefined) err.column = e.column;
       }
-      return err
+      return err;
     }
   }
 }
