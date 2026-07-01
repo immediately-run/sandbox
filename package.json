@@ -30,7 +30,7 @@
     "check:sidecar": "node scripts/check-sidecar-literal.mjs",
     "pretest": "npm run check:sidecar",
     "test": "jest",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "node ./node_modules/typescript/bin/tsc --noEmit",
     "format": "prettier --write \"./src/**/*.{ts,tsx,js,jsx,json}\"",
     "lint": "eslint '**/*.ts?(x)'",
     "deploy": "firebase deploy"
