@@ -1,60 +1,41 @@
+import { compileMdx, MdxCompileError } from '@immediately-run/transpiler';
+
 import { Bundler } from '../../bundler';
-import { ITranspilationContext, ITranspilationResult, Transformer } from '../Transformer';
-import { compile } from '@mdx-js/mdx'
-import { VFile } from 'vfile'
-
 import { BundlerError } from '../../../errors/BundlerError';
-import {VFileMessage} from 'vfile-message'
-import remarkGfm from 'remark-gfm'
-import { PluggableList } from 'unified';
-import { parseFrontmatter } from '../../frontmatter';
+import { ITranspilationContext, ITranspilationResult, Transformer } from '../Transformer';
 
+// The MDX compile + its frontmatter strip now live in @immediately-run/transpiler
+// (MDX_CONTENT_COLLECTIONS_SPEC §1.1), so the live transpile is byte-identical to
+// the CLI's pre-transpiled artifacts (which run the same `compileMdx` via
+// `transformFile`). This module keeps only the sandbox `Transformer` wiring: call
+// the shared compile and re-wrap its typed error as a `BundlerError`.
+//
+// The chain stays three-stage: `mdx-transformer` → `babel-transformer` →
+// `react-refresh-transformer` (ReactPreset.mapTransformers). The compile emits the
+// `@immediately-run/sdk/MDXProvider` provider import, the jsx runtime, and any
+// in-body `import` as ordinary `import`s in its JS output; the SUBSEQUENT
+// `babel-transformer` stage's dependency collector picks those up (and the CLI's
+// `transformFile` collects the identical set into the artifact's `deps[]`), so this
+// stage records no deps of its own.
 export class MDXTransformer extends Transformer {
-
-  private recmaPlugins:PluggableList = [];
-  private rehypePlugins:PluggableList = [];
-  private remarkPlugins:PluggableList = [
-    [remarkGfm]
-  ];
-
   constructor() {
     super('mdx-transformer');
   }
 
-  async init(bundler: Bundler): Promise<void> {
-
-  }
+  async init(bundler: Bundler): Promise<void> {}
 
   async transform(ctx: ITranspilationContext, config: any): Promise<ITranspilationResult> {
-    const {content} = parseFrontmatter(ctx.code);
-    const file = new VFile({
-      path: ctx.module.filepath,
-      value: content
-    })
     try {
-      const compilerOutput = await compile(file, {
-        development: true,
-        jsx: true,
-        providerImportSource: '@immediately-run/sdk/MDXProvider',
-        outputFormat: 'program',
-        recmaPlugins: this.recmaPlugins,
-        rehypePlugins: this.rehypePlugins,
-        remarkPlugins: this.remarkPlugins
-      })
-
-      return {
-        code: String(compilerOutput.value),
-        // TODO: get required modeuls
-        dependencies: new Set([]),
-      };
+      const code = await compileMdx(ctx.code, ctx.module.filepath);
+      return { code, dependencies: new Set([]) };
     } catch (e) {
-      const err = new BundlerError(String(e), ctx.module.filepath)
-      if (e instanceof VFileMessage) {
+      const err = new BundlerError(String(e), ctx.module.filepath);
+      if (e instanceof MdxCompileError) {
+        err.message = e.message;
         err.line = e.line;
         err.column = e.column;
-        err.message = e.message;
       }
-      return err
+      return err;
     }
   }
 }

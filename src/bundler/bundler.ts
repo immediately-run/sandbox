@@ -41,7 +41,7 @@ import { getPreset } from './presets/registry';
 import { emitPerfMarker } from './perfMarkers';
 import { retryFetch, registerImmutableUrlPrefix } from '../utils/fetch'
 import { basename, dirname } from '../utils/path'
-import { FrontmatterParseResult, parseFrontmatter } from './frontmatter';
+import { FrontmatterParseResult, parseFrontmatter } from '@immediately-run/transpiler';
 import { bindContext, globToRegex, CopyOnWrite, InMemory, mount, resolveMountConfig, fs as zenfs } from '@zenfs/core';
 
 export type TransformationQueue = NamedPromiseQueue<Module>;
