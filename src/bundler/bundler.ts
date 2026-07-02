@@ -990,11 +990,19 @@ export class Bundler {
    * the distrust mark for this `(coords, commitSha)` so later boots don't re-consume.
    */
   async runSpotVerify(): Promise<void> {
-    const verdict = await this.artifactStore.spotVerify();
+    // §5.7 byte check PLUS the §3 frontmatter extension: the sampled sources are
+    // re-read anyway, so also re-derive their frontmatter and compare to the seeded
+    // store — the only runtime path that can catch a forged/divergent sidecar (the
+    // consult-HIT path never re-reads a covered `.mdx`; verify-on-read is dead).
+    const verdict = await this.artifactStore.spotVerify(undefined, {
+      frontmatterOf: (appPath) => this.lastMetadata.get(appPath),
+    });
     if (!verdict.tampered) return;
     // §8.14 security event (logged here; the actionable channel is the message below).
+    // The specific mismatch kind (§5.7 transpile byte-check vs §3 frontmatter) goes in
+    // the log; the wire `reason` stays the stable `spot-verify-mismatch` the parent keys on.
     logger.warn(
-      `Artifact spot-verify mismatch at ${verdict.path} — all artifacts discarded for this session (UI_AS_APPS §8.14).`,
+      `Artifact spot-verify ${verdict.reason ?? 'mismatch'} at ${verdict.path} — all artifacts discarded for this session (UI_AS_APPS §8.14).`,
     );
     this.messageBus.sendMessage('artifact-distrust', {
       commitSha: this.artifactStore.getCommitSha(),
@@ -1084,6 +1092,43 @@ export class Bundler {
   }
 
   async preloadMDXMetadata(): Promise<void> {
+    // Cached path (MDX_CONTENT_COLLECTIONS_SPEC §1.3): seed the store from the
+    // frontmatter sidecar — a blob-SHA-confined JSON — instead of the recursive
+    // walk + per-file read across the COW port. Clean covered files come from JSON;
+    // modified `.mdx` (dirty set, parent-attested — no in-iframe walk) re-scan live;
+    // an absent/rejected sidecar falls through to the full live walk below.
+    const seed = await this.artifactStore.seedMdxMetadata({
+      dirtySet: this.dirtyPaths,
+      writableLayer: this.dirtyPaths,
+    });
+    if (seed.securityReject) {
+      logger.warn(
+        `MDX metadata sidecar rejected (${seed.securityReject}) — live-scanning frontmatter (UI_AS_APPS §8.14).`,
+      );
+      this.messageBus.sendMessage('artifact-distrust', {
+        commitSha: this.artifactStore.getCommitSha(),
+        reason: seed.securityReject,
+      });
+      // fall through to the live walk
+    } else if (seed.present) {
+      for (const [appPath, frontmatter] of seed.entries) this.seedMetadataEntry(appPath, frontmatter);
+      // Modified `.mdx` re-scan live (cache==live under edits); the rest is covered.
+      await Promise.all(
+        [...this.dirtyPaths]
+          .filter((relPath) => relPath.endsWith('.mdx'))
+          .map(async (relPath) => {
+            const appPath = underAppRoot(relPath);
+            try {
+              const source = await this.fs.readFileAsync(appPath);
+              this.refreshMetadata(appPath, source);
+            } catch {
+              /* deleted/unreadable — no entry, matching a live scan */
+            }
+          }),
+      );
+      return;
+    }
+
     const re = globToRegex('/**/*.mdx');
     const zenFsLayer = this.fs;
     const fsp = zenFsLayer.boundContext.fs.promises;
@@ -1135,6 +1180,32 @@ export class Bundler {
    * compilation. Fires `onMetadataChange` if the parsed metadata differs from
    * the last value observed for the same path.
    */
+  /**
+   * A synchronous view of the seeded MDX-frontmatter store for the SDK boot snapshot
+   * (MDX_CONTENT_COLLECTIONS_SPEC §1.4). Keyed by the absolute `/app/...` module path
+   * (`metadataKey.test.ts`). **Identity contract (load-bearing):** the VALUE objects
+   * are the same references the `onMetadataChange` emitter fires (`lastMetadata` values,
+   * never a clone), so the SDK's `DelayedEmitter` replay on `enable()` is a no-op via
+   * `updateAlreadyApplied`'s reference short-circuit — a defensive clone would re-render
+   * the whole collection after first paint (the CLS this feature removes; G-MDX-3
+   * carries the zero-re-render-after-`enable()` test).
+   */
+  getMetadataSnapshot(): Record<string, Record<string, any>> {
+    return Object.fromEntries(this.lastMetadata);
+  }
+
+  /**
+   * Seed one entry from the frontmatter sidecar (§1.3) — sets the store to the
+   * pre-parsed `frontmatter` and fires `onMetadataChange` with the SAME ref (the
+   * identity contract above), without re-reading or re-parsing source.
+   */
+  private seedMetadataEntry(appPath: string, frontmatter: Record<string, any>): void {
+    const prev = this.lastMetadata.get(appPath);
+    if (prev && JSON.stringify(prev) === JSON.stringify(frontmatter)) return;
+    this.lastMetadata.set(appPath, frontmatter);
+    this.onMetadataChangeEmitter.fire({ type: 'metadata-update', update: { [appPath]: frontmatter } });
+  }
+
   private refreshMetadata(path: string, source: string): void {
     const parsed = extractMetadata({ path, code: source });
     const next = parsed ? parsed.data : undefined;
