@@ -1,10 +1,11 @@
 import { APP_ROOT, MANIFEST_SIDECAR_PATH, stripAppRoot, underAppRoot } from '../../fsLayout';
-import { transformFile } from '@immediately-run/transpiler';
+import { parseFrontmatter, transformFile } from '@immediately-run/transpiler';
 import {
   ARTIFACTS_DIR,
   type ArtifactIndex,
   type EmbeddedToolchainIdentity,
   manifestShaMap,
+  normalizeRepoRelPath,
   outWithinArtifacts,
   parseArtifactIndex,
   readableLayerOnly,
@@ -15,6 +16,8 @@ import {
 const TRANSPILED_ROOT = '/transpiled';
 // Repo-relative seeding-input paths (leading-slash, the dirty-set/COW key space).
 const INDEX_REPO_PATH = `/${ARTIFACTS_DIR}/index.json`;
+/** The frontmatter content-collection sidecar (MDX_CONTENT_COLLECTIONS_SPEC §1.3). */
+const MDX_METADATA_REPO_PATH = `/${ARTIFACTS_DIR}/mdx-metadata.json`;
 /** Minimum spot-verification sample size (§5.7 — K ≥ 2, a floor not a ceiling). */
 export const SPOT_VERIFY_K = 2;
 
@@ -57,6 +60,18 @@ export interface SpotVerifyResult {
   path?: string;
   /** How many modules were sampled (`min(K, |consumed|)`). */
   sampled: number;
+  /** What kind of mismatch fired the distrust (§5.7 byte check vs §3 frontmatter). */
+  reason?: 'transpile-mismatch' | 'frontmatter-mismatch';
+}
+
+/** The confined result of reading the frontmatter sidecar (§1.3). */
+export interface MdxMetadataSeedResult {
+  /** Absolute `/app/...` path → frontmatter, for entries that pass confinement. */
+  entries: Map<string, Record<string, any>>;
+  /** True if the sidecar file existed (whether or not any entry was honored). */
+  present: boolean;
+  /** Set if the sidecar itself sat in the writable (COW) layer → rejected (§3). */
+  securityReject?: 'writable-layer-mdx-metadata';
 }
 
 /**
@@ -216,6 +231,66 @@ export class ArtifactStore {
   }
 
   /**
+   * Read + confine the frontmatter sidecar (MDX_CONTENT_COLLECTIONS_SPEC §1.3) so a
+   * clean cached boot seeds the metadata store from JSON instead of walking the tree.
+   * Returns `present:false` when the sidecar is absent (or the section is distrusted)
+   * → the caller live-scans. A writable-layer sidecar is rejected eagerly (§3). Each
+   * entry is honored only if it passes the SAME confinement as `§5.1` artifact seeding:
+   * a valid repo-relative path that names a manifest `entries[]` member, is not in the
+   * dirty set, and whose `srcSha` equals the manifest sha. Keys are translated to the
+   * absolute `/app/...` metadata-store space (`metadataKey.test.ts`) before returning.
+   */
+  async seedMdxMetadata(ctx: SeedContext): Promise<MdxMetadataSeedResult> {
+    const absent: MdxMetadataSeedResult = { entries: new Map(), present: false };
+    if (this.distrusted) return absent;
+
+    let raw: string;
+    try {
+      raw = await this.fs.readFileAsync(underAppRoot(MDX_METADATA_REPO_PATH));
+    } catch {
+      return absent; // sidecar not shipped → live scan (§5.5)
+    }
+    // §3 readable-layer-only: a writable-layer (COW) sidecar could survive a clean
+    // Refresh — reject the section and let the caller distrust + live-scan.
+    if (ctx.writableLayer.has(MDX_METADATA_REPO_PATH)) {
+      return { entries: new Map(), present: true, securityReject: 'writable-layer-mdx-metadata' };
+    }
+    let parsed: { schemaVersion?: unknown; files?: unknown };
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return { entries: new Map(), present: true };
+    }
+    if (!parsed || parsed.schemaVersion !== 1 || typeof parsed.files !== 'object' || parsed.files === null) {
+      return { entries: new Map(), present: true };
+    }
+
+    const manifestShas = await this.readManifestShas();
+    const entries = new Map<string, Record<string, any>>();
+    for (const [rawKey, value] of Object.entries(parsed.files as Record<string, unknown>)) {
+      const v = value as { srcSha?: unknown; frontmatter?: unknown };
+      if (
+        typeof v?.srcSha !== 'string' ||
+        typeof v?.frontmatter !== 'object' ||
+        v.frontmatter === null ||
+        Array.isArray(v.frontmatter)
+      ) {
+        continue;
+      }
+      const path = normalizeRepoRelPath(rawKey);
+      if (!path) continue; // bad/traversing key
+      const manifestSha = manifestShas.get(path);
+      if (manifestSha === undefined) continue; // not a committed member
+      if (ctx.dirtySet.has(path)) continue; // modified → live fallback
+      if (v.srcSha !== manifestSha) continue; // source bytes drifted
+      const frontmatter = v.frontmatter as Record<string, any>;
+      if (Object.keys(frontmatter).length === 0) continue; // empty-frontmatter drop
+      entries.set(underAppRoot(path), frontmatter);
+    }
+    return { entries, present: true };
+  }
+
+  /**
    * Pre-distrust the section before boot — the parent sets this from its persisted
    * §5.7 mark for this `(repo coordinates, commitSha)`, so `seed()` no-ops and the
    * boot treats the artifacts as absent until a new commit clears the mark.
@@ -236,7 +311,13 @@ export class ArtifactStore {
    * for the session (`discardAll`) and report tampered. The caller (idle-scheduled)
    * emits the §8.14 security event + the `artifact-distrust` host message.
    */
-  async spotVerify(k: number = SPOT_VERIFY_K): Promise<SpotVerifyResult> {
+  async spotVerify(
+    k: number = SPOT_VERIFY_K,
+    opts?: {
+      /** The seeded frontmatter for an app path (§3 extension), or undefined if none. */
+      frontmatterOf?: (appModulePath: string) => Record<string, any> | undefined;
+    },
+  ): Promise<SpotVerifyResult> {
     const universe = [...this.consumed];
     const sample = sampleWithoutReplacement(universe, Math.min(k, universe.length));
     for (const appModulePath of sample) {
@@ -253,7 +334,21 @@ export class ArtifactStore {
       const result = await transformFile({ path: appModulePath, code: source });
       if ('error' in result || result.code !== consumedArtifact) {
         this.discardAll();
-        return { tampered: true, path: appModulePath, sampled: sample.length };
+        return { tampered: true, path: appModulePath, sampled: sample.length, reason: 'transpile-mismatch' };
+      }
+      // §3 frontmatter extension: `srcSha` binds the source blob, NOT the derived
+      // frontmatter the sidecar seeded. Re-derive it from the re-read source (this
+      // is the ONLY runtime path that re-reads a covered `.mdx` — verify-on-read is
+      // dead on the consult-HIT path) and deep-compare; a mismatch is a forged/divergent
+      // sidecar → distrust the section. Same source bytes → same parser output, so no
+      // false positive for a benign publisher (the CLI uses this same parser, §1.3).
+      const seededFrontmatter = opts?.frontmatterOf?.(appModulePath);
+      if (seededFrontmatter !== undefined && appModulePath.endsWith('.mdx')) {
+        const liveFrontmatter = parseFrontmatter(source).data;
+        if (JSON.stringify(liveFrontmatter) !== JSON.stringify(seededFrontmatter)) {
+          this.discardAll();
+          return { tampered: true, path: appModulePath, sampled: sample.length, reason: 'frontmatter-mismatch' };
+        }
       }
     }
     return { tampered: false, sampled: sample.length };
