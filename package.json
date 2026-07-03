@@ -13,7 +13,7 @@
     "url": "https://github.com/codesandbox/sandpack-bundler"
   },
   "scripts": {
-    "clean": "rm -rf dist/* && rm -rf .parcel-cache",
+    "clean": "rm -rf dist/* dist-worker .parcel-cache .parcel-cache-worker",
     "prepare": "husky install",
     "check:freshness": "node scripts/check-freshness.mjs",
     "predev": "node scripts/check-freshness.mjs",
@@ -21,7 +21,8 @@
     "start": "node ./server.js",
     "gen:sdk-versions": "node scripts/gen-sdk-versions.mjs",
     "gen:toolchain-hash": "node scripts/gen-toolchain-hash.mjs",
-    "build": "npm run gen:sdk-versions && npm run gen:toolchain-hash && npm run build:babel-worker && npm run sync:babel-worker && npm run build:parcel && node scripts/build-stamp.mjs",
+    "build": "npm run clean && npm run gen:sdk-versions && npm run gen:toolchain-hash && npm run build:babel-worker && npm run sync:babel-worker && npm run build:parcel && npm run check:parity && node scripts/build-stamp.mjs",
+    "check:parity": "node scripts/check-importmap-parity.mjs",
     "build:parcel": "parcel build ./src/index.html --target default --no-scope-hoist",
     "build:babel-worker": "parcel build --target babelWorker --no-scope-hoist --cache-dir .parcel-cache-worker",
     "sync:babel-worker": "./scripts/sync-babel-worker.sh",

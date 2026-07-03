@@ -5,7 +5,7 @@
             "public": "dist",
             "rewrites": [
                 {
-                    "source": "**",
+                    "source": "**/!(*.@(js|js.map))",
                     "destination": "/index.html"
                 }
             ],
