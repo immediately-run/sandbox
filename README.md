@@ -27,6 +27,14 @@ The sandpack bundler, this aims to eventually replace the current sandpack with 
 
 The `main` branch of this repository is automatically deployed to `https://sandpack-bundler.codesandbox.io` so you can update `bundlerURL` of `sandpack-react` to that url and start using the new sandpack bundler.
 
+## Verify (the CI/deploy gate)
+
+`npm run verify` runs this repo's full CI gate in one command —
+`lint` → `format --check` → `typecheck` → `test` → `build`. Run it before pushing;
+it is the same set of checks CI enforces (the lint + build jobs), so a local green
+equals a green CI. (Ways of working §4: the local verify gate must equal the deploy
+gate — one `npm run verify` per repo.)
+
 ## Fonts
 
 ```
