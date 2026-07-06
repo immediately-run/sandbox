@@ -81,7 +81,16 @@ export class Evaluation {
     }
     const module = this.module.bundler.getModule(moduleFilePath);
     if (!module) {
-      throw new Error(`Module "${moduleFilePath}" has not been transpiled`);
+      // Backstop: reaching require() with a module absent from the map means its
+      // source never entered the transpile pipeline — almost always a FAILED SOURCE
+      // FETCH (network error, or a GitHub REST rate limit returning 403). The old
+      // wording ("has not been transpiled") sent debugging down a transpile/mount
+      // rabbit hole; the load path now fails fast, but keep this honest as a backstop.
+      throw new Error(
+        `Module "${moduleFilePath}" is unavailable — its source was not loaded ` +
+          `(commonly a failed fetch: a network error or a GitHub API rate limit), so it ` +
+          `was never transpiled. Required by "${this.module.filepath}".`
+      );
     }
     return module.evaluate().context.exports ?? {};
   }

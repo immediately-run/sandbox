@@ -578,7 +578,16 @@ export class Bundler {
       } else {
         // compilation got reset, we re-read the source to ensure it's the latest version.
         // reset happens mostly when we receive changes from the editor, so this ensures we actually output the changes...
-        module.source = await this.fs.readFileAsync(path);
+        try {
+          module.source = await this.fs.readFileAsync(path);
+        } catch (cause) {
+          throw new BundlerError(
+            `Failed to re-read source for "${path}" — its source could not be read ` +
+              `(usually a failed fetch: a network error or a GitHub API rate limit)` +
+              (cause instanceof Error ? `: ${cause.message}` : '') +
+              '.'
+          );
+        }
       }
     } else {
       // §5.3 consult: a covered app source may already be transpiled in
@@ -598,7 +607,24 @@ export class Bundler {
           return seededModule;
         }
       }
-      const content = await this.fs.readFileAsync(path);
+      // FAIL FAST + CLEARLY at the original load. A source read fails here when the
+      // file never made it into the FS — almost always a FAILED SOURCE FETCH (network
+      // error, or a GitHub REST rate limit returning 403 with no CORS header on a
+      // cache-cold load), NOT a transpiler bug. Surfacing it now (at load) with an
+      // honest message stops it degrading into the misleading downstream
+      // "has not been transpiled" thrown much later at require()/evaluate time.
+      let content: string;
+      try {
+        content = await this.fs.readFileAsync(path);
+      } catch (cause) {
+        throw new BundlerError(
+          `Failed to load source for "${path}" — its source could not be read, so it ` +
+            `was never transpiled. This is usually a failed source fetch (a network error, ` +
+            `or a GitHub API rate limit), not a transpiler bug` +
+            (cause instanceof Error ? `: ${cause.message}` : '') +
+            '.'
+        );
+      }
       module = new Module(path, content, false, this);
       this.modules.set(path, module);
     }
@@ -637,12 +663,20 @@ export class Bundler {
 
     const asset = this.modules.get(id);
     if (!asset) {
-      throw new BundlerError(`Asset not in the compilation tree ${id}`);
+      // Not in the tree ⇒ its transform never registered a module — the source most
+      // likely failed to load (a failed fetch: network error or GitHub API rate limit).
+      throw new BundlerError(
+        `Asset "${id}" is not in the compilation tree — its source likely failed to load ` +
+          `(a failed fetch: a network error or a GitHub API rate limit).`
+      );
     } else {
       if (asset.compilationError != null) {
         throw asset.compilationError;
       } else if (asset.compiled == null) {
-        throw new BundlerError(`Asset ${id} has not been compiled`);
+        throw new BundlerError(
+          `Asset "${id}" has not been compiled — its source likely failed to load ` +
+            `(a failed fetch: a network error or a GitHub API rate limit).`
+        );
       }
     }
 
