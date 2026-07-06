@@ -7,6 +7,7 @@ import { ThemeService } from '../theme/ThemeService';
 import { FormFactorService } from '../formFactor/FormFactorService';
 import { EditorContextService } from '../editor/EditorContextService';
 import { CatalogService } from '../catalog/CatalogService';
+import { VcsService } from '../vcs/VcsService';
 import { MountService } from '../mounts/MountService';
 import { APP_ROOT, MANIFEST_SIDECAR_PATH, underAppRoot } from '../fsLayout';
 import { isTransformable } from '@immediately-run/transpiler';
@@ -122,6 +123,7 @@ interface IBundlerOpts {
   theme: ThemeService;
   editorContext: EditorContextService;
   catalog: CatalogService;
+  vcs: VcsService;
   formFactor: FormFactorService;
   mounts: MountService;
 }
@@ -162,6 +164,10 @@ export class Bundler {
   // Method catalog (§5.5) mirrored from the parent. Reached via the SDK at
   // `module.evaluation.module.bundler.catalog` (useCatalog).
   catalog: CatalogService;
+
+  // Source-control state (diff/branch/PR summary, §5.3) mirrored from the parent.
+  // Reached via the SDK at `module.evaluation.module.bundler.vcs` (useVcsState).
+  vcs: VcsService;
 
   // Form factor of the rendered surface, mirrored from the parent. Reached via
   // the SDK at `module.evaluation.module.bundler.formFactor` (useFormFactor).
@@ -273,6 +279,7 @@ export class Bundler {
     this.theme = options.theme;
     this.editorContext = options.editorContext;
     this.catalog = options.catalog;
+    this.vcs = options.vcs;
     this.formFactor = options.formFactor;
     this.mounts = options.mounts;
 

@@ -17,6 +17,8 @@ import { EditorContextService } from './editor/EditorContextService';
 import { REQUEST_EDITOR_CONTEXT_MESSAGE } from './editor/editorContextState';
 import { CatalogService } from './catalog/CatalogService';
 import { REQUEST_CATALOG_MESSAGE } from './catalog/catalogState';
+import { VcsService } from './vcs/VcsService';
+import { REQUEST_VCS_STATE_MESSAGE } from './vcs/vcsState';
 import { FormFactorService } from './formFactor/FormFactorService';
 import { REQUEST_FORM_FACTOR_MESSAGE } from './formFactor/formFactorState';
 // Two compile-time strings the host handshake/telemetry stamps in (T45). Sourced
@@ -67,6 +69,7 @@ class SandpackInstance {
   private themeService: ThemeService;
   private editorContextService: EditorContextService;
   private catalogService: CatalogService;
+  private vcsService: VcsService;
   private formFactorService: FormFactorService;
   private mountService: MountService;
   private disposableStore = new DisposableStore();
@@ -98,6 +101,10 @@ class SandpackInstance {
     this.editorContextService = new EditorContextService(this.messageBus);
     // Method catalog (§5.5) — captured early; baseline catalog:read.
     this.catalogService = new CatalogService(this.messageBus);
+    // Source-control state (diff/branch/PR summary, §5.3) — captured early so a
+    // `vcs-state` message arriving before the bundler exists isn't dropped.
+    // Elevated `vcs:read`; the parent only sends it to iframes that hold it.
+    this.vcsService = new VcsService(this.messageBus);
     // Form factor of the rendered surface, for responsive app layout (§5.4.1).
     this.formFactorService = new FormFactorService(this.messageBus);
     // Descriptor cache for mounts the parent announces. The actual zenfs
@@ -162,6 +169,7 @@ class SandpackInstance {
     this.messageBus.sendMessage(REQUEST_THEME_MESSAGE);
     this.messageBus.sendMessage(REQUEST_EDITOR_CONTEXT_MESSAGE);
     this.messageBus.sendMessage(REQUEST_CATALOG_MESSAGE);
+    this.messageBus.sendMessage(REQUEST_VCS_STATE_MESSAGE);
     // ...and the current form factor.
     this.messageBus.sendMessage(REQUEST_FORM_FACTOR_MESSAGE);
     // Likewise ask the parent to (re-)announce any mounts that already exist.
@@ -238,6 +246,7 @@ class SandpackInstance {
       theme: this.themeService,
       editorContext: this.editorContextService,
       catalog: this.catalogService,
+      vcs: this.vcsService,
       formFactor: this.formFactorService,
       mounts: this.mountService,
     });

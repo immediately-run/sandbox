@@ -5,6 +5,7 @@ import type { AuthService } from '../../auth/AuthService';
 import type { ThemeService } from '../../theme/ThemeService';
 import type { EditorContextService } from '../../editor/EditorContextService';
 import type { CatalogService } from '../../catalog/CatalogService';
+import type { VcsService } from '../../vcs/VcsService';
 import type { FormFactorService } from '../../formFactor/FormFactorService';
 import type { MountService } from '../../mounts/MountService';
 import type { IFrameParentMessageBus } from '../../protocol/iframe';
@@ -140,6 +141,7 @@ export async function createBundlerHarness(
     theme: stub<ThemeService>(),
     editorContext: stub<EditorContextService>(),
     catalog: stub<CatalogService>(),
+    vcs: stub<VcsService>(),
     formFactor: stub<FormFactorService>(),
     mounts: stub<MountService>(),
   });
