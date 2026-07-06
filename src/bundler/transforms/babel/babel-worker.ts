@@ -8,6 +8,15 @@ import { transformBabel, type ITransformData } from '@immediately-run/transpiler
 // This module keeps only the worker transport: the parent page spawns it and
 // bridges a MessagePort to the sandboxed iframe.
 //
+// R3-149 (SIMPLIFIED_DEPLOYMENT_SPEC §14): the *shipped* same-origin Babel worker
+// is no longer built here — it is served by @immediately-run/transpiler's prebuilt
+// `worker/` bundle, which site-main vendors into `public/babel-worker/`. So this is
+// no longer a Parcel target (the `babelWorker` target + `sync:babel-worker` are
+// gone). It is retained, NOT dead: the in-process `babelLoopback` test harness
+// (bundler.compile() smoke, spec §9) dynamically imports it, and `./index.ts`
+// re-exports its `ITransformData` request shape. The transpiler's worker entry is
+// the deployed twin (same `transformBabel`, same channel/handshake).
+//
 // Re-exported so `BabelTransformer` (./index.ts) keeps importing the request
 // shape from here.
 export type { ITransformData };
