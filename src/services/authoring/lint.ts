@@ -7,14 +7,16 @@
 // preset menu, and the caller never supplies rules, plugins, a parser, or any
 // config. The TS parser is bound by the kernel (it is kernel code, not input).
 //
-// `Linter` is injected (createLinter): jest/Node uses the `eslint` package; the
-// Worker build injects the `eslint-linter-browserify` `Linter` (same class).
+// `Linter` + the TS parser are ALWAYS injected — this module deliberately imports
+// neither the Node `eslint` package nor `@typescript-eslint/parser` at the top
+// level, because both crash a browser Worker on load (Node `eslint` calls
+// `url.pathToFileURL`; `@typescript-eslint/parser`'s `typescript-estree` engine
+// statically pulls in Node-only `globby`/`fs`). The two runtimes supply their own:
+// Node/jest injects `nodeLintDeps` (`./lint-node-deps`); the Worker injects
+// `workerLintDeps` (`./worker-lint-host`, the browser `eslint-linter-browserify`
+// `Linter` + a browser-safe parser). This mirrors the typecheck lib-host seam
+// (`worker-lib-host.ts`).
 
-import { Linter } from 'eslint';
-// Namespace import: @typescript-eslint/parser is CJS with `__esModule` and no
-// default export, so a default import resolves to `undefined` under some interops
-// (jest/babel). The namespace reliably carries `parseForESLint`.
-import * as tsParser from '@typescript-eslint/parser';
 import { ServiceInputError } from './format';
 import { validateFiles } from './typecheck';
 
@@ -38,11 +40,17 @@ export interface LintResult {
 // build and tests stay decoupled from the eslint major.
 export interface LinterLike {
   defineParser(name: string, parser: unknown): void;
-  verify(code: string, config: unknown, filename?: string): { line: number; column: number; ruleId: string | null; severity: number; message: string }[];
+  verify(
+    code: string,
+    config: unknown,
+    filename?: string
+  ): { line: number; column: number; ruleId: string | null; severity: number; message: string }[];
 }
-export interface LintOptions {
-  createLinter?: () => LinterLike;
-  tsParser?: unknown;
+// Runtime-supplied linter + parser. REQUIRED — `runLint` has no built-in default so
+// this module stays free of any Node-only static import (see the file header).
+export interface LintDeps {
+  createLinter: () => LinterLike;
+  tsParser: unknown;
 }
 
 const TS_PARSER = '@authoring/ts-parser';
@@ -62,24 +70,40 @@ const PRESETS: Record<string, Record<string, unknown>> = {
 };
 
 // Caller fields that would smuggle executable config — refused outright.
-const FORBIDDEN_FIELDS = ['rules', 'plugins', 'parser', 'parserOptions', 'config', 'overrides', 'env', 'globals', 'extends', 'settings'];
+const FORBIDDEN_FIELDS = [
+  'rules',
+  'plugins',
+  'parser',
+  'parserOptions',
+  'config',
+  'overrides',
+  'env',
+  'globals',
+  'extends',
+  'settings',
+];
 
 const MAX_DIAGS = 200;
 const MESSAGE_CAP = 1000;
 const hasOwn = (o: object, k: string): boolean => Object.prototype.hasOwnProperty.call(o, k);
 
-export function runLint(req: LintRequest, opts: LintOptions = {}): LintResult {
+export function runLint(req: LintRequest, deps: LintDeps): LintResult {
   for (const k of FORBIDDEN_FIELDS) {
-    if (hasOwn(req as object, k)) throw new ServiceInputError(`option ${JSON.stringify(k)} is not allowed — lint config is kernel-owned (pick a preset)`);
+    if (hasOwn(req as object, k))
+      throw new ServiceInputError(
+        `option ${JSON.stringify(k)} is not allowed — lint config is kernel-owned (pick a preset)`
+      );
   }
   const files = validateFiles(req.files);
   const presetName = req.preset === undefined ? 'recommended' : req.preset;
   if (typeof presetName !== 'string' || !hasOwn(PRESETS, presetName)) {
-    throw new ServiceInputError(`unknown preset ${JSON.stringify(presetName)} (one of: ${Object.keys(PRESETS).join(', ')})`);
+    throw new ServiceInputError(
+      `unknown preset ${JSON.stringify(presetName)} (one of: ${Object.keys(PRESETS).join(', ')})`
+    );
   }
 
-  const linter = (opts.createLinter ?? (() => new Linter() as unknown as LinterLike))();
-  linter.defineParser(TS_PARSER, opts.tsParser ?? tsParser);
+  const linter = deps.createLinter();
+  linter.defineParser(TS_PARSER, deps.tsParser);
   const config = { parser: TS_PARSER, parserOptions: PARSER_OPTIONS, rules: PRESETS[presetName] };
 
   const diagnostics: LintDiag[] = [];
