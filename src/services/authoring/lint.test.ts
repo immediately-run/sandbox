@@ -1,7 +1,13 @@
-// ESLint service: correctness + CS-1 input-trust + bounds (CLIENT_SERVICES_SPEC §6).
-// Uses the Node `eslint` Linter (the Worker injects eslint-linter-browserify).
-import { runLint } from './lint';
 import { ServiceInputError } from './format';
+// ESLint service: correctness + CS-1 input-trust + bounds (CLIENT_SERVICES_SPEC §6).
+// `runLint` takes its `Linter` + parser by injection; Node/jest uses `nodeLintDeps`
+// (on-disk `eslint` + `@typescript-eslint/parser`), the Worker `workerLintDeps`
+// (`eslint-linter-browserify`). The wrapper below binds the Node deps so each case
+// reads like a plain `runLint(req)`.
+import { LintRequest, runLint as runLintCore } from './lint';
+import { nodeLintDeps } from './lint-node-deps';
+
+const runLint = (req: LintRequest): ReturnType<typeof runLintCore> => runLintCore(req, nodeLintDeps);
 
 describe('runLint', () => {
   it('flags a violation under the fixed recommended preset', () => {
@@ -18,7 +24,9 @@ describe('runLint', () => {
   });
 
   it('parses TS/JSX via the kernel-bound parser (no false parse failures)', () => {
-    const { diagnostics } = runLint({ files: [{ path: 'c.tsx', content: 'export const C = (): unknown => (<div className="x" />);\n' }] });
+    const { diagnostics } = runLint({
+      files: [{ path: 'c.tsx', content: 'export const C = (): unknown => (<div className="x" />);\n' }],
+    });
     // type annotations + JSX must not crash the linter; no recommended-rule hits here
     expect(Array.isArray(diagnostics)).toBe(true);
   });

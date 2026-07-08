@@ -10,15 +10,21 @@
 // It runs kernel-reviewed code under host authority; the only methods are the
 // fixed `format`/`typecheck` (no caller-supplied code/config — CS-1).
 
-import { runFormat, type FormatRequest } from './format';
-import { runTypecheck, type TypecheckRequest } from './typecheck';
+// MUST stay the first import: this side-effect module aliases `window` on the worker
+// global BEFORE eslint-linter-browserify's process polyfill evaluates (which does a
+// bare `window` read that ReferenceErrors in a Worker). worker-window-shim.ts has the
+// full mechanism. import-sort keeps side-effect imports ahead of the binding imports.
+import './worker-window-shim';
+
+import { FormatRequest, runFormat } from './format';
+import { LintRequest, runLint } from './lint';
+import { TypecheckRequest, runTypecheck } from './typecheck';
 import { createBundledLibHost } from './worker-lib-host';
-// NOTE: `lint` is intentionally NOT imported here. `./lint` statically imports the
-// Node `eslint` package (via `@eslint/eslintrc`, which calls `createRequire`/
-// `url.pathToFileURL` at init) — pulling it into the worker bundle crashes the whole
-// worker on load in a browser (no `pathToFileURL`). `format` + `typecheck` don't
-// need eslint and work today; wiring `lint` to `eslint-linter-browserify` + a
-// browser-safe TS parser is the remaining Phase-2 step (CLIENT_SERVICES_STATUS).
+import { workerLintDeps } from './worker-lint-host';
+// `lint` is now worker-safe: `lint.ts` imports neither the Node `eslint` package nor
+// `@typescript-eslint/parser` at the top level — both crash a browser Worker on load
+// (Node `eslint` calls `url.pathToFileURL`). The browser `Linter`
+// (`eslint-linter-browserify`) + parser are injected here via `workerLintDeps`.
 
 interface WireRequest {
   id?: number;
@@ -41,9 +47,8 @@ export function handleMessage(req: WireRequest): { id: number; result?: unknown;
           }),
         };
       case 'lint':
-        // Phase-2 pending: needs eslint-linter-browserify (the Node `eslint` build
-        // can't run in a browser worker). A clean error, never a crash.
-        return { id, error: 'lint is not yet available in the worker runtime' };
+        // Browser `Linter` + parser injected (workerLintDeps) — no Node build loaded.
+        return { id, result: runLint((req.params ?? {}) as LintRequest, workerLintDeps) };
       default:
         return { id, error: `unknown method ${JSON.stringify(req.method)}` };
     }

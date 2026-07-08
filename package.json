@@ -47,6 +47,9 @@
     ]
   },
   "browserslist": "> 2.5%, not ie 11, not dead, not op_mini all",
+  "alias": {
+    "globby": "./src/services/authoring/empty-module.js"
+  },
   "targets": {
     "default": {
       "distDir": "dist",
@@ -104,6 +107,7 @@
     "buffer": "^6.0.3",
     "crypto-browserify": "^3.12.0",
     "eslint": "^7.32.0 || ^8.2.0",
+    "eslint-linter-browserify": "^8.52.0",
     "events": "^3.3.0",
     "fastify": "^3.28.0",
     "fastify-static": "^4.6.1",
