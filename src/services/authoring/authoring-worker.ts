@@ -12,7 +12,13 @@
 
 import { runFormat, type FormatRequest } from './format';
 import { runTypecheck, type TypecheckRequest } from './typecheck';
-import { runLint, type LintRequest } from './lint';
+import { createBundledLibHost } from './worker-lib-host';
+// NOTE: `lint` is intentionally NOT imported here. `./lint` statically imports the
+// Node `eslint` package (via `@eslint/eslintrc`, which calls `createRequire`/
+// `url.pathToFileURL` at init) — pulling it into the worker bundle crashes the whole
+// worker on load in a browser (no `pathToFileURL`). `format` + `typecheck` don't
+// need eslint and work today; wiring `lint` to `eslint-linter-browserify` + a
+// browser-safe TS parser is the remaining Phase-2 step (CLIENT_SERVICES_STATUS).
 
 interface WireRequest {
   id?: number;
@@ -27,9 +33,17 @@ export function handleMessage(req: WireRequest): { id: number; result?: unknown;
       case 'format':
         return { id, result: runFormat((req.params ?? {}) as FormatRequest) };
       case 'typecheck':
-        return { id, result: runTypecheck((req.params ?? {}) as TypecheckRequest) };
+        // Serve the standard lib from the build-time bundle (no fs in a Worker).
+        return {
+          id,
+          result: runTypecheck((req.params ?? {}) as TypecheckRequest, {
+            createBaseHost: createBundledLibHost,
+          }),
+        };
       case 'lint':
-        return { id, result: runLint((req.params ?? {}) as LintRequest) };
+        // Phase-2 pending: needs eslint-linter-browserify (the Node `eslint` build
+        // can't run in a browser worker). A clean error, never a crash.
+        return { id, error: 'lint is not yet available in the worker runtime' };
       default:
         return { id, error: `unknown method ${JSON.stringify(req.method)}` };
     }
