@@ -3,4 +3,4 @@
 // published tarball). Regenerated on every build (prebuild). The deploy asserts
 // this equals the hash the CLI stamps into artifact indexes (G2-8).
 
-export const EMBEDDED_TOOLCHAIN_HASH = 'e2916b9e86ed092098190b2c67a682a0571c6cd4d5c95af464f2562941dcc837';
+export const EMBEDDED_TOOLCHAIN_HASH = 'af743d85978e9508474090cf0d999705a8397883be3ddf7d0d049d3f31eb0899';

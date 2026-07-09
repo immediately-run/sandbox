@@ -30,6 +30,7 @@ import { IPackageJSON, ISandboxFile } from '../types';
 import { DelayedEmitter, Emitter } from '../utils/emitter';
 import { replaceHTML } from '../utils/html';
 import * as logger from '../utils/logger';
+import { WorkerMessageBus } from '../utils/WorkerMessageBus';
 import { NamedPromiseQueue } from '../utils/NamedPromiseQueue';
 import { nullthrows } from '../utils/nullthrows';
 import { ModuleRegistry } from './module-registry';
@@ -251,6 +252,39 @@ export class Bundler {
   // register-frame. Consulted by artifact seeding so a dirty path is never seeded
   // (its `/app` content no longer matches the zip the artifact was built from).
   private dirtyPaths: Set<string> = new Set();
+
+  // The single `WorkerMessageBus` over the parent-transferred Babel `MessagePort`
+  // (§8.x). BOTH the `BabelTransformer` (`transform`) and the `MDXTransformer`
+  // (`mdx-compile`, R3-150) talk to the one parent-owned transform worker over this
+  // one port, so they MUST share one bus: two buses on one port would each start
+  // their own message-id counter at 0 and cross-resolve each other's responses.
+  private babelWorkerBus: Promise<WorkerMessageBus> | null = null;
+
+  /**
+   * Lazily open (once) the shared bus to the parent-owned transform worker. The
+   * parent transfers the `MessagePort` during `register-frame`; an opaque-origin
+   * iframe can't spawn a same-origin worker itself, so it drives the port instead.
+   */
+  getBabelWorkerBus(): Promise<WorkerMessageBus> {
+    if (!this.babelWorkerBus) {
+      this.babelWorkerBus = (async () => {
+        const port = await this.messageBus.getBabelPort();
+        port.start();
+        return new WorkerMessageBus({
+          channel: 'sandpack-babel',
+          endpoint: port,
+          handleNotification: () => Promise.resolve(),
+          handleRequest: () => Promise.reject(new Error('Unknown method')),
+          handleError: (err) => {
+            logger.error(err);
+            return Promise.resolve();
+          },
+          timeoutMs: 30000,
+        });
+      })();
+    }
+    return this.babelWorkerBus;
+  }
 
   /**
    * Records files the parent reported as changed. ZenFS's `Port` backend does
