@@ -1,6 +1,6 @@
 import * as logger from '../../../utils/logger';
 import { WorkerMessageBus } from '../../../utils/WorkerMessageBus';
-import { transformBabel, type ITransformData } from '@immediately-run/transpiler';
+import { transformBabel, compileMdx, type ITransformData } from '@immediately-run/transpiler';
 
 // The actual transform (babel presets/plugins + dep collection) now lives in
 // @immediately-run/transpiler so the CLI's pre-transpiled artifacts are
@@ -31,6 +31,12 @@ function bindMessageBus(endpoint: MessagePort | Worker | typeof self) {
       switch (method) {
         case 'transform':
           return transformBabel(data as ITransformData);
+        case 'mdx-compile': {
+          // R3-150: the MDX→JSX compile runs in the worker now (byte-identical to the
+          // in-process chain). Throws `MdxCompileError`; the transport carries line/column.
+          const { code, path } = data as { code: string; path: string };
+          return compileMdx(code, path);
+        }
         default:
           return Promise.reject(new Error('Unknown method'));
       }
