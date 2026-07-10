@@ -9,6 +9,8 @@ import { EditorContextService } from '../editor/EditorContextService';
 import { CatalogService } from '../catalog/CatalogService';
 import { VcsService } from '../vcs/VcsService';
 import { MountService } from '../mounts/MountService';
+import type { SandboxMount } from '../mounts/mountState';
+import type { IDisposable } from '../utils/Disposable';
 import { APP_ROOT, MANIFEST_SIDECAR_PATH, underAppRoot } from '../fsLayout';
 import { isTransformable } from '@immediately-run/transpiler';
 import { ArtifactStore } from './artifacts/artifactStore';
@@ -225,6 +227,11 @@ export class Bundler {
   // default Vite scaffold "just works" (DG-2 / decision #27). Populated on the
   // first compile; evaluated in the first-load branch of the evaluate callback.
   private sideEffectModulePaths: string[] = [];
+
+  // How long the first compile waits for a declared git-library's mount to be
+  // pushed by the host before letting resolution fail (LIBRARY_MOUNTS_SPEC L3
+  // wait-for-arrival). Tests shorten it.
+  libraryMountWaitMs = 30_000;
 
   private readonly mountLifecycle = new MountLifecycle();
   private onMetadataChangeEmitter = new DelayedEmitter<MetadataChange>();
@@ -983,10 +990,15 @@ export class Bundler {
    * (`gitDependencyNames`), if it is NOT already registered under
    * `/node_modules/<name>/package.json` (an arrived mount may have registered it
    * already via `handleMountAdd`), look up a mount whose `moduleName === name` in
-   * the `MountService` and register it now. This makes boot deterministic for the
-   * common host-push-before-compile case. No polling: a declared git lib with
-   * neither a registered module nor a known mount logs a concise warning and is
-   * left to fail resolution normally (a robust wait-for-arrival is a follow-up).
+   * the `MountService` and register it now — WAITING (bounded) for the mount to
+   * arrive when it hasn't yet. The host pushes a library `mount-add` only after
+   * fetching the repo (commit → tree → blobs over REST), so on a cold boot a
+   * real-size library loses the race against the first compile; without the wait
+   * the import resolves to `undefined` and the app renders an error the user can
+   * only reload away (found live in R3-147). A mount that never arrives within
+   * `libraryMountWaitMs` (declined consent, host failure) logs the concise
+   * warning and is left to fail resolution normally — the pre-wait behavior,
+   * just delayed by the timeout.
    *
    * Wired into `compile()` AFTER `processPackageJSON()` (deps known) and BEFORE
    * `loadNodeModules()` (CDN), guarded by `isFirstLoad`.
@@ -995,7 +1007,6 @@ export class Bundler {
     const names = gitDependencyNames(this.parsedPackageJSON?.dependencies);
     if (names.size === 0) return;
     const fsp = this.fs.boundContext.fs.promises;
-    const mounts = this.mounts?.getMounts?.() ?? [];
     for (const name of names) {
       // Already registered (by an arrived mount or a prior pass)? Leave it.
       let alreadyRegistered = false;
@@ -1007,12 +1018,14 @@ export class Bundler {
       }
       if (alreadyRegistered) continue;
 
-      const descriptor = mounts.find((m) => m.moduleName === name);
+      // `waitForLibraryMount` replays the current mount list on subscribe, so an
+      // already-arrived mount resolves immediately — no separate lookup needed.
+      const descriptor = await this.waitForLibraryMount(name, this.libraryMountWaitMs);
       if (!descriptor) {
         logger.warn(
-          `Git-library dependency '${name}' declared but no mount has arrived to ` +
-            `register it; the import will resolve normally (likely fail). ` +
-            `(LIBRARY_MOUNTS_SPEC L3 — wait-for-arrival is a follow-up.)`,
+          `Git-library dependency '${name}' declared but its mount did not arrive ` +
+            `within ${this.libraryMountWaitMs}ms; the import will resolve normally ` +
+            `(likely fail). (LIBRARY_MOUNTS_SPEC L3.)`,
         );
         continue;
       }
@@ -1022,6 +1035,42 @@ export class Bundler {
         logger.warn(`Failed to register git-library '${name}' from ${descriptor.path}`, e);
       }
     }
+  }
+
+  /**
+   * Resolve when a mount tagged `moduleName === name` is available, or with
+   * `null` after `timeoutMs`. Subscribing via `MountService.onChange` replays
+   * the current list synchronously, so an already-arrived mount settles the
+   * promise immediately. Used only on the first compile (see
+   * `registerDeclaredGitLibraries`); a post-boot arrival is registered by
+   * `handleMountAdd` but does not yet trigger a recompile (known limitation —
+   * a consent granted after the timeout still needs a reload).
+   */
+  private waitForLibraryMount(name: string, timeoutMs: number): Promise<SandboxMount | null> {
+    const mounts = this.mounts;
+    if (!mounts || typeof mounts.onChange !== 'function') {
+      // Harness/stub without a subscription surface — fall back to a snapshot.
+      const hit = mounts?.getMounts?.()?.find((m) => m.moduleName === name) ?? null;
+      return Promise.resolve(hit);
+    }
+    return new Promise((resolve) => {
+      let settled = false;
+      let disposable: IDisposable | null = null;
+      const finish = (m: SandboxMount | null): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        disposable?.dispose();
+        resolve(m);
+      };
+      const timer = setTimeout(() => finish(null), timeoutMs);
+      disposable = mounts.onChange((list) => {
+        const hit = list.find((m) => m.moduleName === name);
+        if (hit) finish(hit);
+      });
+      // The synchronous replay can settle before `disposable` is assigned.
+      if (settled) disposable.dispose();
+    });
   }
 
   /** Host-pinned SDK integrity (SDK_PACKAGING_SPEC §5.2), set from IInitConfig
