@@ -23,7 +23,7 @@
     "gen:toolchain-hash": "node scripts/gen-toolchain-hash.mjs",
     "build": "npm run clean && npm run gen:sdk-versions && npm run gen:toolchain-hash && npm run build:authoring-worker && npm run sync:authoring-worker && npm run build:parcel && npm run check:parity && node scripts/build-stamp.mjs",
     "check:parity": "node scripts/check-importmap-parity.mjs",
-    "build:parcel": "parcel build ./src/index.html --target default --no-scope-hoist",
+    "build:parcel": "parcel build --target default --no-scope-hoist",
     "build:authoring-worker": "node scripts/gen-authoring-libs.mjs && parcel build --target authoringWorker --no-scope-hoist --cache-dir .parcel-cache-authoring-worker",
     "sync:authoring-worker": "./scripts/sync-authoring-worker.sh",
     "check:sidecar": "node scripts/check-sidecar-literal.mjs",
@@ -53,6 +53,7 @@
   },
   "targets": {
     "default": {
+      "source": "src/index.html",
       "distDir": "dist",
       "context": "browser",
       "includeNodeModules": true
