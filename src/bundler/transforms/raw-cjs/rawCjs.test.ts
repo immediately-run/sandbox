@@ -40,6 +40,31 @@ describe('scanCjsModule', () => {
     expect(scanCjsModule(`const m = import("y");`).isEsm).toBe(false);
     expect(scanCjsModule(`const u = import.meta.url;`).isEsm).toBe(false);
   });
+
+  // R3-233: a regex literal whose body holds a quote or `/` used to desync the
+  // string scanner and hide the real `export` after it (the SDK's `scrollToId.js`
+  // `id.replace(/["\\]/g, "\\$&")` → misclassified CJS → served raw ESM → boot crash).
+  it('skips regex literals so a trailing export is still seen (R3-233)', () => {
+    expect(scanCjsModule(`const e = s.replace(/["\\\\]/g, "_");\nexport { e };`).isEsm).toBe(true);
+    // the exact SDK scrollToId.js shape
+    const scrollToId = `const scrollToId = (id) => {\n  const escaped = id.replace(/["\\\\]/g, "\\\\$&");\n  return document.querySelector(\`[data-slug="\${escaped}"]\`);\n};\nexport {\n  scrollToId\n};\n`;
+    expect(scanCjsModule(scrollToId).isEsm).toBe(true);
+    expect(isPassthroughCjs('/node_modules/@immediately-run/sdk/scrollToId.js', scrollToId)).toBe(false);
+  });
+
+  it('collects require() calls that appear after a regex literal', () => {
+    expect(scanCjsModule(`var a = x.replace(/["\\\\]/g, "_"); var b = require("dep");`).requires).toEqual(['dep']);
+  });
+
+  it('does not mistake division for a regex (stays CJS)', () => {
+    expect(scanCjsModule(`var y = width / 2 / scale; module.exports = y;`).isEsm).toBe(false);
+    expect(scanCjsModule(`var a = height/2; var m = require("d");`).requires).toEqual(['d']);
+  });
+
+  it('handles a keyword-preceded regex (return /re/) without desync', () => {
+    expect(scanCjsModule(`function f(){ return /["]/.test(x); }\nmodule.exports = f;`).isEsm).toBe(false);
+    expect(scanCjsModule(`function f(){ return /["]/.test(x); }\nexport default f;`).isEsm).toBe(true);
+  });
 });
 
 describe('isPassthroughCjs', () => {
