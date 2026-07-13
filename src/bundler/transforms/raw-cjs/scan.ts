@@ -18,9 +18,13 @@
  *      `require(<string literal>)` calls — matching the (require-only) semantics
  *      of the Babel dep-collector this path replaces for CJS modules.
  *
- * Implemented as a string/comment-aware character scanner (the same shape as
- * `extractSideEffectImports`) so a `require(` inside a string or comment is never
- * mistaken for a call, and `foo.require(...)` member access is ignored.
+ * Implemented as a string/comment/**regex**-aware character scanner (the same shape
+ * as `extractSideEffectImports`) so a `require(` inside a string or comment is never
+ * mistaken for a call, and `foo.require(...)` member access is ignored. Regex literals
+ * are skipped wholesale too — otherwise a regex body containing a quote or `/`
+ * (e.g. `id.replace(/["\\]/g, "\\$&")` in the SDK's `scrollToId.js`) desyncs the string
+ * scanner and hides the real `export`/`import` statement after it, misclassifying an ESM
+ * module as CJS → served raw → `Unexpected token 'export'` at eval (R3-233).
  */
 
 export interface CjsScan {
@@ -34,6 +38,18 @@ const isIdentStart = (c: string): boolean =>
   (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c === '_' || c === '$';
 const isIdentPart = (c: string): boolean => isIdentStart(c) || (c >= '0' && c <= '9');
 
+// A `/` begins a regex literal (not a division operator) when the previous
+// significant token cannot end an expression. Division follows a value —
+// an identifier char, `)`, or `]`. Everything else (operators, `(`, `,`, `=`,
+// `{`, `;`, start-of-file, …) precedes a regex. The one exception the single-char
+// `prevSignificant` can't see: a keyword that reads like an identifier but is
+// followed by an expression (`return /re/`, `typeof /re/`), so those are checked
+// against the previous WORD.
+const KEYWORDS_BEFORE_REGEX = new Set([
+  'return', 'typeof', 'instanceof', 'in', 'of', 'new', 'delete', 'void', 'do',
+  'else', 'yield', 'await', 'case', 'throw',
+]);
+
 export function scanCjsModule(source: string): CjsScan {
   const requires: string[] = [];
   const seen = new Set<string>();
@@ -45,6 +61,9 @@ export function scanCjsModule(source: string): CjsScan {
   // identifier apart from a `.require` member access, and the `import`/`export`
   // keyword apart from `.import`/`.export`.
   let prevSignificant = '';
+  // Last identifier/keyword consumed (reset by any non-word significant char), so
+  // the regex-vs-division heuristic can recognise `return /re/` etc. (see below).
+  let prevWord = '';
 
   const skipStringFrom = (start: number, quote: string): number => {
     let j = start + 1;
@@ -58,6 +77,34 @@ export function scanCjsModule(source: string): CjsScan {
       j++;
     }
     return n;
+  };
+
+  // Skip a regex literal starting at the opening `/`. Handles `\` escapes and
+  // `[...]` character classes (a `/` inside a class does NOT close the regex).
+  // A regex cannot span a raw newline; if we reach one unterminated, it was NOT a
+  // regex — return `start + 1` so the caller falls back to treating `/` as an
+  // operator (safe: it just advances one char).
+  const skipRegexFrom = (start: number): number => {
+    let j = start + 1;
+    let inClass = false;
+    while (j < n) {
+      const ch = source[j];
+      if (ch === '\\') {
+        j += 2;
+        continue;
+      }
+      if (ch === '\n') return start + 1;
+      if (ch === '[') inClass = true;
+      else if (ch === ']') inClass = false;
+      else if (ch === '/' && !inClass) {
+        j++;
+        break;
+      }
+      j++;
+    }
+    // Consume flags (`g`, `i`, …).
+    while (j < n && isIdentPart(source[j])) j++;
+    return j;
   };
 
   // From `at`, skip whitespace + comments and return the next significant index.
@@ -97,11 +144,29 @@ export function scanCjsModule(source: string): CjsScan {
       i += 2;
       continue;
     }
+    // Regex literal — a `/` that isn't `//`/`/*` (handled above) and sits where an
+    // expression is expected. Skip it wholesale so its body (which may contain
+    // quotes or `/`) never desyncs the string/statement scan. Division (`a / b`)
+    // follows a value — identifier char, `)`, or `]` — and is left as an operator;
+    // keyword-preceded expressions (`return /re/`) are caught via `prevWord`.
+    if (c === '/') {
+      const prevEndsExpr =
+        /[A-Za-z0-9_$)\]]/.test(prevSignificant) && !KEYWORDS_BEFORE_REGEX.has(prevWord);
+      if (!prevEndsExpr) {
+        i = skipRegexFrom(i);
+        // A regex literal is a complete value; a following `/` is division.
+        prevSignificant = ')';
+        prevWord = '';
+        continue;
+      }
+      // else: division operator — fall through to the generic significant-char path.
+    }
     // String / template literal — skip wholesale (no `${...}` descent: we only
     // care about top-level statements, never interpolated expressions).
     if (c === '"' || c === "'" || c === '`') {
       i = skipStringFrom(i, c);
       prevSignificant = c;
+      prevWord = '';
       continue;
     }
     // Identifier / keyword
@@ -137,12 +202,14 @@ export function scanCjsModule(source: string): CjsScan {
       }
 
       prevSignificant = word[word.length - 1];
+      prevWord = word;
       i = j;
       continue;
     }
 
     if (c !== ' ' && c !== '\t' && c !== '\r' && c !== '\n') {
       prevSignificant = c;
+      prevWord = '';
     }
     i++;
   }
