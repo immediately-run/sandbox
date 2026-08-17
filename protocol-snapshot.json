@@ -1,0 +1,675 @@
+{
+  "formatVersion": 1,
+  "repo": "sandpack-bundler",
+  "channels": {
+    "action": {
+      "kind": "message",
+      "direction": "app->host",
+      "payload": {
+        "fields": [
+          {
+            "name": "action",
+            "optional": false,
+            "type": "string"
+          },
+          {
+            "name": "column",
+            "optional": false,
+            "union": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "number"
+              }
+            ]
+          },
+          {
+            "name": "line",
+            "optional": false,
+            "union": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "number"
+              }
+            ]
+          },
+          {
+            "name": "message",
+            "optional": false,
+            "type": "string"
+          },
+          {
+            "name": "path",
+            "optional": false,
+            "type": "any"
+          },
+          {
+            "name": "payload",
+            "optional": false,
+            "fields": [
+              {
+                "name": "frames",
+                "optional": false,
+                "array": {
+                  "type": "StackFrame"
+                }
+              }
+            ]
+          },
+          {
+            "name": "title",
+            "optional": false,
+            "type": "string"
+          }
+        ]
+      },
+      "sites": ["src/index.ts"]
+    },
+    "api-catalog": {
+      "kind": "push",
+      "direction": "host->app",
+      "poll": "request-api-catalog",
+      "payload": {
+        "fields": [
+          {
+            "name": "methods",
+            "optional": false,
+            "array": {
+              "fields": [
+                {
+                  "name": "capability",
+                  "optional": false,
+                  "type": "string"
+                },
+                {
+                  "name": "name",
+                  "optional": false,
+                  "type": "string"
+                },
+                {
+                  "name": "stream",
+                  "optional": true,
+                  "type": "boolean | undefined"
+                }
+              ]
+            }
+          }
+        ],
+        "reads": ["methods"]
+      },
+      "sites": ["src/catalog/CatalogService.ts", "src/catalog/catalogState.ts"]
+    },
+    "artifact-distrust": {
+      "kind": "message",
+      "direction": "app->host",
+      "payload": {
+        "fields": [
+          {
+            "name": "commitSha",
+            "optional": false,
+            "union": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ]
+          },
+          {
+            "name": "reason",
+            "optional": false,
+            "type": "string"
+          }
+        ]
+      },
+      "sites": ["src/bundler/bundler.ts"]
+    },
+    "auth-state": {
+      "kind": "push",
+      "direction": "host->app",
+      "poll": "request-auth-state",
+      "payload": {
+        "reads": ["state"]
+      },
+      "sites": ["src/auth/AuthService.ts"]
+    },
+    "console": {
+      "kind": "message",
+      "direction": "app->host",
+      "payload": {
+        "fields": [
+          {
+            "name": "log",
+            "optional": false,
+            "type": "any"
+          }
+        ]
+      },
+      "sites": ["src/index.ts"]
+    },
+    "done": {
+      "kind": "message",
+      "direction": "app->host",
+      "payload": {
+        "fields": [
+          {
+            "name": "compilatonError",
+            "optional": false,
+            "type": "boolean"
+          }
+        ]
+      },
+      "sites": ["src/index.ts"]
+    },
+    "editor-context": {
+      "kind": "push",
+      "direction": "host->app",
+      "poll": "request-editor-context",
+      "payload": {
+        "fields": [
+          {
+            "name": "activeFile",
+            "optional": true,
+            "union": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "type": "undefined"
+              }
+            ]
+          },
+          {
+            "name": "dirtyPaths",
+            "optional": false,
+            "array": {
+              "type": "string"
+            }
+          }
+        ],
+        "reads": ["activeFile", "dirtyPaths"]
+      },
+      "sites": ["src/editor/EditorContextService.ts", "src/editor/editorContextState.ts"],
+      "divergent": true,
+      "divergentNote": "declared-incomplete \u2014 the host (site-main channelBridge.ts) sends {dirtyPaths, openFiles, activeFile, viewedFile}; this side declares only {dirtyPaths, activeFile?} while the SDK reads all four. `viewedFile` (R3-268) and `openFiles` never entered this declaration. R3-274e picks one shape for both sides."
+    },
+    "evaluate": {
+      "kind": "message",
+      "direction": "host->app",
+      "payload": {
+        "reads": ["command"]
+      },
+      "sites": ["src/index.ts"]
+    },
+    "form-factor": {
+      "kind": "push",
+      "direction": "host->app",
+      "poll": "request-form-factor",
+      "payload": {
+        "reads": ["formFactor"]
+      },
+      "sites": ["src/formFactor/FormFactorService.ts"]
+    },
+    "fs-change": {
+      "kind": "message",
+      "direction": "host->app",
+      "payload": {
+        "reads": ["paths"]
+      },
+      "sites": ["src/index.ts"],
+      "divergent": true,
+      "divergentNote": "subset-reads with no declared owner on either side \u2014 the host sends {paths, epoch}; this side reads only `paths`, the SDK reads both. Nothing forces the two to agree, which is the divergence PLATFORM_LAYERING_SPEC \u00a72 names as the exemplar. The `kind` also differs (message here, push channel in the SDK). R3-274e decides: keep `epoch` or drop it."
+    },
+    "initialized": {
+      "kind": "message",
+      "direction": "app->host",
+      "payload": {
+        "fields": []
+      },
+      "sites": ["src/index.ts"]
+    },
+    "ir-marker": {
+      "kind": "message",
+      "direction": "app->host",
+      "payload": {
+        "fields": [
+          {
+            "name": "at",
+            "optional": false,
+            "type": "number"
+          },
+          {
+            "name": "attrs",
+            "optional": true,
+            "union": [
+              {
+                "type": "Record<string, unknown>"
+              },
+              {
+                "type": "undefined"
+              }
+            ]
+          },
+          {
+            "name": "name",
+            "optional": false,
+            "type": "string"
+          }
+        ]
+      },
+      "sites": ["src/bundler/perfMarkers.ts"]
+    },
+    "mount-add": {
+      "kind": "message",
+      "direction": "host->app",
+      "payload": {
+        "reads": ["mount", "ports"]
+      },
+      "sites": ["src/index.ts", "src/protocol/iframe.ts"]
+    },
+    "mount-remove": {
+      "kind": "message",
+      "direction": "host->app",
+      "payload": {
+        "reads": ["id", "path", "reason"]
+      },
+      "sites": ["src/index.ts"]
+    },
+    "refresh": {
+      "kind": "message",
+      "direction": "both",
+      "payload": {
+        "fields": []
+      },
+      "sites": ["src/index.ts"]
+    },
+    "register-frame": {
+      "kind": "message",
+      "direction": "host->app",
+      "payload": {
+        "reads": [
+          "dirtyPaths",
+          "distrustArtifacts",
+          "fsSnapshot",
+          "id",
+          "logLevel",
+          "region",
+          "sdkIntegrity",
+          "template"
+        ]
+      },
+      "sites": ["src/protocol/iframe.ts"]
+    },
+    "repo-mount": {
+      "kind": "push",
+      "direction": "host->app",
+      "poll": "request-repo-mount",
+      "payload": {
+        "reads": ["path", "uri"]
+      },
+      "sites": ["src/index.ts"]
+    },
+    "request-api-catalog": {
+      "kind": "poll",
+      "direction": "app->host",
+      "payload": {
+        "fields": []
+      },
+      "sites": ["src/index.ts"]
+    },
+    "request-auth-state": {
+      "kind": "poll",
+      "direction": "app->host",
+      "payload": {
+        "fields": []
+      },
+      "sites": ["src/index.ts"]
+    },
+    "request-editor-context": {
+      "kind": "poll",
+      "direction": "app->host",
+      "payload": {
+        "fields": []
+      },
+      "sites": ["src/index.ts"]
+    },
+    "request-form-factor": {
+      "kind": "poll",
+      "direction": "app->host",
+      "payload": {
+        "fields": []
+      },
+      "sites": ["src/index.ts"]
+    },
+    "request-handshake": {
+      "kind": "message",
+      "direction": "host->app",
+      "payload": {},
+      "sites": ["src/index.ts"]
+    },
+    "request-mounts": {
+      "kind": "message",
+      "direction": "app->host",
+      "payload": {
+        "fields": []
+      },
+      "sites": ["src/index.ts"]
+    },
+    "request-repo-mount": {
+      "kind": "poll",
+      "direction": "app->host",
+      "payload": {
+        "fields": []
+      },
+      "sites": ["src/index.ts"]
+    },
+    "request-theme": {
+      "kind": "poll",
+      "direction": "app->host",
+      "payload": {
+        "fields": []
+      },
+      "sites": ["src/index.ts"]
+    },
+    "request-vcs-state": {
+      "kind": "poll",
+      "direction": "app->host",
+      "payload": {
+        "fields": []
+      },
+      "sites": ["src/index.ts"]
+    },
+    "resize": {
+      "kind": "message",
+      "direction": "app->host",
+      "payload": {
+        "fields": [
+          {
+            "name": "height",
+            "optional": false,
+            "type": "number"
+          }
+        ]
+      },
+      "sites": ["src/index.ts"]
+    },
+    "sdk-handshake": {
+      "kind": "message",
+      "direction": "app->host",
+      "payload": {
+        "fields": [
+          {
+            "name": "protocolVersion",
+            "optional": false,
+            "type": "string"
+          }
+        ]
+      },
+      "sites": ["src/index.ts"],
+      "divergent": true,
+      "divergentNote": "divergent-declared \u2014 TWO producers of one name with different payloads: the frame announces {protocolVersion} (the SDK version baked in at build by gen-sdk-versions.mjs, read from a SIBLING checkout), the SDK announces {protocolVersion, sdkVersion}. R3-274d gives the frame its own SANDBOX_PROTOCOL_VERSION and retires the sibling read; R3-274e picks one shape."
+    },
+    "start": {
+      "kind": "message",
+      "direction": "app->host",
+      "payload": {
+        "fields": [
+          {
+            "name": "firstLoad",
+            "optional": false,
+            "type": "boolean"
+          }
+        ]
+      },
+      "sites": ["src/index.ts"]
+    },
+    "state": {
+      "kind": "message",
+      "direction": "app->host",
+      "payload": {
+        "fields": [
+          {
+            "name": "state",
+            "optional": false,
+            "fields": [
+              {
+                "name": "transpiledModules",
+                "optional": false,
+                "type": "{ [x: string]: { source: { isEntry: boolean; fileName: string; compiledCode: string | null; }; }; }"
+              }
+            ]
+          }
+        ]
+      },
+      "sites": ["src/bundler/bundler.ts"]
+    },
+    "status": {
+      "kind": "message",
+      "direction": "app->host",
+      "payload": {
+        "fields": [
+          {
+            "name": "status",
+            "optional": false,
+            "union": [
+              {
+                "type": "\"evaluating\""
+              },
+              {
+                "type": "\"idle\""
+              },
+              {
+                "type": "\"initializing\""
+              },
+              {
+                "type": "\"installing-dependencies\""
+              },
+              {
+                "type": "\"running-tests\""
+              },
+              {
+                "type": "\"transpiling\""
+              }
+            ]
+          }
+        ]
+      },
+      "sites": ["src/index.ts"]
+    },
+    "success": {
+      "kind": "message",
+      "direction": "app->host",
+      "payload": {
+        "fields": []
+      },
+      "sites": ["src/index.ts"]
+    },
+    "theme": {
+      "kind": "push",
+      "direction": "host->app",
+      "poll": "request-theme",
+      "payload": {
+        "fields": [
+          {
+            "name": "theme",
+            "optional": false,
+            "union": [
+              {
+                "type": "\"dark\""
+              },
+              {
+                "type": "\"light\""
+              }
+            ]
+          }
+        ],
+        "reads": ["theme"]
+      },
+      "sites": ["src/theme/ThemeService.ts", "src/theme/themeState.ts"]
+    },
+    "vcs-state": {
+      "kind": "push",
+      "direction": "host->app",
+      "poll": "request-vcs-state",
+      "payload": {
+        "fields": [
+          {
+            "name": "branch",
+            "optional": true,
+            "union": [
+              {
+                "fields": [
+                  {
+                    "name": "name",
+                    "optional": false,
+                    "type": "string"
+                  },
+                  {
+                    "name": "parentCommitSha",
+                    "optional": false,
+                    "type": "string"
+                  },
+                  {
+                    "name": "parentRef",
+                    "optional": false,
+                    "type": "string"
+                  },
+                  {
+                    "name": "parentRepo",
+                    "optional": false,
+                    "type": "string"
+                  },
+                  {
+                    "name": "upstreamPushable",
+                    "optional": false,
+                    "type": "boolean | null"
+                  }
+                ]
+              },
+              {
+                "type": "null"
+              },
+              {
+                "type": "undefined"
+              }
+            ]
+          },
+          {
+            "name": "changes",
+            "optional": false,
+            "array": {
+              "fields": [
+                {
+                  "name": "path",
+                  "optional": false,
+                  "type": "string"
+                },
+                {
+                  "name": "status",
+                  "optional": false,
+                  "type": "\"created\" | \"modified\" | \"deleted\""
+                }
+              ]
+            }
+          },
+          {
+            "name": "diffLoading",
+            "optional": true,
+            "union": [
+              {
+                "type": "false"
+              },
+              {
+                "type": "true"
+              },
+              {
+                "type": "undefined"
+              }
+            ]
+          },
+          {
+            "name": "prs",
+            "optional": true,
+            "union": [
+              {
+                "array": {
+                  "type": "VcsPR"
+                }
+              },
+              {
+                "type": "undefined"
+              }
+            ]
+          }
+        ],
+        "reads": ["branch", "changes", "diffLoading", "prs"]
+      },
+      "sites": ["src/vcs/VcsService.ts", "src/vcs/vcsState.ts"]
+    }
+  },
+  "dynamicFamilies": {
+    "protocol-<scheme>": {
+      "schemes": [],
+      "sites": ["src/protocol/iframe.ts"]
+    }
+  },
+  "envelopes": {
+    "outbound": {
+      "fields": [
+        {
+          "name": "$id",
+          "optional": false,
+          "union": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "number"
+            }
+          ]
+        },
+        {
+          "name": "codesandbox",
+          "optional": false,
+          "type": "boolean"
+        },
+        {
+          "name": "type",
+          "optional": false,
+          "type": "string"
+        }
+      ]
+    },
+    "protocolRequest": {
+      "fields": [
+        {
+          "name": "method",
+          "optional": false,
+          "type": "string"
+        },
+        {
+          "name": "msgId",
+          "optional": false,
+          "type": "number"
+        },
+        {
+          "name": "params",
+          "optional": false,
+          "array": {
+            "type": "any"
+          }
+        }
+      ]
+    },
+    "protocolReply": {
+      "reads": ["error", "method", "msgId", "result", "type"]
+    }
+  }
+}

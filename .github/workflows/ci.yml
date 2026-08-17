@@ -30,6 +30,18 @@ jobs:
       - name: Test | Jest
         run: npm test -- --forceExit
 
+      # R3-274a (PLATFORM_LAYERING_SPEC §2, Phase 1): freeze the wire vocabulary
+      # this frame speaks to the host. `typecheck` and jest never see a renamed or
+      # reshaped message name — the host and the SDK do, at runtime, in production.
+      # Extracts from src/ with the TypeScript checker (most channel names here are
+      # CONSTANTS, which only a checker resolves back to their literal), and runs
+      # its own `--self-test`: a gate that finds zero names must fail, not pass.
+      - name: Test | Protocol snapshot
+        run: npm run protocol:check
+
+      - name: Test | Protocol snapshot self-test
+        run: npm run protocol:selftest
+
   build:
     runs-on: ubuntu-latest
     steps:
