@@ -21,11 +21,10 @@ import { VcsService } from './vcs/VcsService';
 import { REQUEST_VCS_STATE_MESSAGE } from './vcs/vcsState';
 import { FormFactorService } from './formFactor/FormFactorService';
 import { REQUEST_FORM_FACTOR_MESSAGE } from './formFactor/formFactorState';
-// Two compile-time strings the host handshake/telemetry stamps in (T45). Sourced
-// from the SDK at build time (scripts/gen-sdk-versions.mjs) rather than imported
-// from the package — no need to drag the SDK barrel into the bundle or take a
-// build-time dependency on its built dist/.
-import { SDK_PROTOCOL_VERSION } from './generated/sdkVersions';
+// The versions this frame announces on the handshake (T45). Both are plain
+// compile-time constants OWNED BY THIS REPO — R3-274d retired the build step that
+// read the SDK's number out of a sibling checkout. See protocol/version.ts.
+import { SANDBOX_PROTOCOL_VERSION, SDK_PROTOCOL_VERSION } from './protocol/version';
 import {
   ACTION,
   CONSOLE,
@@ -363,7 +362,14 @@ class SandpackInstance {
   // version that actually resolved (resolveSelfHostVersion).
   private announceHandshake() {
     this.messageBus.sendMessage(SDK_HANDSHAKE, {
+      // Legacy field, frozen (see protocol/version.ts): the host's fail-closed
+      // gate compares exactly what it compared before this change.
       protocolVersion: SDK_PROTOCOL_VERSION,
+      // ADDITIVE (R3-274d): the version this FRAME speaks, which is the version it
+      // is actually entitled to report. The host logs it and enforces nothing this
+      // phase; an older host that has never heard of the field ignores it, which is
+      // why it rides alongside rather than replacing `protocolVersion`.
+      sandboxProtocolVersion: SANDBOX_PROTOCOL_VERSION,
     });
   }
 

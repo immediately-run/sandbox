@@ -2731,7 +2731,7 @@ export const CHANNELS = [
       "const": "SDK_HANDSHAKE",
       "type": "SdkHandshake",
       "divergent": true,
-      "divergentNote": "divergent-declared — TWO producers of one name with different payloads: the frame announces {protocolVersion} (the SDK version baked in at build by gen-sdk-versions.mjs, read from a SIBLING checkout), the SDK announces {protocolVersion, sdkVersion}. R3-274d gives the frame its own SANDBOX_PROTOCOL_VERSION and retires the sibling read; R3-274e picks one shape.",
+      "divergentNote": "divergent-declared — TWO producers of one name with different payloads: this frame announces {protocolVersion, sandboxProtocolVersion}, the SDK announces {protocolVersion, sdkVersion}. R3-274d gave the frame its own SANDBOX_PROTOCOL_VERSION (announced additively; the host logs it, fail-open) and retired the sibling-checkout read that used to source `protocolVersion`. R3-274e picks one shape.",
       "sandbox": {
         "kind": "message",
         "direction": "app->host",
@@ -2741,6 +2741,11 @@ export const CHANNELS = [
               "name": "protocolVersion",
               "optional": false,
               "type": "string"
+            },
+            {
+              "name": "sandboxProtocolVersion",
+              "optional": false,
+              "type": "string"
             }
           ]
         },
@@ -2748,7 +2753,7 @@ export const CHANNELS = [
           "src/index.ts"
         ],
         "divergent": true,
-        "divergentNote": "divergent-declared — TWO producers of one name with different payloads: the frame announces {protocolVersion} (the SDK version baked in at build by gen-sdk-versions.mjs, read from a SIBLING checkout), the SDK announces {protocolVersion, sdkVersion}. R3-274d gives the frame its own SANDBOX_PROTOCOL_VERSION and retires the sibling read; R3-274e picks one shape."
+        "divergentNote": "divergent-declared — TWO producers of one name with different payloads: this frame announces {protocolVersion, sandboxProtocolVersion}, the SDK announces {protocolVersion, sdkVersion}. R3-274d gave the frame its own SANDBOX_PROTOCOL_VERSION (announced additively; the host logs it, fail-open) and retired the sibling-checkout read that used to source `protocolVersion`. R3-274e picks one shape."
       },
       "sdk": {
         "kind": "message",
@@ -2771,7 +2776,7 @@ export const CHANNELS = [
           "src/runtime.ts"
         ],
         "divergent": true,
-        "divergentNote": "divergent-declared — TWO producers of one name with different payloads: the frame announces {protocolVersion} (the SDK version baked in at build by gen-sdk-versions.mjs, read from a SIBLING checkout), the SDK announces {protocolVersion, sdkVersion}. R3-274d gives the frame its own SANDBOX_PROTOCOL_VERSION and retires the sibling read; R3-274e picks one shape."
+        "divergentNote": "divergent-declared — TWO producers of one name with different payloads: this frame announces {protocolVersion, sandboxProtocolVersion}, the SDK announces {protocolVersion, sdkVersion}. R3-274d gave the frame its own SANDBOX_PROTOCOL_VERSION (announced additively; the host logs it, fail-open) and retired the sibling-checkout read that used to source `protocolVersion`. R3-274e picks one shape."
       }
     },
     {
