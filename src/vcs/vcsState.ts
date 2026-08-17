@@ -14,6 +14,8 @@
  */
 
 /** One changed path in the working tree (vs. the loaded ref). */
+import { VCS_STATE, REQUEST_VCS_STATE } from '../generated/protocol';
+
 export interface VcsChange {
   /** Repo-relative path. */
   path: string;
@@ -59,10 +61,10 @@ export const DEFAULT_VCS_STATE: VcsState = {
 };
 
 /** Identity message the parent sends to push the current source-control state. */
-export const VCS_STATE_MESSAGE = 'vcs-state';
+export const VCS_STATE_MESSAGE = VCS_STATE;
 
 /** Sent by the sandbox once registered, asking the parent to reply with state. */
-export const REQUEST_VCS_STATE_MESSAGE = 'request-vcs-state';
+export const REQUEST_VCS_STATE_MESSAGE = REQUEST_VCS_STATE;
 
 /** A `vcs-state` push message from the parent (untrusted — validate on receipt). */
 export interface VcsStateMessage {

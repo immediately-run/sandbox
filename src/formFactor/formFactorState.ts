@@ -8,6 +8,8 @@
  * the SDK's useFormFactor. Baseline capability `formFactor:read` — every app
  * may read it. This is the bridge to MOBILE_SUPPORT_SPEC.
  */
+import { FORM_FACTOR, REQUEST_FORM_FACTOR } from '../generated/protocol';
+
 export type FormFactorClass = 'mobile' | 'tablet' | 'desktop';
 export type Orientation = 'portrait' | 'landscape';
 
@@ -27,10 +29,10 @@ export const DEFAULT_FORM_FACTOR: FormFactor = {
 };
 
 /** Identity message the parent sends to push the current form factor. */
-export const FORM_FACTOR_MESSAGE = 'form-factor';
+export const FORM_FACTOR_MESSAGE = FORM_FACTOR;
 
 /** Sent by the sandbox once registered, asking the parent to reply. */
-export const REQUEST_FORM_FACTOR_MESSAGE = 'request-form-factor';
+export const REQUEST_FORM_FACTOR_MESSAGE = REQUEST_FORM_FACTOR;
 
 export const formFactorsEqual = (a: FormFactor, b: FormFactor): boolean =>
   a.class === b.class &&

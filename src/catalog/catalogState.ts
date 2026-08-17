@@ -9,6 +9,8 @@
  *
  * Baseline `catalog:read`: every app may discover its own surface.
  */
+import { API_CATALOG, REQUEST_API_CATALOG } from '../generated/protocol';
+
 export interface ApiMethod {
   /** Catalog name, `protocol-` stripped — e.g. `spaces:share`, `contribute:run`. */
   name: string;
@@ -22,10 +24,10 @@ export interface ApiMethod {
 export const DEFAULT_CATALOG: ApiMethod[] = [];
 
 /** Identity message the parent sends to push the current method catalog. */
-export const CATALOG_MESSAGE = 'api-catalog';
+export const CATALOG_MESSAGE = API_CATALOG;
 
 /** Sent by the sandbox once registered, asking the parent to reply with it. */
-export const REQUEST_CATALOG_MESSAGE = 'request-api-catalog';
+export const REQUEST_CATALOG_MESSAGE = REQUEST_API_CATALOG;
 
 /** A catalog push message from the parent. */
 export interface CatalogMessage {
