@@ -1,11 +1,22 @@
-import { CONTRIBUTE_MANIFEST_PATH } from '@immediately-run/platform-constants';
+import {
+  APP_ROOT,
+  CONTRIBUTE_MANIFEST_PATH,
+  stripAppRoot,
+  underAppRoot,
+} from '@immediately-run/platform-constants';
 
 /**
- * The sandbox filesystem is rooted at `/` so app code can reach the whole tree
- * (the repo plus any dynamically-added mounts such as a Firestore-backed store).
- * The parent window's repository filesystem is mounted here:
+ * The app-root path space now has ONE definition, in
+ * `@immediately-run/platform-constants` (R3-275): this module and the SDK's
+ * `urlUtils.ts` each declared their own `/app` and their own join, and nothing made
+ * the two agree — while the metadata key space is derived from the constant on both
+ * sides. Re-exported here so every existing import site is unchanged.
+ *
+ * The sandbox filesystem is rooted at `/` so app code can reach the whole tree (the
+ * repo plus any dynamically-added mounts such as a Firestore-backed store); the
+ * parent window's repository filesystem is mounted at `APP_ROOT`.
  */
-export const APP_ROOT = '/app';
+export { APP_ROOT, underAppRoot, stripAppRoot };
 
 /**
  * Repo-relative path of the contribute-manifest sidecar a cache zip carries
@@ -15,20 +26,4 @@ export const APP_ROOT = '/app';
  */
 export const MANIFEST_SIDECAR_PATH = `/${CONTRIBUTE_MANIFEST_PATH}`;
 
-/** Join `APP_ROOT` with a repo-relative path (which may or may not be slash-prefixed). */
-export const underAppRoot = (repoRelativePath: string): string => {
-  const suffix = repoRelativePath.startsWith('/') ? repoRelativePath : `/${repoRelativePath}`;
-  return `${APP_ROOT}${suffix}`;
-};
 
-/**
- * Map an absolute sandbox path back to the repo-relative path apps and the URL
- * space think in (`/app/posts/x.mdx` → `/posts/x.mdx`). Paths outside the repo
- * (node_modules, other mounts) are returned unchanged.
- */
-export const stripAppRoot = (path: string): string => {
-  if (path === APP_ROOT) {
-    return '/';
-  }
-  return path.startsWith(`${APP_ROOT}/`) ? path.slice(APP_ROOT.length) : path;
-};

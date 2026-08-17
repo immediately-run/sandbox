@@ -120,4 +120,72 @@ describe('G-MDX-3b — sidecar seeding of the MDX metadata store', () => {
     await h.bundler.preloadMDXMetadata();
     expect(lastMetadataOf(h).get('/app/content/post.mdx')).toMatchObject({ title: 'Live' });
   });
+
+  // R3-275 — the sidecar's SHAPE is validated by the shared
+  // `@immediately-run/platform-constants` validator now, the same one the CLI's
+  // emitter is written against. These pin the two verdicts that matter to a booting
+  // app: a file this reader cannot interpret costs the repo its cached metadata but
+  // NOT its metadata (live scan still runs), and one malformed entry costs only
+  // itself.
+  it('a sidecar with an unknown schemaVersion seeds NOTHING (and does not live-scan — see R3-275c)', async () => {
+    h = await createBundlerHarness({
+      'package.json': JSON.stringify({ name: 's', main: 'src/index.ts' }),
+      'index.html': '<!doctype html><div id="root"></div>',
+      'src/index.ts': 'export default 1;\n',
+      '.immediately.run/contribute-manifest.json': manifest([
+        { path: 'content/post.mdx', sha: 'sha-post' },
+      ]),
+      // schemaVersion 2: this reader does not know what it is looking at, so
+      // honouring the parts it recognises is exactly the misreading the version
+      // exists to prevent.
+      '.immediately.run/artifacts/mdx-metadata.json': JSON.stringify({
+        schemaVersion: 2,
+        files: {
+          '/content/post.mdx': { srcSha: 'sha-post', frontmatter: { title: 'FromSidecar' } },
+        },
+      }),
+      'content/post.mdx': '---\ntitle: FromDisk\n---\n\n# hi\n',
+    });
+
+    await h.bundler.preloadMDXMetadata();
+    const meta = lastMetadataOf(h);
+
+    // The sidecar is not honoured — good, that is the version check doing its job.
+    expect(meta.get('/app/content/post.mdx')).not.toEqual({ title: 'FromSidecar' });
+    // …but the store is left EMPTY rather than falling back to the live walk: the
+    // seeding contract reports `present: true` for a malformed file, and the caller
+    // only live-scans when the sidecar is ABSENT or security-rejected. So a corrupt
+    // sidecar silently costs a repo its frontmatter, which is indistinguishable from
+    // a repo that has none. PRE-EXISTING behaviour, pinned here rather than changed:
+    // R3-275a is a behaviour-preserving refactor. Filed as R3-275c.
+    expect(meta.has('/app/content/post.mdx')).toBe(false);
+  });
+
+  it('one malformed entry is dropped; the rest of the sidecar still seeds', async () => {
+    h = await createBundlerHarness({
+      'package.json': JSON.stringify({ name: 's', main: 'src/index.ts' }),
+      'index.html': '<!doctype html><div id="root"></div>',
+      'src/index.ts': 'export default 1;\n',
+      '.immediately.run/contribute-manifest.json': manifest([
+        { path: 'content/good.mdx', sha: 'sha-good' },
+        { path: 'content/bad.mdx', sha: 'sha-bad' },
+        { path: 'content/empty.mdx', sha: 'sha-empty' },
+      ]),
+      '.immediately.run/artifacts/mdx-metadata.json': JSON.stringify({
+        schemaVersion: 1,
+        files: {
+          '/content/good.mdx': { srcSha: 'sha-good', frontmatter: { title: 'Good' } },
+          '/content/bad.mdx': { srcSha: 'sha-bad', frontmatter: 'not an object' },
+          '/content/empty.mdx': { srcSha: 'sha-empty', frontmatter: {} },
+        },
+      }),
+    });
+
+    await h.bundler.preloadMDXMetadata();
+    const meta = lastMetadataOf(h);
+
+    expect(meta.get('/app/content/good.mdx')).toEqual({ title: 'Good' });
+    expect(meta.has('/app/content/bad.mdx')).toBe(false);
+    expect(meta.has('/app/content/empty.mdx')).toBe(false);
+  });
 });
