@@ -1,3 +1,4 @@
+import { MOUNT_ADD, REGISTER_FRAME } from '../generated/protocol';
 import { Emitter } from '../utils/emitter';
 import { IInitConfig } from './message-types';
 
@@ -30,7 +31,7 @@ export class IFrameParentMessageBus {
   private _messageListener(evt: MessageEvent) {
     const data = evt.data;
 
-    if (data && data.type === 'register-frame') {
+    if (data && data.type === REGISTER_FRAME) {
       this.parentId = data.id;
 
       // Bootstrap config rides on the same handshake message that transfers the
@@ -97,7 +98,7 @@ export class IFrameParentMessageBus {
     // `mount-add` transfers a MessagePort for the new mount's filesystem. The
     // generic message channel drops `evt.ports`, so attach them here for the
     // mount handler to pick up. (`register-frame` above is handled separately.)
-    if (data.type === 'mount-add' && evt.ports && evt.ports.length > 0) {
+    if (data.type === MOUNT_ADD && evt.ports && evt.ports.length > 0) {
       this.messageEmitter.fire({ ...data, ports: evt.ports });
       return;
     }

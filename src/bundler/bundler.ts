@@ -1,3 +1,4 @@
+import { ARTIFACT_DISTRUST, STATE } from '../generated/protocol';
 import { BundlerError } from '../errors/BundlerError';
 import { CachedFS } from '../FileSystem/CachedFS';
 import { RegistryFS, RegistryFileFetcher } from '../FileSystem/RegistryFS';
@@ -1128,7 +1129,7 @@ export class Bundler {
     logger.warn(
       `Artifact spot-verify ${verdict.reason ?? 'mismatch'} at ${verdict.path} — all artifacts discarded for this session (UI_AS_APPS §8.14).`,
     );
-    this.messageBus.sendMessage('artifact-distrust', {
+    this.messageBus.sendMessage(ARTIFACT_DISTRUST, {
       commitSha: this.artifactStore.getCommitSha(),
       reason: 'spot-verify-mismatch',
     });
@@ -1229,7 +1230,7 @@ export class Bundler {
       logger.warn(
         `MDX metadata sidecar rejected (${seed.securityReject}) — live-scanning frontmatter (UI_AS_APPS §8.14).`,
       );
-      this.messageBus.sendMessage('artifact-distrust', {
+      this.messageBus.sendMessage(ARTIFACT_DISTRUST, {
         commitSha: this.artifactStore.getCommitSha(),
         reason: seed.securityReject,
       });
@@ -1612,7 +1613,7 @@ export class Bundler {
       return { ...prev, ...curr };
     }, {});
 
-    this.messageBus.sendMessage('state', { state: { transpiledModules } });
+    this.messageBus.sendMessage(STATE, { state: { transpiledModules } });
 
     // ir.transpile (R3-46): the babel transform pass is complete and the compiled
     // module graph has been forwarded. moduleCount is the size of that graph.

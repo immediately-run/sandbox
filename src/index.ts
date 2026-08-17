@@ -26,6 +26,24 @@ import { REQUEST_FORM_FACTOR_MESSAGE } from './formFactor/formFactorState';
 // from the package — no need to drag the SDK barrel into the bundle or take a
 // build-time dependency on its built dist/.
 import { SDK_PROTOCOL_VERSION } from './generated/sdkVersions';
+import {
+  ACTION,
+  CONSOLE,
+  DONE,
+  EVALUATE,
+  FS_CHANGE,
+  INITIALIZED,
+  REFRESH,
+  REPO_MOUNT,
+  REQUEST_HANDSHAKE,
+  REQUEST_REPO_MOUNT,
+  RESIZE,
+  SDK_HANDSHAKE,
+  START,
+  STATUS,
+  SUCCESS,
+} from './generated/protocol';
+
 import { MountService } from './mounts/MountService';
 import {
   MOUNT_ADD_MESSAGE,
@@ -138,7 +156,7 @@ class SandpackInstance {
 
     // Send 'initialized' now — the parent waits for this before it sends
     // 'register-frame' with the MessagePort in the transferable list.
-    this.messageBus.sendMessage('initialized');
+    this.messageBus.sendMessage(INITIALIZED);
 
     // SDK_PACKAGING_SPEC §4: publish the runtime-discovery global so a
     // bundled-from-npm SDK can find the runtime + transport without injection
@@ -216,7 +234,7 @@ class SandpackInstance {
     // `handleRepoMount` arrive before `repoPortFs` exists and silently no-op.
     // Best-effort: if the host doesn't answer (older host), the app keeps
     // working at /app unchanged.
-    this.messageBus.sendMessage('request-repo-mount');
+    this.messageBus.sendMessage(REQUEST_REPO_MOUNT);
 
     // Expose the shared filesystem to code running in the sandbox, rooted at the
     // project root (so `/app/src/App.tsx` maps to the parent's
@@ -259,13 +277,13 @@ class SandpackInstance {
     await this.bundler.setupModuleMounts();
 
     this.bundler.onStatusChange((newStatus) => {
-      this.messageBus.sendMessage('status', { status: newStatus });
+      this.messageBus.sendMessage(STATUS, { status: newStatus });
     });
 
     listenToRuntimeErrors(this.bundler, (runtimeError: ErrorRecord) => {
       const stackFrame = runtimeError.stackFrames[0] ?? {};
 
-      this.messageBus.sendMessage('action', {
+      this.messageBus.sendMessage(ACTION, {
         action: 'show-error',
 
         title: 'Runtime Exception',
@@ -280,13 +298,13 @@ class SandpackInstance {
 
     // Console logic
     hookConsole((log) => {
-      this.messageBus.sendMessage('console', { log });
+      this.messageBus.sendMessage(CONSOLE, { log });
     });
     this.messageBus.onMessage((data: any) => {
-      if (typeof data === 'object' && data.type === 'evaluate') {
+      if (typeof data === 'object' && data.type === EVALUATE) {
         const result = handleEvaluate(data.command);
         if (result) {
-          this.messageBus.sendMessage('console', result);
+          this.messageBus.sendMessage(CONSOLE, result);
         }
       }
     });
@@ -344,7 +362,7 @@ class SandpackInstance {
   // the sandbox's build-time SDK checkout, it didn't even reflect the per-app SDK
   // version that actually resolved (resolveSelfHostVersion).
   private announceHandshake() {
-    this.messageBus.sendMessage('sdk-handshake', {
+    this.messageBus.sendMessage(SDK_HANDSHAKE, {
       protocolVersion: SDK_PROTOCOL_VERSION,
     });
   }
@@ -353,10 +371,10 @@ class SandpackInstance {
     switch (message.type) {
       // The host (re)asks for the handshake on (re)mount — reply so it never misses
       // it even if the frame booted before the host was listening.
-      case 'request-handshake':
+      case REQUEST_HANDSHAKE:
         this.announceHandshake();
         break;
-      case 'fs-change':
+      case FS_CHANGE:
         // The parent observed writes to the shared filesystem and relayed the
         // changed paths (zenfs's Port backend can't forward watch events, so we
         // can't see them ourselves). The parent reports them repo-relative
@@ -378,13 +396,13 @@ class SandpackInstance {
       case MOUNT_REMOVE_MESSAGE:
         this.readyPromise.then(() => this.handleMountRemove(message)).catch(logger.error);
         break;
-      case 'repo-mount':
+      case REPO_MOUNT:
         // Additive + best-effort (§11.2): never blocks readiness or boot.
         this.handleRepoMount(message).catch(logger.error);
         break;
-      case 'refresh':
+      case REFRESH:
         window.location.reload();
-        this.messageBus.sendMessage('refresh');
+        this.messageBus.sendMessage(REFRESH);
         break;
     }
   }
@@ -522,7 +540,7 @@ class SandpackInstance {
     const height = getDocumentHeight();
 
     if (this.lastHeight !== height) {
-      this.messageBus.sendMessage('resize', { height });
+      this.messageBus.sendMessage(RESIZE, { height });
     }
 
     this.lastHeight = height;
@@ -563,11 +581,11 @@ class SandpackInstance {
     const initStartTimeFileSystem = Date.now();
     logger.debug(logger.logFactory('FileSystem'));
 
-    this.messageBus.sendMessage('start', {
+    this.messageBus.sendMessage(START, {
       firstLoad: this.bundler.isFirstLoad,
     });
 
-    this.messageBus.sendMessage('status', { status: 'initializing' });
+    this.messageBus.sendMessage(STATUS, { status: 'initializing' });
 
     if (this.bundler.isFirstLoad) {
       this.bundler.resetModules();
@@ -587,7 +605,7 @@ class SandpackInstance {
     const evaluate = await this.bundler
       .compile()
       .then((val) => {
-        this.messageBus.sendMessage('done', {
+        this.messageBus.sendMessage(DONE, {
           compilatonError: false,
         });
 
@@ -596,9 +614,9 @@ class SandpackInstance {
       .catch((error: CompilationError) => {
         logger.error(error);
 
-        this.messageBus.sendMessage('action', errorMessage(error));
+        this.messageBus.sendMessage(ACTION, errorMessage(error));
 
-        this.messageBus.sendMessage('done', {
+        this.messageBus.sendMessage(DONE, {
           compilatonError: true,
         });
       })
@@ -612,7 +630,7 @@ class SandpackInstance {
 
     // --- Evaluation
     if (evaluate) {
-      this.messageBus.sendMessage('status', { status: 'evaluating' });
+      this.messageBus.sendMessage(STATUS, { status: 'evaluating' });
 
       try {
         logger.groupCollapsed(logger.logFactory('Evaluation'));
@@ -620,7 +638,7 @@ class SandpackInstance {
 
         evaluate();
 
-        this.messageBus.sendMessage('success');
+        this.messageBus.sendMessage(SUCCESS);
 
         logger.debug(logger.logFactory('Evaluation', `finished in ${Date.now() - evalStartTime}ms`));
         logger.groupEnd();
@@ -628,7 +646,7 @@ class SandpackInstance {
         logger.error(error);
 
         this.messageBus.sendMessage(
-          'action',
+          ACTION,
           errorMessage(error as BundlerError) // TODO: create a evaluation error
         );
       }
@@ -637,7 +655,7 @@ class SandpackInstance {
     }
 
     logger.debug(logger.logFactory('Finished', `in ${Date.now() - bundlerStartTime}ms`));
-    this.messageBus.sendMessage('status', { status: 'done' });
+    this.messageBus.sendMessage(STATUS, { status: 'done' });
   }
 
   dispose() {
