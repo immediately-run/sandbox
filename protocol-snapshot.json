@@ -66,7 +66,9 @@
           }
         ]
       },
-      "sites": ["src/index.ts"]
+      "sites": [
+        "src/index.ts"
+      ]
     },
     "api-catalog": {
       "kind": "push",
@@ -98,9 +100,14 @@
             }
           }
         ],
-        "reads": ["methods"]
+        "reads": [
+          "methods"
+        ]
       },
-      "sites": ["src/catalog/CatalogService.ts", "src/catalog/catalogState.ts"]
+      "sites": [
+        "src/catalog/CatalogService.ts",
+        "src/catalog/catalogState.ts"
+      ]
     },
     "artifact-distrust": {
       "kind": "message",
@@ -126,16 +133,22 @@
           }
         ]
       },
-      "sites": ["src/bundler/bundler.ts"]
+      "sites": [
+        "src/bundler/bundler.ts"
+      ]
     },
     "auth-state": {
       "kind": "push",
       "direction": "host->app",
       "poll": "request-auth-state",
       "payload": {
-        "reads": ["state"]
+        "reads": [
+          "state"
+        ]
       },
-      "sites": ["src/auth/AuthService.ts"]
+      "sites": [
+        "src/auth/AuthService.ts"
+      ]
     },
     "console": {
       "kind": "message",
@@ -149,7 +162,9 @@
           }
         ]
       },
-      "sites": ["src/index.ts"]
+      "sites": [
+        "src/index.ts"
+      ]
     },
     "done": {
       "kind": "message",
@@ -163,7 +178,9 @@
           }
         ]
       },
-      "sites": ["src/index.ts"]
+      "sites": [
+        "src/index.ts"
+      ]
     },
     "editor-context": {
       "kind": "push",
@@ -194,38 +211,56 @@
             }
           }
         ],
-        "reads": ["activeFile", "dirtyPaths"]
+        "reads": [
+          "activeFile",
+          "dirtyPaths"
+        ]
       },
-      "sites": ["src/editor/EditorContextService.ts", "src/editor/editorContextState.ts"],
+      "sites": [
+        "src/editor/EditorContextService.ts",
+        "src/editor/editorContextState.ts"
+      ],
       "divergent": true,
-      "divergentNote": "declared-incomplete \u2014 the host (site-main channelBridge.ts) sends {dirtyPaths, openFiles, activeFile, viewedFile}; this side declares only {dirtyPaths, activeFile?} while the SDK reads all four. `viewedFile` (R3-268) and `openFiles` never entered this declaration. R3-274e picks one shape for both sides."
+      "divergentNote": "declared-incomplete — the host (site-main channelBridge.ts) sends {dirtyPaths, openFiles, activeFile, viewedFile}; this side declares only {dirtyPaths, activeFile?} while the SDK reads all four. `viewedFile` (R3-268) and `openFiles` never entered this declaration. R3-274e picks one shape for both sides."
     },
     "evaluate": {
       "kind": "message",
       "direction": "host->app",
       "payload": {
-        "reads": ["command"]
+        "reads": [
+          "command"
+        ]
       },
-      "sites": ["src/index.ts"]
+      "sites": [
+        "src/index.ts"
+      ]
     },
     "form-factor": {
       "kind": "push",
       "direction": "host->app",
       "poll": "request-form-factor",
       "payload": {
-        "reads": ["formFactor"]
+        "reads": [
+          "formFactor"
+        ]
       },
-      "sites": ["src/formFactor/FormFactorService.ts"]
+      "sites": [
+        "src/formFactor/FormFactorService.ts"
+      ]
     },
     "fs-change": {
       "kind": "message",
       "direction": "host->app",
       "payload": {
-        "reads": ["paths"]
+        "reads": [
+          "paths"
+        ]
       },
-      "sites": ["src/index.ts"],
+      "sites": [
+        "src/index.ts"
+      ],
       "divergent": true,
-      "divergentNote": "subset-reads with no declared owner on either side \u2014 the host sends {paths, epoch}; this side reads only `paths`, the SDK reads both. Nothing forces the two to agree, which is the divergence PLATFORM_LAYERING_SPEC \u00a72 names as the exemplar. The `kind` also differs (message here, push channel in the SDK). R3-274e decides: keep `epoch` or drop it."
+      "divergentNote": "subset-reads with no declared owner on either side — the host sends {paths, epoch}; this side reads only `paths`, the SDK reads both. Nothing forces the two to agree, which is the divergence PLATFORM_LAYERING_SPEC §2 names as the exemplar. The `kind` also differs (message here, push channel in the SDK). R3-274e decides: keep `epoch` or drop it."
     },
     "initialized": {
       "kind": "message",
@@ -233,7 +268,9 @@
       "payload": {
         "fields": []
       },
-      "sites": ["src/index.ts"]
+      "sites": [
+        "src/index.ts"
+      ]
     },
     "ir-marker": {
       "kind": "message",
@@ -264,23 +301,37 @@
           }
         ]
       },
-      "sites": ["src/bundler/perfMarkers.ts"]
+      "sites": [
+        "src/bundler/perfMarkers.ts"
+      ]
     },
     "mount-add": {
       "kind": "message",
       "direction": "host->app",
       "payload": {
-        "reads": ["mount", "ports"]
+        "reads": [
+          "mount",
+          "ports"
+        ]
       },
-      "sites": ["src/index.ts", "src/protocol/iframe.ts"]
+      "sites": [
+        "src/index.ts",
+        "src/protocol/iframe.ts"
+      ]
     },
     "mount-remove": {
       "kind": "message",
       "direction": "host->app",
       "payload": {
-        "reads": ["id", "path", "reason"]
+        "reads": [
+          "id",
+          "path",
+          "reason"
+        ]
       },
-      "sites": ["src/index.ts"]
+      "sites": [
+        "src/index.ts"
+      ]
     },
     "refresh": {
       "kind": "message",
@@ -288,7 +339,9 @@
       "payload": {
         "fields": []
       },
-      "sites": ["src/index.ts"]
+      "sites": [
+        "src/index.ts"
+      ]
     },
     "register-frame": {
       "kind": "message",
@@ -305,16 +358,23 @@
           "template"
         ]
       },
-      "sites": ["src/protocol/iframe.ts"]
+      "sites": [
+        "src/protocol/iframe.ts"
+      ]
     },
     "repo-mount": {
       "kind": "push",
       "direction": "host->app",
       "poll": "request-repo-mount",
       "payload": {
-        "reads": ["path", "uri"]
+        "reads": [
+          "path",
+          "uri"
+        ]
       },
-      "sites": ["src/index.ts"]
+      "sites": [
+        "src/index.ts"
+      ]
     },
     "request-api-catalog": {
       "kind": "poll",
@@ -322,7 +382,9 @@
       "payload": {
         "fields": []
       },
-      "sites": ["src/index.ts"]
+      "sites": [
+        "src/index.ts"
+      ]
     },
     "request-auth-state": {
       "kind": "poll",
@@ -330,7 +392,9 @@
       "payload": {
         "fields": []
       },
-      "sites": ["src/index.ts"]
+      "sites": [
+        "src/index.ts"
+      ]
     },
     "request-editor-context": {
       "kind": "poll",
@@ -338,7 +402,9 @@
       "payload": {
         "fields": []
       },
-      "sites": ["src/index.ts"]
+      "sites": [
+        "src/index.ts"
+      ]
     },
     "request-form-factor": {
       "kind": "poll",
@@ -346,13 +412,17 @@
       "payload": {
         "fields": []
       },
-      "sites": ["src/index.ts"]
+      "sites": [
+        "src/index.ts"
+      ]
     },
     "request-handshake": {
       "kind": "message",
       "direction": "host->app",
       "payload": {},
-      "sites": ["src/index.ts"]
+      "sites": [
+        "src/index.ts"
+      ]
     },
     "request-mounts": {
       "kind": "message",
@@ -360,7 +430,9 @@
       "payload": {
         "fields": []
       },
-      "sites": ["src/index.ts"]
+      "sites": [
+        "src/index.ts"
+      ]
     },
     "request-repo-mount": {
       "kind": "poll",
@@ -368,7 +440,9 @@
       "payload": {
         "fields": []
       },
-      "sites": ["src/index.ts"]
+      "sites": [
+        "src/index.ts"
+      ]
     },
     "request-theme": {
       "kind": "poll",
@@ -376,7 +450,9 @@
       "payload": {
         "fields": []
       },
-      "sites": ["src/index.ts"]
+      "sites": [
+        "src/index.ts"
+      ]
     },
     "request-vcs-state": {
       "kind": "poll",
@@ -384,7 +460,9 @@
       "payload": {
         "fields": []
       },
-      "sites": ["src/index.ts"]
+      "sites": [
+        "src/index.ts"
+      ]
     },
     "resize": {
       "kind": "message",
@@ -398,7 +476,9 @@
           }
         ]
       },
-      "sites": ["src/index.ts"]
+      "sites": [
+        "src/index.ts"
+      ]
     },
     "sdk-handshake": {
       "kind": "message",
@@ -412,9 +492,11 @@
           }
         ]
       },
-      "sites": ["src/index.ts"],
+      "sites": [
+        "src/index.ts"
+      ],
       "divergent": true,
-      "divergentNote": "divergent-declared \u2014 TWO producers of one name with different payloads: the frame announces {protocolVersion} (the SDK version baked in at build by gen-sdk-versions.mjs, read from a SIBLING checkout), the SDK announces {protocolVersion, sdkVersion}. R3-274d gives the frame its own SANDBOX_PROTOCOL_VERSION and retires the sibling read; R3-274e picks one shape."
+      "divergentNote": "divergent-declared — TWO producers of one name with different payloads: the frame announces {protocolVersion} (the SDK version baked in at build by gen-sdk-versions.mjs, read from a SIBLING checkout), the SDK announces {protocolVersion, sdkVersion}. R3-274d gives the frame its own SANDBOX_PROTOCOL_VERSION and retires the sibling read; R3-274e picks one shape."
     },
     "start": {
       "kind": "message",
@@ -428,7 +510,9 @@
           }
         ]
       },
-      "sites": ["src/index.ts"]
+      "sites": [
+        "src/index.ts"
+      ]
     },
     "state": {
       "kind": "message",
@@ -448,7 +532,9 @@
           }
         ]
       },
-      "sites": ["src/bundler/bundler.ts"]
+      "sites": [
+        "src/bundler/bundler.ts"
+      ]
     },
     "status": {
       "kind": "message",
@@ -481,7 +567,9 @@
           }
         ]
       },
-      "sites": ["src/index.ts"]
+      "sites": [
+        "src/index.ts"
+      ]
     },
     "success": {
       "kind": "message",
@@ -489,7 +577,9 @@
       "payload": {
         "fields": []
       },
-      "sites": ["src/index.ts"]
+      "sites": [
+        "src/index.ts"
+      ]
     },
     "theme": {
       "kind": "push",
@@ -510,9 +600,14 @@
             ]
           }
         ],
-        "reads": ["theme"]
+        "reads": [
+          "theme"
+        ]
       },
-      "sites": ["src/theme/ThemeService.ts", "src/theme/themeState.ts"]
+      "sites": [
+        "src/theme/ThemeService.ts",
+        "src/theme/themeState.ts"
+      ]
     },
     "vcs-state": {
       "kind": "push",
@@ -609,15 +704,25 @@
             ]
           }
         ],
-        "reads": ["branch", "changes", "diffLoading", "prs"]
+        "reads": [
+          "branch",
+          "changes",
+          "diffLoading",
+          "prs"
+        ]
       },
-      "sites": ["src/vcs/VcsService.ts", "src/vcs/vcsState.ts"]
+      "sites": [
+        "src/vcs/VcsService.ts",
+        "src/vcs/vcsState.ts"
+      ]
     }
   },
   "dynamicFamilies": {
     "protocol-<scheme>": {
       "schemes": [],
-      "sites": ["src/protocol/iframe.ts"]
+      "sites": [
+        "src/protocol/iframe.ts"
+      ]
     }
   },
   "envelopes": {
@@ -669,7 +774,13 @@
       ]
     },
     "protocolReply": {
-      "reads": ["error", "method", "msgId", "result", "type"]
+      "reads": [
+        "error",
+        "method",
+        "msgId",
+        "result",
+        "type"
+      ]
     }
   }
 }
