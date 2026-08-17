@@ -24,7 +24,7 @@ import { REQUEST_FORM_FACTOR_MESSAGE } from './formFactor/formFactorState';
 // The versions this frame announces on the handshake (T45). Both are plain
 // compile-time constants OWNED BY THIS REPO — R3-274d retired the build step that
 // read the SDK's number out of a sibling checkout. See protocol/version.ts.
-import { SANDBOX_PROTOCOL_VERSION, SDK_PROTOCOL_VERSION } from './protocol/version';
+import { handshakePayload, SDK_PROTOCOL_VERSION } from './protocol/version';
 import {
   ACTION,
   CONSOLE,
@@ -361,16 +361,10 @@ class SandpackInstance {
   // the sandbox's build-time SDK checkout, it didn't even reflect the per-app SDK
   // version that actually resolved (resolveSelfHostVersion).
   private announceHandshake() {
-    this.messageBus.sendMessage(SDK_HANDSHAKE, {
-      // Legacy field, frozen (see protocol/version.ts): the host's fail-closed
-      // gate compares exactly what it compared before this change.
-      protocolVersion: SDK_PROTOCOL_VERSION,
-      // ADDITIVE (R3-274d): the version this FRAME speaks, which is the version it
-      // is actually entitled to report. The host logs it and enforces nothing this
-      // phase; an older host that has never heard of the field ignores it, which is
-      // why it rides alongside rather than replacing `protocolVersion`.
-      sandboxProtocolVersion: SANDBOX_PROTOCOL_VERSION,
-    });
+    // Legacy `protocolVersion` (frozen) + the frame's own `sandboxProtocolVersion`,
+    // additive — see protocol/version.ts for why both, and protocol/version.test.ts
+    // for the test that keeps it additive.
+    this.messageBus.sendMessage(SDK_HANDSHAKE, handshakePayload());
   }
 
   handleParentMessage(message: any) {

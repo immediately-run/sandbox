@@ -40,3 +40,21 @@ export const SANDBOX_PROTOCOL_VERSION = '1.0.0';
  * Do not "refresh" this from an SDK checkout: that is the coupling R3-274d removed.
  */
 export const SDK_PROTOCOL_VERSION = '1.0.0';
+
+/**
+ * The handshake payload this frame announces (`sdk-handshake`).
+ *
+ * Extracted from the boot class so the ADDITIVE property is testable without
+ * standing up a `SandpackInstance`: the legacy field must still be there, spelled
+ * the same, next to the new one. A host that predates R3-274d reads
+ * `protocolVersion` and ignores the rest; a host that has it logs
+ * `sandboxProtocolVersion` and enforces nothing (site-main
+ * `registry/protocolHandshake.ts`).
+ */
+export const handshakePayload = (): {
+  protocolVersion: string;
+  sandboxProtocolVersion: string;
+} => ({
+  protocolVersion: SDK_PROTOCOL_VERSION,
+  sandboxProtocolVersion: SANDBOX_PROTOCOL_VERSION,
+});

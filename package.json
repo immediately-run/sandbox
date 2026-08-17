@@ -37,6 +37,7 @@
     "protocol:transcribe": "node scripts/protocol-codegen/transcribe.mjs",
     "protocol:codegen-drift": "node scripts/protocol-codegen/verify-drift.mjs --self-test && node scripts/protocol-codegen/verify-drift.mjs",
     "protocol:sync": "npm run protocol:update && npm run protocol:transcribe && npm run protocol:generate && npm run protocol:transcribe && npm run protocol:generate",
+    "protocol:compat": "node scripts/check-sdk-compat.mjs",
     "format": "prettier --write \"./src/**/*.{ts,tsx,js,jsx,json}\"",
     "lint": "eslint '**/*.ts?(x)'",
     "verify": "npm run lint && npm run format -- --check && npm run typecheck && npm run protocol:check && npm run protocol:selftest && npm run protocol:codegen-drift && npm test -- --forceExit && npm run build",
