@@ -707,7 +707,10 @@ const audit = (otherPath) => {
     const setB = new Set(fb.names);
     const onlyA = fa.names.filter((n) => !setB.has(n));
     const onlyB = fb.names.filter((n) => !setA.has(n));
-    const show = `${mine.repo}: {${fa.names.join(',')}} vs ${other.repo}: {${fb.names.join(',')}}`;
+    // Backticked: this table is pasted into the MDX roadmap item, where a bare
+    // `{a,b}` is parsed as an MDX expression and fails the corpus safe-surface check.
+    const show =
+      `${mine.repo}: \`{${fa.names.join(',')}}\` vs ` + `${other.repo}: \`{${fb.names.join(',')}}\``;
     let cls;
     let note = '';
     if (fa.typed && fb.typed) {
