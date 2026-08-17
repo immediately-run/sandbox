@@ -30,5 +30,5 @@ export const themesEqual = (a: HostTheme, b: HostTheme): boolean => a === b;
 /** A theme push message from the parent. */
 export interface ThemeMessage {
   type: typeof THEME_MESSAGE;
-  theme?: HostTheme;
+  theme: HostTheme;
 }
