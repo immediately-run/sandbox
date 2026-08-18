@@ -32,7 +32,10 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node
 import { registerHooks } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
+import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+
+const require = createRequire(import.meta.url);
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '..');
@@ -43,10 +46,16 @@ const arg = (flag) => {
 };
 
 /** Every wire name this frame's vocabulary knows — its own plus the SDK-side names
- *  it RELAYS (the frame forwards them; the host is the other end). */
+ *  it RELAYS (the frame forwards them; the host is the other end). Both come from
+ *  the published contract since R3-274b1: comparing against a local copy would have
+ *  compared this repo to itself. */
 const knownNames = () => {
-  const frame = JSON.parse(readFileSync(join(root, 'protocol-snapshot.json'), 'utf8'));
-  const sdk = JSON.parse(readFileSync(join(root, 'generated/sdk/protocol-snapshot.json'), 'utf8'));
+  const frame = JSON.parse(
+    readFileSync(require.resolve('@immediately-run/sandbox-protocol/snapshots/sandbox'), 'utf8'),
+  );
+  const sdk = JSON.parse(
+    readFileSync(require.resolve('@immediately-run/sandbox-protocol/snapshots/sdk'), 'utf8'),
+  );
   return {
     frame: new Set(Object.keys(frame.channels)),
     all: new Set([...Object.keys(frame.channels), ...Object.keys(sdk.channels)]),

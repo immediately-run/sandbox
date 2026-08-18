@@ -15,7 +15,18 @@
  *   - A name in the source but not in the snapshot  → ADDITIVE       → fail with
  *     "run `npm run protocol:update`", so every wire change is reviewed in a diff.
  *
- * Usage: node scripts/check-protocol-snapshot.mjs [--update] [--self-test]
+ * Usage: node scripts/check-protocol-snapshot.mjs [--self-test]
+ *
+ * ── Where the snapshot comes from (R3-274b1) ──────────────────────────────────
+ * `@immediately-run/sandbox-protocol/snapshots/sandbox` — the PUBLISHED contract,
+ * generated from the descriptor set that owns the wire. There is no `--update` any
+ * more, and that is the point: this repo can no longer bless its own wire change by
+ * rewriting a local file. A change goes descriptors → publish → bump the pin here,
+ * which is what makes the contract cross-repo rather than a copy that agrees today.
+ *
+ * Iterating on an unpublished change: link a local checkout of the package
+ * (`npm link @immediately-run/sandbox-protocol`) and this reads whatever it resolves
+ * to. No env-var bypass exists, deliberately — a bypass would be reachable in CI.
  *
  * ── SNAPSHOT FORMAT (protocol-snapshot.json, formatVersion 1) ──────────────────
  * Identical to the SDK's. `direction` is written from the FRAME's point of view in
@@ -60,7 +71,7 @@
  *
  * Test files are excluded: they exercise the vocabulary, they do not define it.
  */
-import { readdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { readdirSync, readFileSync, existsSync } from 'node:fs';
 import { join, dirname, resolve, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
@@ -70,8 +81,13 @@ const ts = require('typescript');
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const srcDir = join(root, 'src');
-const snapshotPath = join(root, 'protocol-snapshot.json');
+// The published contract, resolved through node so a linked local checkout works
+// for iteration without a bypass this gate would then have to trust.
+const snapshotPath = require.resolve('@immediately-run/sandbox-protocol/snapshots/sandbox');
 const pkgName = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).name;
+const pkgVersion = JSON.parse(
+  readFileSync(require.resolve('@immediately-run/sandbox-protocol/package.json'), 'utf8'),
+).version;
 
 // ── source enumeration ────────────────────────────────────────────────────────
 // The bundler's own internals (transforms, resolver, the babel worker) speak no
@@ -508,7 +524,6 @@ const compare = (current, snapshot) => {
 const NON_VACUOUS_MIN = 10;
 
 const main = () => {
-  const update = process.argv.includes('--update');
   const current = extract();
   const count = Object.keys(current.channels).length;
   if (count < NON_VACUOUS_MIN) {
@@ -520,20 +535,20 @@ const main = () => {
   }
 
   const snapshot = existsSync(snapshotPath) ? JSON.parse(readFileSync(snapshotPath, 'utf8')) : null;
-
-  if (update) {
-    writeFileSync(snapshotPath, JSON.stringify(mergeHandKeys(current, snapshot), null, 2) + '\n');
-    console.log(`✓ Wrote protocol-snapshot.json (${count} wire names).`);
-    return;
-  }
   if (!snapshot) {
-    console.error('error: protocol-snapshot.json missing — run `npm run protocol:update`.');
+    console.error(
+      'error: @immediately-run/sandbox-protocol is not installed — the wire contract\n' +
+        'lives there since R3-274b1. Run `npm ci`.',
+    );
     process.exit(1);
   }
 
   const { removed, added, changed } = compare(mergeHandKeys(current, snapshot), snapshot);
   if (!removed.length && !added.length && !changed.length) {
-    console.log(`PASS  protocol-snapshot.json matches the source (${count} wire names).`);
+    console.log(
+      `PASS  this frame's source matches @immediately-run/sandbox-protocol@${pkgVersion} ` +
+        `(${count} wire names).`,
+    );
     return;
   }
   if (removed.length) {
@@ -559,32 +574,42 @@ const main = () => {
   console.error(
     '\nThe sandbox↔SDK wire is additive-only (SDK_PACKAGING_SPEC §9,\n' +
       'PLATFORM_LAYERING_SPEC §2): renaming or reshaping a name breaks every app\n' +
-      'pinned to an older SDK against a newer frame, and vice versa. If the change is\n' +
-      'genuinely additive, run `npm run protocol:update` and commit the snapshot diff.',
+      'pinned to an older SDK against a newer frame, and vice versa.\n\n' +
+      'If the change is genuinely additive: edit the descriptors in\n' +
+      '@immediately-run/sandbox-protocol, publish, and bump the pin here. This repo\n' +
+      'cannot bless its own wire change any more — that is the contract, not a chore.',
   );
   process.exit(1);
 };
 
 // ── --self-test ───────────────────────────────────────────────────────────────
-const patchOf = (relPath, from, to) => {
-  const abs = resolve(srcDir, relPath);
+const patchOf = (relPath, from, to) => patchFile(resolve(srcDir, relPath), from, to);
+
+/** Poison any file the TypeScript program reads — including one inside the pinned
+ *  package, which is where a wire name now lives (R3-274b1). Nothing is written to
+ *  disk: the extractor's compiler host serves the patched text. */
+const patchFile = (abs, from, to) => {
   const text = readFileSync(abs, 'utf8');
   return new Map([[abs, text.replace(from, to)]]);
 };
 
+/** The pinned contract's declaration file — where the constants are declared now. */
+const CONTRACT_DTS = require.resolve('@immediately-run/sandbox-protocol/sandbox').replace(/\.js$/, '.d.ts');
+
 const selfTest = () => {
   const real = extract();
   const cases = [
-    // Since R3-274d every wire name reaches its call sites through the generated
-    // module, so a rename starts THERE — which is also the only place a rename can
-    // start now, and exactly what this gate has to keep catching.
+    // Since R3-274b1 the wire names live in the PINNED CONTRACT, so a rename arrives
+    // from there — a published change this repo's source has not caught up with.
+    // That is the cross-repo failure this gate exists to make loud, so it is what the
+    // self-test poisons.
     [
-      'a RENAMED wire string (generated constant)',
-      patchOf('generated/protocol.ts', "export const THEME = 'theme';", "export const THEME = 'host-theme';"),
+      'a RENAMED wire string arriving from the pinned contract',
+      patchFile(CONTRACT_DTS, 'export declare const THEME = "theme";', 'export declare const THEME = "host-theme";'),
     ],
     [
-      'a RENAMED wire string (a dispatch case)',
-      patchOf('generated/protocol.ts', "export const REPO_MOUNT = 'repo-mount';", "export const REPO_MOUNT = 'repository-mount';"),
+      'a RENAMED dispatch-case name arriving from the pinned contract',
+      patchFile(CONTRACT_DTS, 'export declare const REPO_MOUNT = "repo-mount";', 'export declare const REPO_MOUNT = "repository-mount";'),
     ],
     [
       'a payload field made OPTIONAL (name unchanged)',
