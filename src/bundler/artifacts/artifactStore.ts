@@ -1,4 +1,8 @@
 import { APP_ROOT, MANIFEST_SIDECAR_PATH, stripAppRoot, underAppRoot } from '../../fsLayout';
+import {
+  MDX_METADATA_SIDECAR_PATH,
+  parseMdxMetadataSidecar,
+} from '@immediately-run/platform-constants';
 import { parseFrontmatter, transformFile } from '@immediately-run/transpiler';
 import {
   ARTIFACTS_DIR,
@@ -16,8 +20,10 @@ import {
 const TRANSPILED_ROOT = '/transpiled';
 // Repo-relative seeding-input paths (leading-slash, the dirty-set/COW key space).
 const INDEX_REPO_PATH = `/${ARTIFACTS_DIR}/index.json`;
-/** The frontmatter content-collection sidecar (MDX_CONTENT_COLLECTIONS_SPEC §1.3). */
-const MDX_METADATA_REPO_PATH = `/${ARTIFACTS_DIR}/mdx-metadata.json`;
+/** The frontmatter content-collection sidecar (MDX_CONTENT_COLLECTIONS_SPEC §1.3).
+ *  The path and the file's SCHEMA are owned by platform-constants (R3-275) — the CLI
+ *  writes what this reads, and they used to describe the format independently. */
+const MDX_METADATA_REPO_PATH = `/${MDX_METADATA_SIDECAR_PATH}`;
 /** Minimum spot-verification sample size (§5.7 — K ≥ 2, a floor not a ceiling). */
 export const SPOT_VERIFY_K = 2;
 
@@ -255,37 +261,27 @@ export class ArtifactStore {
     if (ctx.writableLayer.has(MDX_METADATA_REPO_PATH)) {
       return { entries: new Map(), present: true, securityReject: 'writable-layer-mdx-metadata' };
     }
-    let parsed: { schemaVersion?: unknown; files?: unknown };
-    try {
-      parsed = JSON.parse(raw);
-    } catch {
-      return { entries: new Map(), present: true };
-    }
-    if (!parsed || parsed.schemaVersion !== 1 || typeof parsed.files !== 'object' || parsed.files === null) {
+    // SHAPE is the shared validator's call (R3-275): unparseable JSON, a schema
+    // version this reader does not know, a non-object `files`, and every malformed
+    // entry — one definition, the same verdicts the CLI's emitter is written against.
+    const validation = parseMdxMetadataSidecar(raw);
+    if (!validation.ok) {
       return { entries: new Map(), present: true };
     }
 
+    // CONFINEMENT stays here: it needs the manifest, the dirty set and the writable
+    // layer, none of which the package can see. The validator answers "is this the
+    // format?"; this answers "may I trust this entry?".
     const manifestShas = await this.readManifestShas();
     const entries = new Map<string, Record<string, any>>();
-    for (const [rawKey, value] of Object.entries(parsed.files as Record<string, unknown>)) {
-      const v = value as { srcSha?: unknown; frontmatter?: unknown };
-      if (
-        typeof v?.srcSha !== 'string' ||
-        typeof v?.frontmatter !== 'object' ||
-        v.frontmatter === null ||
-        Array.isArray(v.frontmatter)
-      ) {
-        continue;
-      }
+    for (const [rawKey, entry] of Object.entries(validation.sidecar.files)) {
       const path = normalizeRepoRelPath(rawKey);
       if (!path) continue; // bad/traversing key
       const manifestSha = manifestShas.get(path);
       if (manifestSha === undefined) continue; // not a committed member
       if (ctx.dirtySet.has(path)) continue; // modified → live fallback
-      if (v.srcSha !== manifestSha) continue; // source bytes drifted
-      const frontmatter = v.frontmatter as Record<string, any>;
-      if (Object.keys(frontmatter).length === 0) continue; // empty-frontmatter drop
-      entries.set(underAppRoot(path), frontmatter);
+      if (entry.srcSha !== manifestSha) continue; // source bytes drifted
+      entries.set(underAppRoot(path), entry.frontmatter as Record<string, any>);
     }
     return { entries, present: true };
   }

@@ -1,3 +1,5 @@
+import { metadataKeyFor, stripAppRoot } from '@immediately-run/platform-constants';
+
 import { createBundlerHarness, type BundlerHarness } from './testHarness/bundlerHarness';
 
 // Regression guard for the path-space fix: MDX frontmatter metadata must be keyed
@@ -25,8 +27,15 @@ describe('MDX metadata is keyed by the absolute /app module path', () => {
     const lastMetadata = (h.bundler as unknown as { lastMetadata: Map<string, Record<string, unknown>> })
       .lastMetadata;
 
-    expect(lastMetadata.has('/app/content/post.mdx')).toBe(true);
-    expect(lastMetadata.has('/content/post.mdx')).toBe(false);
-    expect(lastMetadata.get('/app/content/post.mdx')).toMatchObject({ title: 'Hello' });
+    // Asserted THROUGH the shared helper (R3-275): the sandbox and the SDK derive
+    // this key space from one definition now, so the two sides can no longer diverge
+    // while this test stays green. The literals are kept alongside so the test still
+    // says out loud what the key looks like.
+    expect(metadataKeyFor('content/post.mdx')).toBe('/app/content/post.mdx');
+    expect(lastMetadata.has(metadataKeyFor('content/post.mdx'))).toBe(true);
+    expect(lastMetadata.has(stripAppRoot(metadataKeyFor('content/post.mdx')))).toBe(false);
+    expect(lastMetadata.get(metadataKeyFor('content/post.mdx'))).toMatchObject({
+      title: 'Hello',
+    });
   });
 });
