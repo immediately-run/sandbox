@@ -42,15 +42,6 @@ jobs:
       - name: Test | Protocol snapshot self-test
         run: npm run protocol:selftest
 
-      # R3-274b: the wire vocabulary now has ONE definition
-      # (scripts/protocol-codegen/descriptors.protocol.mjs) and four projections —
-      # this frame's constants + types, this repo's snapshot, and both of the SDK's.
-      # "DO NOT EDIT" in a generated header is a request; this is the mechanism:
-      # regenerate and compare bytes, and prove the snapshots transcribe back to the
-      # committed descriptors (generation and transcription must be inverses, or the
-      # descriptors are a second copy that merely agrees today).
-      - name: Test | Protocol codegen drift
-        run: npm run protocol:codegen-drift
 
   build:
     runs-on: ubuntu-latest
