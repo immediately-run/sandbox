@@ -123,45 +123,88 @@ describe('G-MDX-3b — sidecar seeding of the MDX metadata store', () => {
 
   // R3-275 — the sidecar's SHAPE is validated by the shared
   // `@immediately-run/platform-constants` validator now, the same one the CLI's
-  // emitter is written against. These pin the two verdicts that matter to a booting
-  // app: a file this reader cannot interpret costs the repo its cached metadata but
-  // NOT its metadata (live scan still runs), and one malformed entry costs only
-  // itself.
-  it('a sidecar with an unknown schemaVersion seeds NOTHING (and does not live-scan — see R3-275c)', async () => {
-    h = await createBundlerHarness({
-      'package.json': JSON.stringify({ name: 's', main: 'src/index.ts' }),
-      'index.html': '<!doctype html><div id="root"></div>',
-      'src/index.ts': 'export default 1;\n',
-      '.immediately.run/contribute-manifest.json': manifest([
-        { path: 'content/post.mdx', sha: 'sha-post' },
-      ]),
-      // schemaVersion 2: this reader does not know what it is looking at, so
-      // honouring the parts it recognises is exactly the misreading the version
-      // exists to prevent.
-      '.immediately.run/artifacts/mdx-metadata.json': JSON.stringify({
+  // emitter is written against. R3-275c then fixed what those verdicts DO: a file this
+  // reader cannot interpret costs the repo its cached metadata but NOT its metadata,
+  // and one malformed entry costs only itself — visibly.
+  //
+  // The control is `no sidecar → the live walk still populates the store` above: each
+  // case below asserts the SAME observable outcome as having no sidecar at all, which
+  // is the whole claim ("a cache that is damaged gives you the slow answer, not the
+  // wrong one"). Asserting merely that the forged value is absent would pass on the
+  // broken behaviour too — the store was empty then.
+  describe.each([
+    [
+      'an unknown schemaVersion',
+      'schema-version',
+      // This reader does not know what it is looking at, so honouring the parts it
+      // recognises is exactly the misreading the version check exists to prevent.
+      JSON.stringify({
         schemaVersion: 2,
-        files: {
-          '/content/post.mdx': { srcSha: 'sha-post', frontmatter: { title: 'FromSidecar' } },
-        },
+        files: { '/content/post.mdx': { srcSha: 'sha-post', frontmatter: { title: 'FromSidecar' } } },
       }),
-      'content/post.mdx': '---\ntitle: FromDisk\n---\n\n# hi\n',
+    ],
+    ['unparseable JSON', 'not-an-object', '{"schemaVersion": 1, "files": {'],
+    [
+      'a non-object `files`',
+      'files-not-an-object',
+      JSON.stringify({ schemaVersion: 1, files: 'nope' }),
+    ],
+  ])('an unusable sidecar (%s) falls back to the live walk — R3-275c', (_label, verdict, sidecar) => {
+    it('live-scans, and says once which verdict fired', async () => {
+      const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        h = await createBundlerHarness({
+          'package.json': JSON.stringify({ name: 's', main: 'src/index.ts' }),
+          'index.html': '<!doctype html><div id="root"></div>',
+          'src/index.ts': 'export default 1;\n',
+          '.immediately.run/contribute-manifest.json': manifest([
+            { path: 'content/post.mdx', sha: 'sha-post' },
+          ]),
+          '.immediately.run/artifacts/mdx-metadata.json': sidecar,
+          'content/post.mdx': '---\ntitle: FromDisk\n---\n\n# hi\n',
+        });
+
+        await h.bundler.preloadMDXMetadata();
+        const meta = lastMetadataOf(h);
+
+        // The live walk ran: the store holds what the SOURCE says, exactly as it would
+        // with no sidecar present at all.
+        expect(meta.get('/app/content/post.mdx')).toMatchObject({ title: 'FromDisk' });
+
+        // …and the reason is on the record, named, once — not a silent empty store.
+        const said = warn.mock.calls
+          .map((c) => c.join(' '))
+          .filter((line) => line.includes('MDX metadata sidecar unusable'));
+        expect(said).toHaveLength(1);
+        expect(said[0]).toContain(verdict);
+      } finally {
+        warn.mockRestore();
+      }
     });
 
-    await h.bundler.preloadMDXMetadata();
-    const meta = lastMetadataOf(h);
+    it('does NOT emit artifact-distrust — a malformed sidecar is a defect, not tampering', async () => {
+      h = await createBundlerHarness({
+        'package.json': JSON.stringify({ name: 's', main: 'src/index.ts' }),
+        'index.html': '<!doctype html><div id="root"></div>',
+        'src/index.ts': 'export default 1;\n',
+        '.immediately.run/contribute-manifest.json': manifest([
+          { path: 'content/post.mdx', sha: 'sha-post' },
+        ]),
+        '.immediately.run/artifacts/mdx-metadata.json': sidecar,
+        'content/post.mdx': '---\ntitle: FromDisk\n---\n\n# hi\n',
+      });
 
-    // The sidecar is not honoured — good, that is the version check doing its job.
-    expect(meta.get('/app/content/post.mdx')).not.toEqual({ title: 'FromSidecar' });
-    // …but the store is left EMPTY rather than falling back to the live walk: the
-    // seeding contract reports `present: true` for a malformed file, and the caller
-    // only live-scans when the sidecar is ABSENT or security-rejected. So a corrupt
-    // sidecar silently costs a repo its frontmatter, which is indistinguishable from
-    // a repo that has none. PRE-EXISTING behaviour, pinned here rather than changed:
-    // R3-275a is a behaviour-preserving refactor. Filed as R3-275c.
-    expect(meta.has('/app/content/post.mdx')).toBe(false);
+      await h.bundler.preloadMDXMetadata();
+
+      // Distrust persists a mark for this (repo, commitSha) and takes the whole
+      // pre-transpiled artifact section down with it. Reserved for the writable-layer
+      // case above, which IS a security event.
+      expect(h.sentMessages.find((m) => m.type === 'artifact-distrust')).toBeUndefined();
+    });
   });
 
-  it('one malformed entry is dropped; the rest of the sidecar still seeds', async () => {
+  it('one malformed entry is dropped and COUNTED; the rest of the sidecar still seeds', async () => {
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
     h = await createBundlerHarness({
       'package.json': JSON.stringify({ name: 's', main: 'src/index.ts' }),
       'index.html': '<!doctype html><div id="root"></div>',
@@ -187,5 +230,16 @@ describe('G-MDX-3b — sidecar seeding of the MDX metadata store', () => {
     expect(meta.get('/app/content/good.mdx')).toEqual({ title: 'Good' });
     expect(meta.has('/app/content/bad.mdx')).toBe(false);
     expect(meta.has('/app/content/empty.mdx')).toBe(false);
+
+    // R3-275c: the drop is right, the SILENCE was not — an author whose entry the
+    // emitter malformed had no way to find out. Both rejected rows are named.
+    const said = warn.mock.calls
+      .map((c) => c.join(' '))
+      .filter((line) => line.includes('MDX metadata sidecar: dropped'));
+    expect(said).toHaveLength(1);
+    expect(said[0]).toContain('dropped 2 malformed entries');
+    expect(said[0]).toContain('/content/bad.mdx: entry-frontmatter');
+    expect(said[0]).toContain('/content/empty.mdx: entry-frontmatter-empty');
+    warn.mockRestore();
   });
 });
