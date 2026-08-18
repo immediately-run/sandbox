@@ -1,3 +1,4 @@
+import { ESM_ORIGIN } from '../moduleOrigins';
 import { ICDNModule } from './module-cdn';
 
 // esm.sh fallback for packages the primary dependency CDN (blazingly.io) cannot
@@ -21,14 +22,14 @@ import { ICDNModule } from './module-cdn';
 // A multi-internal-chunk package throws the clear "could not resolve" error
 // rather than silently shipping a broken module.
 //
-// CSP: no change required. The sandbox document ships no CSP, and this is a
+// CSP: the BASELINE sandbox document (index.html) ships no CSP, and this is a
 // direct cross-origin fetch from the iframe (not parent-forwarded); esm.sh sends
-// `access-control-allow-origin: *`. If a CSP is ever added to the sandbox origin
-// it must list `https://esm.sh` in `connect-src`.
+// `access-control-allow-origin: *`. The M3 document (m3.html, §G1a / R3-234) DOES
+// carry a CSP, and it lists this origin in `connect-src` — via
+// `bundler/moduleOrigins.ts`, which is why ESM_ORIGIN is imported rather than
+// declared here.
 
 export type EsmFallbackFetcher = (url: string) => Promise<string>;
-
-const ESM_ORIGIN = 'https://esm.sh';
 
 /** Default source fetcher — a plain cross-origin `fetch` (CORS-allowed by esm.sh). */
 export const nativeEsmFallbackFetcher: EsmFallbackFetcher = async (url) => {

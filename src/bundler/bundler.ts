@@ -44,6 +44,7 @@ import { Module } from './module/Module';
 import { Preset } from './presets/Preset';
 import { getPreset } from './presets/registry';
 import { emitPerfMarker } from './perfMarkers';
+import { SELF_HOST_BASES } from './moduleOrigins'
 import { retryFetch, registerImmutableUrlPrefix } from '../utils/fetch'
 import { basename, dirname } from '../utils/path'
 import { FrontmatterParseResult, parseFrontmatter } from '@immediately-run/transpiler';
@@ -63,9 +64,9 @@ export type MetadataChange = {
 // SRI-able origin, and is the SOLE delivery path: there is no host-injected
 // singleton anymore (copy-sdk.sh / static vendoring removed). Resolution is
 // implicit — see `addLocalModules`.
-const SELF_HOST_BASES: Record<string, string> = {
-  '@immediately-run/sdk': 'https://immediately-run.github.io/immediately-run-sdk',
-};
+// The map itself lives in `moduleOrigins.ts` — the M3 per-frame CSP
+// (`security/m3Csp.ts`, §G1a / R3-234) must allowlist every base, so it is
+// single-sourced there and imported here.
 
 // The version fetched for a self-hosted module when the app declares no SDK
 // dependency at all (SDK_PACKAGING_SPEC §5.1(c) — a declared-but-non-concrete

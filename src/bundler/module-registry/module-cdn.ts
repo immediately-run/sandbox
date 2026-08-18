@@ -2,6 +2,7 @@ import { decode as decodeMsgPack } from '@msgpack/msgpack';
 import urlJoin from 'url-join';
 
 import { retryFetch, registerImmutableUrlPrefix } from '../../utils/fetch';
+import { CDN_ROOT } from '../moduleOrigins';
 import { DepMap } from '.';
 
 // NOTE(2026-06): this is the live, load-bearing dependency-resolution CDN
@@ -10,7 +11,8 @@ import { DepMap } from '.';
 // CodeSandbox-lineage host (`blazingly.io`) and currently points at a `-staging`
 // subdomain; verify it is the intended prod CDN + on the HOST_ORIGIN_HARDENING
 // connect-src allowlist. See CODE_SPEC_REFERENCES.md (kept, not a deprecation).
-const CDN_ROOT = 'https://sandpack-cdn-staging.blazingly.io/';
+// The literal lives in `bundler/moduleOrigins.ts` — the M3 per-frame CSP
+// (`security/m3Csp.ts`) has to allowlist it, so it is single-sourced there.
 
 // /package/<name@exact-version> responses never change for a given URL, so
 // retryFetch serves them cache-first from the persistent immutable cache.

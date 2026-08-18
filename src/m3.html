@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <!--
+      The M3 (stranger-app) frame document — UI_AS_APPS_SPEC §G1a / TRUST_MODES_SPEC §6,
+      roadmap R3-234. Byte-identical to `index.html` apart from the CSP below, so that an
+      M3 app runs the SAME bundler as every other stance and only its egress differs.
+
+      The host points a frame at this document instead of `index.html` when it resolves
+      the app's stance to M3; M0-M2 keep `index.html` and therefore no CSP at all.
+
+      DO NOT EDIT THE POLICY BY HAND. It is generated from `src/security/m3Csp.ts`
+      (`buildM3Csp()`), and `src/security/m3Csp.test.ts` fails if the two drift — the
+      policy has to stay in sync with the origins the bundler actually fetches, or every
+      M3 app breaks in production with no local signal.
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: data:; worker-src 'self' blob:; style-src 'self' 'unsafe-inline' blob: data:; img-src 'self' blob: data:; media-src 'self' blob: data:; font-src 'self' blob: data:; connect-src 'self' blob: data: https://sandpack-cdn-staging.blazingly.io/dep_tree/ https://sandpack-cdn-staging.blazingly.io/package/ https://unpkg.com/ https://esm.sh/ https://immediately-run.github.io/immediately-run-sdk/; frame-src 'none'; child-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
+    />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Sandpack Preview</title>
+  </head>
+  <body>
+    <div id="root"></div>
+
+    <noscript>Sandpack requires JavaScript to run, use a browser with JavaScript enabled to view this page.</noscript>
+
+    <script type="module" src="./index.ts"></script>
+  </body>
+</html>

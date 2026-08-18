@@ -14,6 +14,11 @@
 //
 // Runs after `build:parcel` in `build`. `.js.map` sourcemaps are referenced only via the
 // per-file `//# sourceMappingURL` comment, so they are excluded from orphan detection.
+//
+// The target emits MORE than one document (R3-234 added `m3.html`, the M3-stance frame —
+// same bundler, hardened CSP), so the reference set is the UNION over every emitted
+// `dist/*.html`. Scanning index.html alone would report every chunk only m3.html preloads
+// as an ORPHAN and fail an otherwise-clean build.
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -29,30 +34,35 @@ function fail(msg) {
 
 if (!existsSync(INDEX)) fail(`no dist/index.html — did the build run? (${INDEX})`);
 
-const html = readFileSync(INDEX, 'utf8');
+const documents = readdirSync(DIST).filter((f) => f.endsWith('.html'));
 
-// Every module URL the browser will fetch: importmap values + <script src> + modulepreload.
+// Every module URL the browser will fetch, across every emitted document:
+// importmap values + <script src> + modulepreload.
 const referenced = new Set();
 
-// 1. importmap values
-const importmapMatch = html.match(/<script[^>]*type=["']importmap["'][^>]*>([\s\S]*?)<\/script>/i);
-if (importmapMatch) {
-  let map;
-  try {
-    map = JSON.parse(importmapMatch[1]);
-  } catch (e) {
-    fail(`dist/index.html has an unparseable importmap: ${e.message}`);
-  }
-  for (const url of Object.values(map.imports ?? {})) referenced.add(url);
-  for (const scope of Object.values(map.scopes ?? {})) {
-    for (const url of Object.values(scope)) referenced.add(url);
-  }
-}
+for (const doc of documents) {
+  const html = readFileSync(join(DIST, doc), 'utf8');
 
-// 2. <script src="..."> and 3. <link rel="modulepreload" href="...">
-for (const m of html.matchAll(/<script[^>]*\ssrc=["']([^"']+)["']/gi)) referenced.add(m[1]);
-for (const m of html.matchAll(/<link[^>]*\srel=["']modulepreload["'][^>]*\shref=["']([^"']+)["']/gi))
-  referenced.add(m[1]);
+  // 1. importmap values
+  const importmapMatch = html.match(/<script[^>]*type=["']importmap["'][^>]*>([\s\S]*?)<\/script>/i);
+  if (importmapMatch) {
+    let map;
+    try {
+      map = JSON.parse(importmapMatch[1]);
+    } catch (e) {
+      fail(`dist/${doc} has an unparseable importmap: ${e.message}`);
+    }
+    for (const url of Object.values(map.imports ?? {})) referenced.add(url);
+    for (const scope of Object.values(map.scopes ?? {})) {
+      for (const url of Object.values(scope)) referenced.add(url);
+    }
+  }
+
+  // 2. <script src="..."> and 3. <link rel="modulepreload" href="...">
+  for (const m of html.matchAll(/<script[^>]*\ssrc=["']([^"']+)["']/gi)) referenced.add(m[1]);
+  for (const m of html.matchAll(/<link[^>]*\srel=["']modulepreload["'][^>]*\shref=["']([^"']+)["']/gi))
+    referenced.add(m[1]);
+}
 
 // Keep only local (same-origin, absolute-path) .js references; CDN/bare specifiers are not
 // files we emit and are out of scope for a dist parity check.
@@ -61,7 +71,7 @@ const referencedJs = [...referenced].filter((u) => u.startsWith('/') && u.endsWi
 // DANGLING: referenced but missing from dist/
 const dangling = referencedJs.filter((u) => !existsSync(join(DIST, u.replace(/^\//, ''))));
 
-// ORPHAN: hashed *.js in dist/ that index.html never references (exclude *.js.map sourcemaps).
+// ORPHAN: hashed *.js in dist/ that NO emitted document references (exclude *.js.map sourcemaps).
 const referencedNames = new Set(referencedJs.map((u) => u.replace(/^\//, '')));
 const distJs = readdirSync(DIST).filter((f) => f.endsWith('.js') && !f.endsWith('.js.map'));
 const orphans = distJs.filter((f) => !referencedNames.has(f));
@@ -69,7 +79,7 @@ const orphans = distJs.filter((f) => !referencedNames.has(f));
 const problems = [];
 if (dangling.length)
   problems.push(
-    `  DANGLING (referenced in index.html, missing from dist/):\n` +
+    `  DANGLING (referenced by an emitted document, missing from dist/):\n` +
       dangling.map((u) => `    - ${u}`).join('\n'),
   );
 if (orphans.length)
@@ -81,5 +91,6 @@ if (orphans.length)
 if (problems.length) fail(problems.join('\n'));
 
 console.log(
-  `✅ importmap parity OK — ${referencedJs.length} referenced chunk(s), ${distJs.length} emitted, no dangling/orphan refs.`,
+  `✅ importmap parity OK — ${documents.length} document(s) (${documents.join(', ')}), ` +
+    `${referencedJs.length} referenced chunk(s), ${distJs.length} emitted, no dangling/orphan refs.`,
 );
