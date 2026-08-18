@@ -10,6 +10,8 @@
  * genuine delta — the dirty set. The parent's channel ACL withholds the whole
  * message from any iframe lacking `editor:read`, so a baseline app never sees it.
  */
+import { EDITOR_CONTEXT, REQUEST_EDITOR_CONTEXT } from '../generated/protocol';
+
 export interface EditorContext {
   /** Paths (repo-relative) the user has modified but not yet saved. */
   dirtyPaths: string[];
@@ -23,10 +25,10 @@ export interface EditorContext {
 export const DEFAULT_EDITOR_CONTEXT: EditorContext = { dirtyPaths: [], activeFile: null };
 
 /** Identity message the parent sends to push the current editor context. */
-export const EDITOR_CONTEXT_MESSAGE = 'editor-context';
+export const EDITOR_CONTEXT_MESSAGE = EDITOR_CONTEXT;
 
 /** Sent by the sandbox once registered, asking the parent to reply with context. */
-export const REQUEST_EDITOR_CONTEXT_MESSAGE = 'request-editor-context';
+export const REQUEST_EDITOR_CONTEXT_MESSAGE = REQUEST_EDITOR_CONTEXT;
 
 /** An editor-context push message from the parent. */
 export interface EditorContextMessage {

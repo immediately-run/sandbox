@@ -6,6 +6,8 @@
  * `auth-state` message. The sandbox caches the latest value (see `AuthService`)
  * so app code can poll it or subscribe to changes via the SDK.
  */
+import { AUTH_STATE, REQUEST_AUTH_STATE } from '../generated/protocol';
+
 export type AuthStatus = 'unknown' | 'signed-in' | 'signed-out';
 
 /** The signed-in user, as exposed to sandboxed app code. */
@@ -26,10 +28,10 @@ export interface SandboxAuthState {
 export const UNKNOWN_AUTH_STATE: SandboxAuthState = { status: 'unknown', user: null };
 
 /** Identity message the parent sends to push the current auth state. */
-export const AUTH_STATE_MESSAGE = 'auth-state';
+export const AUTH_STATE_MESSAGE = AUTH_STATE;
 
 /** Sent by the sandbox once registered, asking the parent to reply with state. */
-export const REQUEST_AUTH_STATE_MESSAGE = 'request-auth-state';
+export const REQUEST_AUTH_STATE_MESSAGE = REQUEST_AUTH_STATE;
 
 /** True when two states are equivalent (used to suppress no-op change events). */
 export const authStatesEqual = (a: SandboxAuthState, b: SandboxAuthState): boolean =>

@@ -1,3 +1,4 @@
+import { IR_MARKER } from '../generated/protocol';
 // Emit an `ir.*` load-profiling marker from the bundler to the host (R3-46,
 // LOAD_PROFILING_SPEC §3/§3.2). The bundler owns the compile-phase marks —
 // `ir.deps` (node-module resolution), `ir.transpile` (the babel transform pass),
@@ -26,7 +27,7 @@ export function emitPerfMarker(
   attrs?: Record<string, unknown>
 ): void {
   try {
-    bus.sendMessage('ir-marker', { name, at: now(), ...(attrs !== undefined ? { attrs } : {}) });
+    bus.sendMessage(IR_MARKER, { name, at: now(), ...(attrs !== undefined ? { attrs } : {}) });
   } catch {
     /* transport/clock unavailable — skip the mark, never break the compile */
   }

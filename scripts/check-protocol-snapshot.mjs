@@ -575,8 +575,17 @@ const patchOf = (relPath, from, to) => {
 const selfTest = () => {
   const real = extract();
   const cases = [
-    ['a RENAMED wire string (constant)', patchOf('theme/themeState.ts', "THEME_MESSAGE = 'theme'", "THEME_MESSAGE = 'host-theme'")],
-    ['a RENAMED wire string (inline literal)', patchOf('index.ts', "case 'repo-mount':", "case 'repository-mount':")],
+    // Since R3-274d every wire name reaches its call sites through the generated
+    // module, so a rename starts THERE — which is also the only place a rename can
+    // start now, and exactly what this gate has to keep catching.
+    [
+      'a RENAMED wire string (generated constant)',
+      patchOf('generated/protocol.ts', "export const THEME = 'theme';", "export const THEME = 'host-theme';"),
+    ],
+    [
+      'a RENAMED wire string (a dispatch case)',
+      patchOf('generated/protocol.ts', "export const REPO_MOUNT = 'repo-mount';", "export const REPO_MOUNT = 'repository-mount';"),
+    ],
     [
       'a payload field made OPTIONAL (name unchanged)',
       // Targets a channel with a DECLARED shape (`ThemeMessage`). Most inbound

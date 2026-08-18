@@ -9,6 +9,8 @@
  * Baseline capability `theme:read` (UI_AS_APPS_SPEC §5.4 / §8.2): every app may
  * read the host theme. Writing it (`theme:set`) is a separate, elevated action.
  */
+import { THEME, REQUEST_THEME } from '../generated/protocol';
+
 export type HostTheme = 'light' | 'dark';
 
 /**
@@ -19,10 +21,10 @@ export type HostTheme = 'light' | 'dark';
 export const DEFAULT_THEME: HostTheme = 'dark';
 
 /** Identity message the parent sends to push the current host theme. */
-export const THEME_MESSAGE = 'theme';
+export const THEME_MESSAGE = THEME;
 
 /** Sent by the sandbox once registered, asking the parent to reply with theme. */
-export const REQUEST_THEME_MESSAGE = 'request-theme';
+export const REQUEST_THEME_MESSAGE = REQUEST_THEME;
 
 /** True when two themes are equal (used to suppress no-op change events). */
 export const themesEqual = (a: HostTheme, b: HostTheme): boolean => a === b;
