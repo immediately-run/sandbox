@@ -2,6 +2,7 @@ import { FileSystem, type CreationOptions, type InodeLike } from '@zenfs/core';
 import { withErrno } from 'kerium';
 
 import { ModuleRegistry } from '../bundler/module-registry';
+import { UNPKG_ROOT } from '../bundler/moduleOrigins';
 import { retryFetch, registerImmutableUrlPrefix } from '../utils/fetch';
 
 // POSIX mode type bits (not re-exported from @zenfs/core's entrypoint, so
@@ -15,11 +16,11 @@ const READ_ONLY_DIR = S_IFDIR | 0o555;
 // the responses are immutable and `retryFetch` serves them cache-first from the
 // persistent immutable cache — forwarded to the parent in the opaque-origin
 // iframe (PRETRANSPILED_ARTIFACTS_SPEC §3.5). Mirrors `NodeModuleFSLayer`.
-registerImmutableUrlPrefix('https://unpkg.com/');
+registerImmutableUrlPrefix(UNPKG_ROOT);
 
 /** Default lazy fetch for a file the CDN bundle lists but does not inline. */
 const defaultFetchFile = async (moduleName: string, moduleVersion: string, relPath: string): Promise<string> => {
-  const response = await retryFetch(`https://unpkg.com/${moduleName}@${moduleVersion}/${relPath}`, { maxRetries: 5 });
+  const response = await retryFetch(`${UNPKG_ROOT}${moduleName}@${moduleVersion}/${relPath}`, { maxRetries: 5 });
   return response.text();
 };
 

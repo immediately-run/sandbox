@@ -17,7 +17,7 @@
     "prepare": "husky install",
     "check:freshness": "node scripts/check-freshness.mjs",
     "predev": "node scripts/check-freshness.mjs",
-    "dev": "parcel ./src/index.html",
+    "dev": "parcel ./src/index.html ./src/m3.html",
     "start": "node ./server.js",
     "gen:toolchain-hash": "node scripts/gen-toolchain-hash.mjs",
     "build": "npm run clean && npm run gen:toolchain-hash && npm run build:authoring-worker && npm run sync:authoring-worker && npm run build:parcel && npm run check:parity && node scripts/build-stamp.mjs",
@@ -36,6 +36,7 @@
     "format": "prettier --write \"./src/**/*.{ts,tsx,js,jsx,json}\"",
     "lint": "eslint '**/*.ts?(x)'",
     "verify": "npm run lint && npm run format -- --check && npm run typecheck && npm run protocol:check && npm run protocol:selftest && npm test -- --forceExit && npm run build",
+    "drill:m3-csp": "node scripts/m3-csp-drill.mjs",
     "deploy": "firebase deploy"
   },
   "importSort": {
@@ -55,7 +56,10 @@
   },
   "targets": {
     "default": {
-      "source": "src/index.html",
+      "source": [
+        "src/index.html",
+        "src/m3.html"
+      ],
       "distDir": "dist",
       "context": "browser",
       "includeNodeModules": true

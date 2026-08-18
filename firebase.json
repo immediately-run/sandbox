@@ -17,6 +17,19 @@
             ],
             "headers": [
                 {
+                    "source": "/m3.html",
+                    "headers": [
+                        {
+                            "key": "Content-Security-Policy",
+                            "value": "default-src 'none'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: data:; worker-src 'self' blob:; style-src 'self' 'unsafe-inline' blob: data:; img-src 'self' blob: data:; media-src 'self' blob: data:; font-src 'self' blob: data:; connect-src 'self' blob: data: https://sandpack-cdn-staging.blazingly.io/dep_tree/ https://sandpack-cdn-staging.blazingly.io/package/ https://unpkg.com/ https://esm.sh/ https://immediately-run.github.io/immediately-run-sdk/; frame-src 'none'; child-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
+                        },
+                        {
+                            "key": "Permissions-Policy",
+                            "value": "camera=(), microphone=(), geolocation=(), display-capture=(), midi=(), usb=()"
+                        }
+                    ]
+                },
+                {
                     "source": "**/*.@(eot|otf|ttf|ttc|woff|woff2|font.css|json)",
                     "headers": [
                         {
