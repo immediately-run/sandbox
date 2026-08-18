@@ -38,6 +38,7 @@ import {
   REQUEST_REPO_MOUNT,
   RESIZE,
   SDK_HANDSHAKE,
+  type SdkHandshakePayload,
   START,
   STATUS,
   SUCCESS,
@@ -364,7 +365,17 @@ class SandpackInstance {
     // Legacy `protocolVersion` (frozen) + the frame's own `sandboxProtocolVersion`,
     // additive — see protocol/version.ts for why both, and protocol/version.test.ts
     // for the test that keeps it additive.
-    this.messageBus.sendMessage(SDK_HANDSHAKE, handshakePayload());
+    //
+    // R3-274e: annotated with the WIRE type, not this frame's factory type.
+    // `sdk-handshake` has two producers — this frame and the app's SDK — announcing
+    // the versions each of them OWNS, and they were declaring two different payloads
+    // under one name (the `divergent-declared` entry in the R3-274a audit). The
+    // resolution is the union with every field optional: one message, each producer
+    // populating what it knows, which is already how the host reads it
+    // (site-main SandboxListener.ts, fail-open). `handshakePayload()` keeps its own
+    // narrower return type — what this frame sends has not changed.
+    const payload: SdkHandshakePayload = handshakePayload();
+    this.messageBus.sendMessage(SDK_HANDSHAKE, payload);
   }
 
   handleParentMessage(message: any) {
@@ -382,6 +393,12 @@ class SandpackInstance {
         // `APP_ROOT`. Gate on `readyPromise` so changes relayed during bootstrap
         // (before the bundler exists) are applied once it's ready rather than
         // throwing.
+        //
+        // `epoch` is on the wire and declared ({@link FsChangeMessage}) but not read
+        // here: this frame recompiles on every batch, so it has no use for the
+        // ordering token the SDK's consumers need. Declaring it anyway is the point
+        // of R3-274e — the message has one shape whether or not a given side
+        // consumes all of it.
         this.readyPromise
           .then(() => {
             const paths = (message.paths ?? []).map((p: string) => underAppRoot(p));
