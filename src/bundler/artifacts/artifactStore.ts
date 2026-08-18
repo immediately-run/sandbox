@@ -1,6 +1,7 @@
 import { APP_ROOT, MANIFEST_SIDECAR_PATH, stripAppRoot, underAppRoot } from '../../fsLayout';
 import {
   MDX_METADATA_SIDECAR_PATH,
+  type MdxMetadataRejection,
   parseMdxMetadataSidecar,
 } from '@immediately-run/platform-constants';
 import { parseFrontmatter, transformFile } from '@immediately-run/transpiler';
@@ -78,6 +79,24 @@ export interface MdxMetadataSeedResult {
   present: boolean;
   /** Set if the sidecar itself sat in the writable (COW) layer → rejected (§3). */
   securityReject?: 'writable-layer-mdx-metadata';
+  /**
+   * Set when the sidecar EXISTS but this reader cannot interpret it — the shared
+   * validator's file-level verdict (R3-275c).
+   *
+   * `present` alone cannot carry this: it answers "was there a file?", and the caller
+   * needs "can I use it?". Collapsing the two is what made a corrupt sidecar seed an
+   * empty store with no live walk behind it — a cache that returns a WRONG answer when
+   * it is damaged instead of a slower one. The caller must live-scan on this, exactly
+   * as it does on `securityReject`.
+   */
+  unusable?: MdxMetadataRejection;
+  /**
+   * Malformed ENTRIES the validator dropped from an otherwise-usable sidecar. Dropping
+   * them is right — one bad row must not cost a repo its whole cached metadata — but a
+   * SILENT drop is how "the cache seeded nothing" becomes indistinguishable from "there
+   * was nothing to seed", so the count travels with the result and gets logged.
+   */
+  droppedEntries?: { path: string; reason: MdxMetadataRejection }[];
 }
 
 /**
@@ -266,7 +285,11 @@ export class ArtifactStore {
     // entry — one definition, the same verdicts the CLI's emitter is written against.
     const validation = parseMdxMetadataSidecar(raw);
     if (!validation.ok) {
-      return { entries: new Map(), present: true };
+      // Unusable, not absent, and not a security event: report the verdict and let the
+      // caller fall back to the live walk (R3-275c). The sidecar is an OPTIMIZATION over
+      // that walk; when it is damaged the honest outcome is the slow answer, never no
+      // answer.
+      return { entries: new Map(), present: true, unusable: validation.reason };
     }
 
     // CONFINEMENT stays here: it needs the manifest, the dirty set and the writable
@@ -283,7 +306,11 @@ export class ArtifactStore {
       if (entry.srcSha !== manifestSha) continue; // source bytes drifted
       entries.set(underAppRoot(path), entry.frontmatter as Record<string, any>);
     }
-    return { entries, present: true };
+    return {
+      entries,
+      present: true,
+      ...(validation.rejected.length ? { droppedEntries: validation.rejected } : {}),
+    };
   }
 
   /**

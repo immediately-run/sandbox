@@ -1235,8 +1235,34 @@ export class Bundler {
         reason: seed.securityReject,
       });
       // fall through to the live walk
+    } else if (seed.unusable) {
+      // R3-275c: the sidecar exists but this reader cannot interpret it (unknown
+      // `schemaVersion`, unparseable JSON, a non-object `files`). It is a CACHE over
+      // the live walk, so a damaged one must cost the repo its speed, never its
+      // frontmatter — the old code seeded an empty store and returned, leaving every
+      // clean `.mdx` with no metadata and nothing anywhere saying why.
+      //
+      // Deliberately NOT `artifact-distrust`, unlike the writable-layer path above:
+      // that message tells the parent to persist a distrust mark for this (repo,
+      // commitSha) and disables the whole pre-transpiled artifact section until a new
+      // commit clears it. A malformed sidecar is a build-output defect, not evidence of
+      // tampering, and there is no reason to take the transpiled artifacts down with it.
+      logger.warn(
+        `MDX metadata sidecar unusable (${seed.unusable}) — live-scanning frontmatter instead.`,
+      );
+      // fall through to the live walk
     } else if (seed.present) {
       for (const [appPath, frontmatter] of seed.entries) this.seedMetadataEntry(appPath, frontmatter);
+      // A dropped ENTRY is correct (one bad row must not cost the repo the other 400),
+      // but a silent drop is indistinguishable from having nothing to seed (R3-275c).
+      if (seed.droppedEntries?.length) {
+        logger.warn(
+          `MDX metadata sidecar: dropped ${seed.droppedEntries.length} malformed entr` +
+            `${seed.droppedEntries.length === 1 ? 'y' : 'ies'} ` +
+            `(${seed.droppedEntries.map((r) => `${r.path}: ${r.reason}`).join(', ')}); ` +
+            'those files live-scan lazily.',
+        );
+      }
       // Modified `.mdx` re-scan live (cache==live under edits); the rest is covered.
       await Promise.all(
         [...this.dirtyPaths]
