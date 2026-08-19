@@ -169,6 +169,9 @@ export async function createBundlerHarness(
     sentMessages,
     teardown: async () => {
       babel.dispose();
+      // Git-library aliases are separate mount-table entries UNDER /node_modules, so
+      // umounting /node_modules does not take them with it (R3-292).
+      bundler.unmountGitLibraryAliases();
       // Drop the bundler-owned mounts so the next test's fresh bundler can re-mount
       // (ZenFS `configure()` does not clear the table; `mount()` throws if in use).
       try { umount('/node_modules'); } catch { /* not mounted */ }

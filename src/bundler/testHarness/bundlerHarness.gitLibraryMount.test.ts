@@ -95,25 +95,27 @@ describe('L3 [harness] git-library mount registers under /node_modules and resol
     expect(content).toBe('module.exports = "nested";');
   });
 
-  it('skips a hostile readdir entry name — no write outside the package root', async () => {
+  // R3-292 replaced the copy with a mount alias, which retires the threat this case was
+  // written for rather than defending it: destination paths were once built out of
+  // `readdir` names, so a hostile name had to be screened or it could escape the package
+  // root. Nothing is written now, so there is no destination to escape to. Asserting the
+  // NEW property instead of leaving the old assertion to pass vacuously.
+  it('writes nothing: a hostile readdir name cannot manifest a file anywhere', async () => {
     unmount = await mountLibraryFs('/mnt/hostilelib', {
       'package.json': '{"name":"@scope/hostile","version":"0.0.0","main":"index.js"}',
       'index.js': 'module.exports = 1;',
     });
 
-    // Force a hostile readdir result: an entry whose name would escape the root.
     const fsp = (h.bundler as unknown as {
       fs: { boundContext: { fs: { promises: { readdir: (p: string) => Promise<string[]> } } } };
     }).fs.boundContext.fs.promises;
     const realReaddir = fsp.readdir.bind(fsp);
-    const spy = jest
-      .spyOn(fsp, 'readdir')
-      .mockImplementation(async (p: string) => {
-        if (p === '/mnt/hostilelib') {
-          return ['package.json', 'index.js', '../escape.js', 'a/b.js', 'x\0y.js'];
-        }
-        return realReaddir(p);
-      });
+    const spy = jest.spyOn(fsp, 'readdir').mockImplementation(async (p: string) => {
+      if (p === '/mnt/hostilelib') {
+        return ['package.json', 'index.js', '../escape.js', 'a/b.js', 'x\0y.js'];
+      }
+      return realReaddir(p);
+    });
 
     try {
       await h.bundler.registerGitLibraryMount('@scope/hostile', '/mnt/hostilelib');
@@ -121,14 +123,43 @@ describe('L3 [harness] git-library mount registers under /node_modules and resol
       spy.mockRestore();
     }
 
-    // The hostile names never produced a write outside /node_modules/@scope/hostile/.
+    // Registration never reads the tree at all, so the hostile names are inert.
     await expect(fs.promises.readFile('/node_modules/escape.js', 'utf8')).rejects.toBeTruthy();
     await expect(
       fs.promises.readFile('/node_modules/@scope/escape.js', 'utf8'),
     ).rejects.toBeTruthy();
-    // The legitimate files are still registered.
+    // The library still resolves — through the alias, not through copied bytes.
     const content = await fs.promises.readFile('/node_modules/@scope/hostile/index.js', 'utf8');
     expect(content).toBe('module.exports = 1;');
+  });
+
+  // The R3-292 crash, as a test. A library repo carries files a consumer can never import —
+  // lint configs, tests, CI — and the CLI pre-transpiles the whole repo, so an artifact
+  // exists for them too. While registration EAGERLY registered every module-extension file,
+  // `adoptSeededModules` (which only touches already-registered modules) adopted those
+  // artifacts and resolved their dependencies, dying on a devDependency of the LIBRARY that
+  // the consumer never declared: `Cannot find module 'globals' from …/eslint.config.js`.
+  it('does not pull an unimported library file into the module graph', async () => {
+    unmount = await mountLibraryFs('/mnt/dirtylib', {
+      'package.json': '{"name":"@scope/dirty","version":"0.0.0","main":"index.js"}',
+      'index.js': 'module.exports = "clean";',
+      // Never imported by the consumer, and imports something only the library dev has.
+      'eslint.config.js': "import globals from 'globals';\nexport default [globals];\n",
+      'src/thing.test.ts': "import { it } from 'vitest';\nit('x', () => {});\n",
+    });
+    h.resetSpies();
+
+    await h.bundler.registerGitLibraryMount('@scope/dirty', '/mnt/dirtylib');
+
+    const modules = (h.bundler as unknown as { modules: Map<string, unknown> }).modules;
+    const registered = [...modules.keys()].filter((k) => k.startsWith('/node_modules/@scope/dirty'));
+    // Nothing from the library is in the graph until something imports it.
+    expect(registered).toEqual([]);
+
+    // And the entry still resolves and reads, lazily, through the alias.
+    const resolved = await h.bundler.resolveAsync('@scope/dirty', '/app/src/index.ts');
+    expect(resolved).toBe('/node_modules/@scope/dirty/index.js');
+    expect(await fs.promises.readFile(resolved, 'utf8')).toBe('module.exports = "clean";');
   });
 
   it('registerDeclaredGitLibraries (boot step) registers a declared dep from a known mount', async () => {
