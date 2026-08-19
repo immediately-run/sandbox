@@ -507,6 +507,12 @@ class SandpackInstance {
       uri: target?.id,
       type: target?.type,
     });
+    // A git-library mount is ALSO aliased at `/node_modules/<moduleName>` (R3-292). That is
+    // a second mount-table entry, so umounting the `/mnt/<hash>` path does not take it with
+    // it — and a stale alias would keep shadowing that bare name for whatever loads next.
+    if (target?.moduleName) {
+      this.bundler.unmountGitLibraryAliases(target.moduleName);
+    }
     try {
       umount(mountPath);
       // Drop the placeholder directory materialized at mount time so the

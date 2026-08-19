@@ -48,7 +48,7 @@ import { SELF_HOST_BASES } from './moduleOrigins'
 import { retryFetch, registerImmutableUrlPrefix } from '../utils/fetch'
 import { basename, dirname } from '../utils/path'
 import { FrontmatterParseResult, parseFrontmatter } from '@immediately-run/transpiler';
-import { bindContext, globToRegex, CopyOnWrite, InMemory, mount, resolveMountConfig, fs as zenfs } from '@zenfs/core';
+import { bindContext, globToRegex, CopyOnWrite, InMemory, mount, mounts, umount, resolveMountConfig, fs as zenfs } from '@zenfs/core';
 
 export type TransformationQueue = NamedPromiseQueue<Module>;
 export type MetadataChange = {
@@ -935,103 +935,95 @@ export class Bundler {
     }
   }
 
+  /** Mount-table entries this bundler created for git libraries (`/node_modules/<name>`).
+   *
+   *  Tracked because the mount table is GLOBAL and outlives a bundler, while a copied tree
+   *  used to be re-copied per app. An alias left behind would shadow the same bare name for
+   *  whatever loads next — so an app declaring `"@scope/lib": "^1.0.0"` from npm could
+   *  silently get a previous app's git library instead. Dropped on mount-remove and on
+   *  teardown. */
+  private gitLibraryAliases = new Set<string>();
+
+  /** Drop one git-library alias (its mount went away), or all of them (teardown). */
+  unmountGitLibraryAliases(moduleName?: string): void {
+    const targets = moduleName ? [`/node_modules/${moduleName}`] : [...this.gitLibraryAliases];
+    for (const target of targets) {
+      if (!this.gitLibraryAliases.has(target)) continue;
+      try {
+        umount(target);
+      } catch {
+        /* already gone — fine */
+      }
+      this.gitLibraryAliases.delete(target);
+    }
+  }
+
   /**
-   * Receive a host-pushed git-library mount and register it as a LOCAL module
-   * under `/node_modules/<moduleName>/` (LIBRARY_MOUNTS_SPEC L3 / Q2 registration).
-   * The host mounts a git-library repo's read-only fs at `mountPath` (`/mnt/<hash>`)
-   * and tags the `mount-add` with `moduleName` (= the `dependencies` key); this
-   * walks the mounted tree and feeds it to `addGitDependencyModule`, so the bundler
-   * resolves the bare import from the mounted repo AHEAD of the CDN — no CDN fetch.
-   * Called from `handleMountAdd` when an arrived mount carries `moduleName`, and
-   * from `registerDeclaredGitLibraries()` at boot for a mount that already arrived.
+   * Receive a host-pushed git-library mount and make it resolvable as
+   * `/node_modules/<moduleName>/` (LIBRARY_MOUNTS_SPEC L3 / Q2 registration).
    *
-   * Idempotent-friendly: re-registering overwrites the same files
-   * (`addGitDependencyModule` writes by path).
+   * This ALIASES the mount — one entry in ZenFS's mount table — rather than copying the
+   * repo in. The old shape walked the whole mounted tree, `readFile`d every file, wrote
+   * each one under `/node_modules/<name>/`, and registered every module-extension file as
+   * a `Module`. Three costs, all avoidable (R3-292):
    *
-   * Traversal safety: the relative paths are built only from `readdir` entry names
-   * under `mountPath`; an entry named `.`/`..`, or containing `/`, `\`, or NUL, is
-   * skipped (defense in depth), so a gathered rel path can never escape the package
-   * root. Total files/bytes are capped and unreadable entries are skipped, so a
-   * pathological tree degrades the one library rather than aborting boot.
+   *  1. **Reads nobody asked for.** A library mount delivers a REPO, not a published
+   *     package: tests, lint and build configs, CI workflows, examples, fixtures. Grove is
+   *     ~5k LOC of engine and several hundred KB of things a consumer can never import, and
+   *     every byte was read and written on every cold boot before the first import resolved.
+   *  2. **A graph nobody asked for.** Eager `Module` registration is what
+   *     `adoptSeededModules` keys off (`if (!existing) continue`), so a pre-registered
+   *     `eslint.config.js` with a pre-transpiled artifact got ADOPTED and had its
+   *     dependencies resolved — dying on `globals`, a devDependency of the library that the
+   *     consumer never declared and never imported. That was the R3-292 crash.
+   *  3. **A traversal surface.** Building destination paths out of `readdir` names needed
+   *     its own name screening (`.`/`..`, `/`, `\`, NUL) to keep a hostile entry from
+   *     escaping the package root. Nothing is written now, so that class is gone by
+   *     construction rather than defended.
+   *
+   * What replaces it is the SAME lazy path app sources already take: files are read when
+   * something imports them (`_transformModule` reads the path it was asked for), and a
+   * covered file takes the §5.3 consult HIT into the library's own pre-transpiled artifacts
+   * — which is why `addRoot` still runs. The artifact win of R3-290 is preserved; it simply
+   * arrives through the consult rather than through adoption.
+   *
+   * Read-only comes for free: the aliased fs is the host's `ro` mount, so a write into a
+   * library rejects at the same boundary it always did.
+   *
+   * Idempotent: re-registering re-points the alias at the current mount.
    */
   async registerGitLibraryMount(moduleName: string, mountPath: string): Promise<void> {
-    const fsp = this.fs.boundContext.fs.promises;
-    const MODULE_EXTS = new Set(['.js', '.jsx', '.ts', '.tsx', '.mjs', '.cjs']);
-    const MAX_FILES = 5000;
-    const MAX_TOTAL_BYTES = 64 * 1024 * 1024; // 64 MiB — skip absurdly large trees
-
-    const files: { path: string; content: string; isModule: boolean }[] = [];
-    let totalBytes = 0;
-    let capped = false;
-
-    // Reject an entry name that could escape the package root or carry control
-    // chars. `readdir` should never yield `/`-bearing names, but screen anyway.
-    const isSafeName = (name: string): boolean => {
-      if (name === '.' || name === '..') return false;
-      if (name.includes('/') || name.includes('\\')) return false;
-      if (name.includes('\0')) return false;
-      return true;
-    };
-
-    const walk = async (absDir: string, relDir: string): Promise<void> => {
-      if (capped) return;
-      let entries: string[];
-      try {
-        entries = await fsp.readdir(absDir);
-      } catch {
-        return; // unreadable directory — skip, never abort the boot
-      }
-      for (const name of entries) {
-        if (capped) return;
-        if (!isSafeName(name)) continue; // defense in depth (see doc-comment)
-        const abs = `${absDir}/${name}`;
-        const rel = relDir ? `${relDir}/${name}` : name;
-        let isDir: boolean;
-        try {
-          isDir = (await fsp.stat(abs)).isDirectory();
-        } catch {
-          continue; // vanished between readdir and stat — skip
-        }
-        if (isDir) {
-          await walk(abs, rel);
-          continue;
-        }
-        if (files.length >= MAX_FILES) {
-          capped = true;
-          return;
-        }
-        let content: string;
-        try {
-          content = await fsp.readFile(abs, 'utf8');
-        } catch {
-          continue; // unreadable file — skip rather than throw
-        }
-        totalBytes += content.length;
-        if (totalBytes > MAX_TOTAL_BYTES) {
-          capped = true;
-          return;
-        }
-        const dot = name.lastIndexOf('.');
-        const ext = dot === -1 ? '' : name.slice(dot).toLowerCase();
-        files.push({ path: rel, content, isModule: MODULE_EXTS.has(ext) });
-      }
-    };
-
-    await walk(mountPath, '');
-    if (capped) {
+    const target = `/node_modules/${moduleName}`;
+    const libFs = mounts.get(mountPath);
+    if (!libFs) {
       logger.warn(
-        `Git-library '${moduleName}' at ${mountPath} exceeded the registration cap ` +
-          `(${MAX_FILES} files / ${MAX_TOTAL_BYTES} bytes); registered a truncated subset.`,
+        `Git-library '${moduleName}': nothing is mounted at ${mountPath}; the bare import ` +
+          `will not resolve. (LIBRARY_MOUNTS_SPEC L3.)`,
       );
+      return;
     }
-    await this.addGitDependencyModule(moduleName, files);
-    // The library repo's cache zip carries its own pre-transpiled artifacts + manifest
-    // sidecar, and the walk above copied both in. Registering the subtree as an artifact
-    // root is what lets them be CONSUMED — before this the store was anchored at `/app`
-    // alone, so a consumer re-transpiled the whole library on every cold boot while
-    // holding the compiled bytes. Seeding runs later in `compile()`, after every declared
+    // A scoped name (`@scope/pkg`) needs its scope directory to exist in the underlying
+    // registryfs first: `mount()` writes no entry into the parent, so without this the
+    // alias is invisible to a `readdir` of `/node_modules/@scope` — and it MUST happen
+    // before the mount, or the mkdir lands inside the mounted library instead.
+    const parent = target.slice(0, target.lastIndexOf('/'));
+    try {
+      await zenfs.promises.mkdir(parent, { recursive: true });
+    } catch {
+      /* already there — fine */
+    }
+    try {
+      umount(target);
+    } catch {
+      /* not previously aliased — fine */
+    }
+    mount(target, libFs);
+    this.gitLibraryAliases.add(target);
+    // The library's cache zip carries its own pre-transpiled artifacts + manifest sidecar,
+    // and they are reachable through the alias. Registering the subtree as an artifact root
+    // is what lets them be CONSUMED; seeding runs later in `compile()`, after every declared
     // library has registered.
-    this.artifactStore.addRoot(`/node_modules/${moduleName}`);
+    this.artifactStore.addRoot(target);
   }
 
   /**
@@ -1055,20 +1047,16 @@ export class Bundler {
   private async registerDeclaredGitLibraries(): Promise<void> {
     const names = gitDependencyNames(this.parsedPackageJSON?.dependencies);
     if (names.size === 0) return;
-    const fsp = this.fs.boundContext.fs.promises;
     for (const name of names) {
-      // Already registered (by an arrived mount or a prior pass)? Leave it.
-      let alreadyRegistered = false;
-      try {
-        await fsp.stat(`/node_modules/${name}/package.json`);
-        alreadyRegistered = true;
-      } catch {
-        /* not registered yet */
-      }
-      if (alreadyRegistered) continue;
-
-      // `waitForLibraryMount` replays the current mount list on subscribe, so an
-      // already-arrived mount resolves immediately — no separate lookup needed.
+      // No "already registered?" probe any more. It used to stat
+      // `/node_modules/<name>/package.json` to skip a redundant COPY of the whole tree —
+      // expensive work worth avoiding. Registration is now one mount-table write
+      // (R3-292), so the probe bought nothing and cost correctness: the alias is global
+      // state that outlives a bundler, so a path left over from an earlier registration
+      // answered "yes, registered" and pinned the name to a STALE mount. Registering
+      // unconditionally is cheaper than the probe was and always points at the mount we
+      // actually have. `waitForLibraryMount` still replays synchronously for an
+      // already-arrived mount, so the no-wait fast path is unchanged.
       const descriptor = await this.waitForLibraryMount(name, this.libraryMountWaitMs);
       if (!descriptor) {
         logger.warn(
