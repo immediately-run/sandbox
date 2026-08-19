@@ -692,6 +692,46 @@ export class Bundler {
     return module;
   }
 
+  /**
+   * Seed every artifact root, then adopt what was seeded. The two belong together: seeding
+   * without adopting writes artifacts into `/transpiled` that a pre-registered module would
+   * never read, which is the silent-no-op this pairing exists to prevent.
+   */
+  async seedArtifacts(ctx: {
+    dirtySet: ReadonlySet<string>;
+    writableLayer: ReadonlySet<string>;
+  }): Promise<{ seeded: number; securityReject?: 'writable-layer-artifact' }> {
+    const result = await this.artifactStore.seed(ctx);
+    await this.adoptSeededModules();
+    return result;
+  }
+
+  /**
+   * Replace already-registered-but-uncompiled modules with their seeded artifacts.
+   *
+   * The consult in `_transformModule` only runs for a path the module map has never seen.
+   * That holds for app sources, which are read lazily — but a git-library's files are
+   * WRITTEN AND REGISTERED as `Module`s at mount-registration time
+   * (`addGitDependencyModule`), which happens before the seed pass. Without this step every
+   * library module would take the "exists, not compiled" branch and be transpiled live, so
+   * the library's artifacts would be seeded into `/transpiled` and then never read — the
+   * whole point, silently lost.
+   *
+   * Only ever upgrades: a module that already compiled is left alone, and a consult MISS
+   * changes nothing.
+   */
+  private async adoptSeededModules(): Promise<void> {
+    for (const path of this.artifactStore.seededPathList()) {
+      const existing = this.modules.get(path);
+      if (!existing || existing.compiled != null) continue;
+      const hit = await this.artifactStore.consult(path);
+      if (!hit) continue;
+      const seeded = new Module(path, hit.content, true, this);
+      this.modules.set(path, seeded);
+      await Promise.all(hit.deps.map((dep) => seeded.addDependency(dep)));
+    }
+  }
+
   /** Transform file at a certain absolute path */
   async transformModule(path: string): Promise<Module> {
     let module = this.modules.get(path);
@@ -985,6 +1025,13 @@ export class Bundler {
       );
     }
     await this.addGitDependencyModule(moduleName, files);
+    // The library repo's cache zip carries its own pre-transpiled artifacts + manifest
+    // sidecar, and the walk above copied both in. Registering the subtree as an artifact
+    // root is what lets them be CONSUMED — before this the store was anchored at `/app`
+    // alone, so a consumer re-transpiled the whole library on every cold boot while
+    // holding the compiled bytes. Seeding runs later in `compile()`, after every declared
+    // library has registered.
+    this.artifactStore.addRoot(`/node_modules/${moduleName}`);
   }
 
   /**
@@ -1566,7 +1613,7 @@ export class Bundler {
     // entrypoint traversal, so covered sources are consulted (not transpiled)
     // below. Absent/invalid/stamp-mismatched artifacts are a no-op (live boot).
     if (this.isFirstLoad) {
-      const seedResult = await this.artifactStore.seed({
+      const seedResult = await this.seedArtifacts({
         dirtySet: this.dirtyPaths,
         writableLayer: this.dirtyPaths,
       });
