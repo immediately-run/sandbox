@@ -549,6 +549,17 @@ export class Bundler {
           Object.entries(dependencies).filter(([name]) => !registryResolved.has(name))
         );
       }
+      // R3-293: a mounted git library brings its OWN dependencies. npm would have installed
+      // them beside it; the mount path has no such step, so without this the first import
+      // that reaches into the library dies on a package the APP never had a reason to
+      // declare. Added AFTER the strip (so a library cannot re-introduce a name that
+      // resolves from a mount or the self-host) and BEFORE the preset augmentation (so they
+      // get the same react/core-js treatment every other dependency does). App-wins on a
+      // clash — see `libraryContributedDependencies`.
+      const contributed = this.libraryContributedDependencies(dependencies);
+      if (Object.keys(contributed).length) {
+        dependencies = { ...contributed, ...dependencies };
+      }
       dependencies = nullthrows(
         this.preset,
         'Preset needs to be defined when loading node modules'
@@ -944,6 +955,17 @@ export class Bundler {
    *  teardown. */
   private gitLibraryAliases = new Set<string>();
 
+  /** A git library's OWN `dependencies`, keyed by its module name (R3-293).
+   *
+   *  npm installs a library's dependency closure alongside it. The library-mount path has
+   *  no equivalent step: the CDN `/dep_tree/` query is built from the APP's manifest, and a
+   *  git library is stripped from it (it resolves from the mount, not the CDN), so nothing
+   *  ever asked for what the library itself needs. The first import that reached one died —
+   *  grove's engine on `@immediately-run/mdx-plugins`, which grove declares and a shell
+   *  consuming it has no reason to. Captured here at mount time and folded in by
+   *  `loadNodeModules`. */
+  private gitLibraryDependencies = new Map<string, Record<string, string>>();
+
   /** Drop one git-library alias (its mount went away), or all of them (teardown). */
   unmountGitLibraryAliases(moduleName?: string): void {
     const targets = moduleName ? [`/node_modules/${moduleName}`] : [...this.gitLibraryAliases];
@@ -955,6 +977,7 @@ export class Bundler {
         /* already gone — fine */
       }
       this.gitLibraryAliases.delete(target);
+      this.gitLibraryDependencies.delete(target.replace(/^\/node_modules\//, ''));
     }
   }
 
@@ -1019,11 +1042,90 @@ export class Bundler {
     }
     mount(target, libFs);
     this.gitLibraryAliases.add(target);
+    await this.captureGitLibraryDependencies(moduleName, target);
     // The library's cache zip carries its own pre-transpiled artifacts + manifest sidecar,
     // and they are reachable through the alias. Registering the subtree as an artifact root
     // is what lets them be CONSUMED; seeding runs later in `compile()`, after every declared
     // library has registered.
     this.artifactStore.addRoot(target);
+  }
+
+  /**
+   * Read a just-aliased library's `package.json` and keep the `dependencies` the consumer
+   * will have to resolve on its behalf (R3-293).
+   *
+   * Two kinds are dropped rather than forwarded to the CDN:
+   *
+   *  - a **git-form** value (`github:owner/repo#ref`). The CDN cannot resolve it, and
+   *    `concreteVersion()` would mis-default it. A library that itself pins a git library is
+   *    a transitive mount the host never made, so there is nothing to point at; it fails at
+   *    its own import with the normal message rather than corrupting the whole query.
+   *  - a **self-hosted** name (the SDK). Those are vendored per-app by `addLocalModules` at
+   *    the version the APP pinned; letting a library's pin into the query would either
+   *    duplicate the SDK or silently change which one the app runs.
+   *
+   * `peerDependencies` are deliberately NOT read: a peer is a request that the CONSUMER
+   * provide something, which is the app's manifest's job to answer.
+   */
+  private async captureGitLibraryDependencies(moduleName: string, target: string): Promise<void> {
+    let deps: Record<string, string> = {};
+    try {
+      const raw = await zenfs.promises.readFile(`${target}/package.json`, 'utf8');
+      const parsed = JSON.parse(raw as string) as { dependencies?: Record<string, string> };
+      const declared = parsed.dependencies ?? {};
+      const selfHosted = new Set(Object.keys(SELF_HOST_BASES));
+      const gitForm = gitDependencyNames(declared);
+      deps = Object.fromEntries(
+        Object.entries(declared).filter(
+          ([name]) => !selfHosted.has(name) && !gitForm.has(name),
+        ),
+      );
+    } catch {
+      // No/unreadable/unparseable package.json: the library still resolves by path, it
+      // just contributes nothing to the query. Never fail the mount over it.
+      deps = {};
+    }
+    this.gitLibraryDependencies.set(moduleName, deps);
+  }
+
+  /**
+   * The union of every mounted git library's own `dependencies`, with the APP's manifest
+   * winning any name both declare (R3-293).
+   *
+   * App-wins because the app's manifest is authoritative for its own tree and the CDN
+   * closure is FLAT — there is no nesting to give each side its own copy, so one version
+   * has to serve both. Taking the app's keeps the version its author tested. A differing
+   * pin is logged once per name rather than resolved silently, because "the library asked
+   * for something else and got yours" is exactly the kind of thing that surfaces later as
+   * a mystery.
+   */
+  private libraryContributedDependencies(
+    appDependencies: Record<string, string>,
+  ): Record<string, string> {
+    const contributed: Record<string, string> = {};
+    for (const [libName, deps] of this.gitLibraryDependencies) {
+      for (const [name, range] of Object.entries(deps)) {
+        if (name in appDependencies) {
+          if (appDependencies[name] !== range) {
+            logger.warn(
+              `Git-library '${libName}' asks for ${name}@${range}; the app pins ` +
+                `${name}@${appDependencies[name]}, which wins (one flat dependency closure).`,
+            );
+          }
+          continue;
+        }
+        const existing = contributed[name];
+        if (existing !== undefined && existing !== range) {
+          logger.warn(
+            `Git libraries disagree on ${name} (${existing} vs ${range} from '${libName}'); ` +
+              `keeping ${existing}.`,
+          );
+          continue;
+        }
+        contributed[name] = range;
+      }
+    }
+    return contributed;
   }
 
   /**
