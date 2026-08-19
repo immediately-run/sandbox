@@ -1,4 +1,4 @@
-import { APP_ROOT, MANIFEST_SIDECAR_PATH, stripAppRoot, underAppRoot } from '../../fsLayout';
+import { APP_ROOT, MANIFEST_SIDECAR_PATH, underAppRoot } from '../../fsLayout';
 import {
   MDX_METADATA_SIDECAR_PATH,
   type MdxMetadataRejection,
@@ -25,6 +25,8 @@ const INDEX_REPO_PATH = `/${ARTIFACTS_DIR}/index.json`;
  *  The path and the file's SCHEMA are owned by platform-constants (R3-275) — the CLI
  *  writes what this reads, and they used to describe the format independently. */
 const MDX_METADATA_REPO_PATH = `/${MDX_METADATA_SIDECAR_PATH}`;
+/** Shared empty dirty set for roots the app's COW bookkeeping does not describe. */
+const EMPTY_DIRTY_SET: ReadonlySet<string> = new Set<string>();
 /** Minimum spot-verification sample size (§5.7 — K ≥ 2, a floor not a ceiling). */
 export const SPOT_VERIFY_K = 2;
 
@@ -36,14 +38,22 @@ export interface ArtifactFs {
   deleteFile(path: string): Promise<void>;
 }
 
-/** The `/transpiled` tmpfs path a module's app path consults/writes through. */
-function transpiledPathFor(appModulePath: string): string {
-  return `${TRANSPILED_ROOT}${stripAppRoot(appModulePath)}.js`;
+/**
+ * The `/transpiled` tmpfs path a module consults/writes through.
+ *
+ * Keyed by the module's FULL absolute path, not its repo-relative one. With a single
+ * `/app` root the two were interchangeable; with library roots they are not — an app file
+ * committed at `node_modules/x.tsx` and a mounted library's `x.tsx` both strip to the same
+ * repo-relative key, and one would serve the other's bytes. `/app` and `/node_modules` are
+ * distinct top-level mounts, so full paths cannot collide by construction.
+ */
+function transpiledPathFor(modulePath: string): string {
+  return `${TRANSPILED_ROOT}${modulePath}.js`;
 }
 
-/** True for app-root source modules (the only ones with artifacts). */
-function isAppModule(path: string): boolean {
-  return path === APP_ROOT || path.startsWith(`${APP_ROOT}/`);
+/** True for `path` inside `root` (the root itself counts). */
+function isUnder(path: string, root: string): boolean {
+  return path === root || path.startsWith(`${root}/`);
 }
 
 export interface SeedContext {
@@ -115,7 +125,6 @@ export class ArtifactStore {
   // In-flight `/transpiled` deletes, so a consult awaits a racing reset-delete and
   // never reads an entry that is being discarded (§5.3 sequencing).
   private pendingDeletes = new Map<string, Promise<void>>();
-  private didSeed = false;
   // App paths actually seeded from the index (the universe spot-verify samples).
   private seededPaths = new Set<string>();
   // App paths a consult actually served from a seeded artifact (the consumed set).
@@ -125,6 +134,13 @@ export class ArtifactStore {
   private distrusted = false;
   // The cache zip's commit (from the sidecar) — reported with a distrust verdict.
   private commitSha: string | null = null;
+  // Subtrees that may carry their own artifact section. `/app` (the app repo) is always
+  // present; a git-mounted library adds its own via `addRoot`. Longest-prefix wins, so a
+  // library nested under another root is attributed to the innermost one.
+  private roots: string[] = [APP_ROOT];
+  // Roots already seeded, so a second `seed()` (a post-boot library registration) only
+  // does the new ones.
+  private seededRoots = new Set<string>();
 
   constructor(
     private readonly fs: ArtifactFs,
@@ -132,7 +148,46 @@ export class ArtifactStore {
   ) {}
 
   /**
-   * Seed `/transpiled` from `/app/.immediately.run/artifacts/index.json` (§5.1). Returns
+   * Register a git-mounted library's subtree as an artifact root (LIBRARY_MOUNTS_SPEC §7 /
+   * L4). The library repo's cache zip already carries its own pre-transpiled artifacts and
+   * manifest sidecar; before this they rode along and were ignored, because every path this
+   * store touched was anchored at `/app` — so a consumer re-transpiled the whole library on
+   * every cold boot despite having the compiled bytes in hand.
+   *
+   * **Why the §5.1 readable-layer gate does not transfer, and what replaces it.** That gate
+   * defends against an artifact planted in the app's COW writable layer surviving a clean
+   * Refresh. A library's bytes are not app-writable: they arrive on a host-mediated
+   * read-only mount and are copied in by the sandbox itself (`registerGitLibraryMount`),
+   * which necessarily puts them on the writable side of `/node_modules` — so the gate would
+   * be either vacuous or a blanket refusal, and neither is a security property.
+   *
+   * What DOES transfer is the check that actually binds artifacts to sources: every entry
+   * must name a path in the library's own manifest sidecar and match its `srcSha`
+   * (`validateSeedEntry`). A library fetched over REST rather than from its cache zip ships
+   * no sidecar, so its manifest map is empty and EVERY entry is `not-in-manifest` — zero
+   * seeded, live transpile, no special case. Artifacts are consumed only on the cache-zip
+   * path, which is exactly the ref-based trust LIBRARY_MOUNTS_SPEC §11 already accepts:
+   * the library runs with the app's own authority and the app already loads its own code
+   * from GitHub under the same trust. §4.4's toolchain stamp and §5.7 spot-verification
+   * apply per-root and unchanged.
+   */
+  addRoot(root: string): void {
+    const normalized = root.replace(/\/+$/, '');
+    if (!normalized.startsWith('/') || this.roots.includes(normalized)) return;
+    this.roots.push(normalized);
+  }
+
+  /** The artifact root a module belongs to (longest prefix), or null when it is in none. */
+  private rootFor(modulePath: string): string | null {
+    let best: string | null = null;
+    for (const root of this.roots) {
+      if (isUnder(modulePath, root) && (best === null || root.length > best.length)) best = root;
+    }
+    return best;
+  }
+
+  /**
+   * Seed `/transpiled` from each root's `.immediately.run/artifacts/index.json` (§5.1). Returns
    * the count seeded; a no-op (0) when the index is absent/invalid, the toolchain
    * stamp mismatches, or the readable-layer-only gate fails. Per-file failures
    * (dirty, srcSha mismatch, bad path, …) skip just that file (§5.5).
@@ -140,49 +195,78 @@ export class ArtifactStore {
   async seed(ctx: SeedContext): Promise<SeedResult> {
     // The parent's §5.7 distrust mark for this (coords, commitSha) pre-distrusts
     // the section → seed nothing (the served boot treats artifacts as absent).
-    if (this.didSeed || this.distrusted) return { seeded: 0 };
-    this.didSeed = true;
+    if (this.distrusted) return { seeded: 0 };
 
+    let seeded = 0;
+    let securityReject: SeedResult['securityReject'];
+    for (const root of this.roots) {
+      if (this.seededRoots.has(root)) continue;
+      this.seededRoots.add(root);
+      const result = await this.seedRoot(root, ctx);
+      seeded += result.seeded;
+      // A rejection anywhere is worth surfacing; the app root's is the one that can
+      // actually fire (see `addRoot` on why the gate is app-scoped), so first wins.
+      securityReject ??= result.securityReject;
+    }
+    return securityReject ? { seeded, securityReject } : { seeded };
+  }
+
+  /** Seed one root's artifact section. Every failure mode is a no-op for THAT root only —
+   *  a library with a stale or absent section must never cost the app its artifacts. */
+  private async seedRoot(root: string, ctx: SeedContext): Promise<SeedResult> {
+    const isAppRoot = root === APP_ROOT;
     let index: ArtifactIndex | null = null;
     try {
-      index = parseArtifactIndex(JSON.parse(await this.fs.readFileAsync(underAppRoot(INDEX_REPO_PATH))));
+      index = parseArtifactIndex(JSON.parse(await this.fs.readFileAsync(`${root}${INDEX_REPO_PATH}`)));
     } catch {
       return { seeded: 0 };
     }
     if (!index) return { seeded: 0 };
-    // §4.4 stamp gate: both version and toolchainHash must match.
+    // §4.4 stamp gate: both version and toolchainHash must match. Per-root — a library
+    // built with an older toolchain live-transpiles while the app still uses its artifacts.
     if (!toolchainMatches(index.toolchain, this.embedded)) return { seeded: 0 };
 
     // §5.1 readable-layer-only (PT2-4): the index, the sidecar, and EVERY artifact
     // file must live in the readable (zip) layer only; any in the writable layer
     // rejects the WHOLE section (a planted artifact could survive a clean Refresh).
-    const seedingInputs = [INDEX_REPO_PATH, MANIFEST_SIDECAR_PATH];
-    for (const entry of Object.values(index.files)) {
-      // `entry.out` is relative to `.immediately.run/artifacts/`; confine it (a `..`
-      // entry can't reach a writable-layer file outside the dir) then take its
-      // repo-relative form `/<confined>`.
-      const confined = outWithinArtifacts(entry.out);
-      if (confined) seedingInputs.push(`/${confined}`);
-    }
-    if (!readableLayerOnly(seedingInputs, ctx.writableLayer)) {
-      return { seeded: 0, securityReject: 'writable-layer-artifact' };
+    // App root only — `ctx.writableLayer` is the APP's COW dirty set, keyed by
+    // repo-relative path, so applying it to a library's paths would compare two
+    // different key spaces. See `addRoot` for what defends a library root instead.
+    if (isAppRoot) {
+      const seedingInputs = [INDEX_REPO_PATH, MANIFEST_SIDECAR_PATH];
+      for (const entry of Object.values(index.files)) {
+        // `entry.out` is relative to `.immediately.run/artifacts/`; confine it (a `..`
+        // entry can't reach a writable-layer file outside the dir) then take its
+        // repo-relative form `/<confined>`.
+        const confined = outWithinArtifacts(entry.out);
+        if (confined) seedingInputs.push(`/${confined}`);
+      }
+      if (!readableLayerOnly(seedingInputs, ctx.writableLayer)) {
+        return { seeded: 0, securityReject: 'writable-layer-artifact' };
+      }
     }
 
-    const manifestShas = await this.readManifestShas();
+    const manifestShas = await this.readManifestShas(root);
+    // The dirty set is the app's COW bookkeeping, in repo-relative keys. A library mount is
+    // not app-editable, so nothing in it can be dirty — and passing the app's set would
+    // silently skip a library file that happens to share a repo-relative path with a file
+    // the user edited in their own repo.
+    const dirtySet = isAppRoot ? ctx.dirtySet : EMPTY_DIRTY_SET;
     let seeded = 0;
     for (const [rawKey, entry] of Object.entries(index.files)) {
-      const v = validateSeedEntry(rawKey, entry, { manifestShas, dirtySet: ctx.dirtySet });
+      const v = validateSeedEntry(rawKey, entry, { manifestShas, dirtySet });
       if (!v.ok) continue;
       let content: string;
       try {
-        // v.out is the confined `.immediately.run/artifacts/...` path; read it from /app.
-        content = await this.fs.readFileAsync(underAppRoot(`/${v.out}`));
+        // v.out is the confined `.immediately.run/artifacts/...` path; read it from the root.
+        content = await this.fs.readFileAsync(`${root}/${v.out}`);
       } catch {
         continue;
       }
-      await this.fs.writeFile(`${TRANSPILED_ROOT}${v.path}.js`, content);
-      this.deps.set(underAppRoot(v.path), v.deps);
-      this.seededPaths.add(underAppRoot(v.path));
+      const modulePath = `${root}${v.path}`;
+      await this.fs.writeFile(transpiledPathFor(modulePath), content);
+      this.deps.set(modulePath, v.deps);
+      this.seededPaths.add(modulePath);
       seeded++;
     }
     return { seeded };
@@ -194,7 +278,7 @@ export class ArtifactStore {
    * reset-delete for this path so a re-transform never reads a stale entry.
    */
   async consult(appModulePath: string): Promise<{ content: string; deps: string[] } | null> {
-    if (this.distrusted || !isAppModule(appModulePath)) return null;
+    if (this.distrusted || this.rootFor(appModulePath) === null) return null;
     const transpiledPath = transpiledPathFor(appModulePath);
     const pending = this.pendingDeletes.get(transpiledPath);
     if (pending) await pending;
@@ -212,7 +296,7 @@ export class ArtifactStore {
    * THIS module) hits the tmpfs instead of the chain.
    */
   async writeThrough(appModulePath: string, compiled: string, deps: string[]): Promise<void> {
-    if (!isAppModule(appModulePath)) return;
+    if (this.rootFor(appModulePath) === null) return;
     await this.fs.writeFile(transpiledPathFor(appModulePath), compiled);
     this.deps.set(appModulePath, deps);
   }
@@ -223,7 +307,7 @@ export class ArtifactStore {
    * re-transform's `consult` awaits it before reading. A no-op for non-app paths.
    */
   invalidate(appModulePath: string): void {
-    if (!isAppModule(appModulePath)) return;
+    if (this.rootFor(appModulePath) === null) return;
     const transpiledPath = transpiledPathFor(appModulePath);
     this.deps.delete(appModulePath);
     const done = this.fs.deleteFile(transpiledPath).finally(() => {
@@ -234,16 +318,20 @@ export class ArtifactStore {
     this.pendingDeletes.set(transpiledPath, done);
   }
 
-  private async readManifestShas(): Promise<Map<string, string>> {
+  /** The `path → blob sha` map from ONE root's manifest sidecar. Absent (a REST-fetched
+   *  library, or a repo loaded without its cache zip) → an empty map, which makes every
+   *  artifact entry `not-in-manifest` and seeds nothing. */
+  private async readManifestShas(root: string): Promise<Map<string, string>> {
     try {
-      const raw = await this.fs.readFileAsync(underAppRoot(MANIFEST_SIDECAR_PATH));
+      const raw = await this.fs.readFileAsync(`${root}${MANIFEST_SIDECAR_PATH}`);
       const sidecar = JSON.parse(raw) as {
         entries?: Array<{ path: string; sha: string }>;
         commitSha?: string;
       };
-      // Capture the zip's commit so a distrust verdict can name it (§5.7); the
-      // parent attributes the mark to the mount it owns.
-      if (typeof sidecar.commitSha === 'string') this.commitSha = sidecar.commitSha;
+      // Capture the APP zip's commit so a distrust verdict can name it (§5.7); the parent
+      // attributes the mark to the mount it owns, which is the app repo — a library's
+      // commit must not overwrite it.
+      if (root === APP_ROOT && typeof sidecar.commitSha === 'string') this.commitSha = sidecar.commitSha;
       return manifestShaMap(sidecar.entries ?? []);
     } catch {
       return new Map();
@@ -295,7 +383,7 @@ export class ArtifactStore {
     // CONFINEMENT stays here: it needs the manifest, the dirty set and the writable
     // layer, none of which the package can see. The validator answers "is this the
     // format?"; this answers "may I trust this entry?".
-    const manifestShas = await this.readManifestShas();
+    const manifestShas = await this.readManifestShas(APP_ROOT);
     const entries = new Map<string, Record<string, any>>();
     for (const [rawKey, entry] of Object.entries(validation.sidecar.files)) {
       const path = normalizeRepoRelPath(rawKey);
@@ -320,6 +408,14 @@ export class ArtifactStore {
    */
   markDistrusted(): void {
     this.distrusted = true;
+  }
+
+  /** Every module path seeded from an index this session. The bundler needs this to ADOPT
+   *  modules that were registered (as uncompiled) before seeding ran — a git-library's
+   *  files are written and registered at mount-registration time, which is before the
+   *  seed pass, so nothing would ever take the consult path for them. */
+  seededPathList(): string[] {
+    return [...this.seededPaths];
   }
 
   /** Number of seeded artifacts actually consulted this session (the §5.7 universe). */
