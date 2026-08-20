@@ -12,6 +12,7 @@ import { MDXTransformer } from '../../transforms/mdx';
 import { CSSTransformer } from '../../transforms/css';
 import { ReactRefreshTransformer } from '../../transforms/react-refresh';
 import { StyleTransformer } from '../../transforms/style';
+import { JSONTransformer } from '../../transforms/json';
 import { RawCjsTransformer } from '../../transforms/raw-cjs';
 import { isPassthroughCjs } from '../../transforms/raw-cjs/scan';
 import { Preset } from '../Preset';
@@ -39,6 +40,7 @@ export class ReactPreset extends Preset {
       this.registerTransformer(new MDXTransformer()),
       this.registerTransformer(new AssetTransformer()),
       this.registerTransformer(new RawCjsTransformer()),
+      this.registerTransformer(new JSONTransformer()),
     ]);
   }
 
@@ -72,6 +74,12 @@ export class ReactPreset extends Preset {
         ['css-transformer', {}],
         ['style-transformer', {}],
       ];
+    }
+
+    // Data, not code — and it must be matched BEFORE the asset branch, which would
+    // otherwise never see it but would be the wrong answer if it did.
+    if (/\.json$/i.test(module.filepath)) {
+      return [['json-transformer', {}]];
     }
 
     if (ASSET_REGEX.test(module.filepath)) {
