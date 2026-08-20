@@ -177,6 +177,13 @@ export class ArtifactStore {
     this.roots.push(normalized);
   }
 
+  /** How many artifact roots are registered (`/app` plus one per git-library mount).
+   *  Reported alongside the seeded count so "seeded 0" can be told apart from "there was
+   *  nothing to seed from" without reading the code. */
+  rootCount(): number {
+    return this.roots.length;
+  }
+
   /** The artifact root a module belongs to (longest prefix), or null when it is in none. */
   private rootFor(modulePath: string): string | null {
     let best: string | null = null;

@@ -1711,8 +1711,22 @@ export class Bundler {
         // §8.14: a seeding input was present in the writable layer — the whole
         // section is rejected (live transpile for everything this session).
         logger.warn(`Artifact seeding rejected (${seedResult.securityReject}); live transpiling.`);
-      } else if (seedResult.seeded > 0) {
-        logger.debug(`Seeded ${seedResult.seeded} pre-transpiled artifacts into /transpiled`);
+      } else {
+        // `console.info`, not `logger.debug`, and deliberately unconditional (R3-294).
+        //
+        // This was `logger.debug`, which the host's log level suppresses in practice — so
+        // the line never appeared, and its absence was read as "seeding did not happen"
+        // for an entire investigation before instrumentation showed 124 of 124 artifacts
+        // seeded. A boot fact that a drill's pass criterion is written against has to be
+        // OBSERVABLE, which is why the neighbouring `[ir-perf:*]` telemetry uses
+        // `console.info` too. Emitting the ZERO case matters just as much: "seeded 0" is
+        // the fail-safe working (a REST-fetched library ships no sidecar), and it is
+        // indistinguishable from "the code never ran" if it says nothing.
+        // eslint-disable-next-line no-console
+        console.info(
+          `[ir-artifacts] seeded ${seedResult.seeded} pre-transpiled artifact(s) into /transpiled ` +
+            `across ${this.artifactStore.rootCount()} root(s)`,
+        );
       }
     }
 
