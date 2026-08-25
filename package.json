@@ -39,7 +39,8 @@
     "lint": "eslint '**/*.ts?(x)'",
     "verify": "npm run lint && npm run format:check && npm run typecheck && npm run protocol:check && npm run protocol:selftest && npm test -- --forceExit && npm run build",
     "drill:m3-csp": "node scripts/m3-csp-drill.mjs",
-    "deploy": "firebase deploy"
+    "deploy": "firebase deploy",
+    "drill:test-realm": "node scripts/test-realm-drill.mjs"
   },
   "browserslist": "> 2.5%, not ie 11, not dead, not op_mini all",
   "alias": {
@@ -49,7 +50,8 @@
     "default": {
       "source": [
         "src/index.html",
-        "src/m3.html"
+        "src/m3.html",
+        "src/test-realm.html"
       ],
       "distDir": "dist",
       "context": "browser",
