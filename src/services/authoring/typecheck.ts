@@ -8,9 +8,19 @@
 // `extends` / module path (a tsconfig can carry executable references).
 //
 // Lib seam: `createBaseHost` is injected so the SAME code serves the bundled
-// lib.*.d.ts in a Worker and the on-disk libs under Node (jest). The default
-// uses `ts.createCompilerHost`, which works under Node; the Worker passes a host
-// backed by bundled lib strings (wired when the Parcel target lands).
+// lib.*.d.ts + `@types` in a Worker and the on-disk ones under Node (jest). The
+// default uses `ts.createCompilerHost`, which works under Node; the Worker passes
+// `createBundledLibHost` (worker-lib-host.ts), backed by build-time bundles.
+//
+// Unresolved imports are a COVERAGE NOTE, not an error (R3-329). The service's scope
+// is open/changed files against a fixed kernel type set, so two perfectly ordinary
+// situations produce TS2307 through no fault of the code: an app importing a package
+// the kernel bundles no types for (`add_dependency` is declare-only, ESM-from-CDN),
+// and a file importing a sibling the caller did not include in this request. Reporting
+// either as an error is the phantom-diagnostic failure this service already had once —
+// the agent is told to fix reported diagnostics before finishing, and it cannot fix
+// these. They are reported at `message` severity with text that says what happened,
+// so a genuine typo is still visible without being an unsatisfiable instruction.
 
 import ts from 'typescript';
 import { ServiceInputError } from './format';
@@ -63,6 +73,14 @@ const CATEGORY: Record<ts.DiagnosticCategory, Diag['category']> = {
   [ts.DiagnosticCategory.Message]: 'message',
 };
 
+/** Paths under a `node_modules` segment are RESERVED for the kernel's bundled type
+ *  set (worker-lib-host.ts mounts it at `/node_modules/…`). A caller file at one of
+ *  those paths would be layered OVER the real declarations by `inMemoryHost` and could
+ *  redefine what `react` or the SDK means for its own request — the caller influencing
+ *  a kernel-owned input, which is exactly what CS-1 forbids. An app's own source never
+ *  lives there, so refusing it costs nothing. */
+const isReservedPath = (p: string): boolean => p.split('/').includes('node_modules');
+
 /** Validate + bound an in-memory `{ path, content }[]` request (shared by lint). */
 export function validateFiles(raw: unknown): TypecheckFile[] {
   if (!Array.isArray(raw) || raw.length === 0) throw new ServiceInputError('files must be a non-empty array');
@@ -73,6 +91,9 @@ export function validateFiles(raw: unknown): TypecheckFile[] {
     if (!f || typeof f !== 'object') throw new ServiceInputError('each file must be { path, content }');
     const { path, content } = f as Record<string, unknown>;
     if (typeof path !== 'string' || !path) throw new ServiceInputError('file.path must be a non-empty string');
+    if (isReservedPath(path)) {
+      throw new ServiceInputError('file.path must not be under node_modules (reserved for the kernel type set)');
+    }
     if (typeof content !== 'string') throw new ServiceInputError('file.content must be a string');
     total += content.length;
     if (total > MAX_TOTAL_BYTES) throw new ServiceInputError('files exceed the size budget');
@@ -98,6 +119,38 @@ function inMemoryHost(base: ts.CompilerHost, fileMap: Map<string, string>): ts.C
   };
 }
 
+/** TS codes meaning "this module specifier did not resolve". */
+const UNRESOLVED_MODULE_CODES = new Set([2307, 2792]);
+
+/** The module specifier a diagnostic is anchored on — TS reports 2307 on the string
+ *  literal itself, so the span IS the specifier (quotes included). */
+function specifierAt(file: ts.SourceFile, start: number, length: number): string | undefined {
+  const raw = file.text.slice(start, start + length);
+  const m = /^['"](.*)['"]$/.exec(raw);
+  return m ? m[1] : undefined;
+}
+
+const isRelative = (spec: string): boolean => spec.startsWith('.') || spec.startsWith('/');
+
+/** Rewrite an unresolved-module diagnostic into an honest coverage note, or return
+ *  `undefined` to leave the diagnostic exactly as TypeScript reported it. */
+function coverageNote(
+  d: ts.Diagnostic,
+  file: ts.SourceFile,
+): Pick<Diag, 'category' | 'messageText'> | undefined {
+  if (!UNRESOLVED_MODULE_CODES.has(d.code)) return undefined;
+  const spec = specifierAt(file, d.start ?? 0, d.length ?? 0);
+  if (spec === undefined) return undefined;
+  return {
+    category: 'message',
+    messageText: isRelative(spec)
+      ? `'${spec}' was not included in this typecheck request, so its exports are unchecked. ` +
+        `This is not an error: include the file to check it.`
+      : `No bundled type declarations for '${spec}', so its exports are unchecked. ` +
+        `This is not an error: the typecheck runs against a fixed kernel type set, not node_modules.`,
+  };
+}
+
 export function runTypecheck(req: TypecheckRequest, opts: TypecheckOptions = {}): TypecheckResult {
   const files = validateFiles(req.files);
   const fileMap = new Map(files.map((f) => [f.path, f.content]));
@@ -111,13 +164,17 @@ export function runTypecheck(req: TypecheckRequest, opts: TypecheckOptions = {})
     if (diagnostics.length >= MAX_DIAGS) break;
     // Only report diagnostics anchored in the caller's files (skip lib noise).
     if (!d.file || !fileMap.has(d.file.fileName)) continue;
+    const note = coverageNote(d, d.file);
     diagnostics.push({
       path: d.file.fileName,
       start: d.start ?? 0,
       length: d.length ?? 0,
-      category: CATEGORY[d.category],
+      category: note?.category ?? CATEGORY[d.category],
       code: d.code,
-      messageText: ts.flattenDiagnosticMessageText(d.messageText, '\n').slice(0, MESSAGE_CAP),
+      messageText: (note?.messageText ?? ts.flattenDiagnosticMessageText(d.messageText, '\n')).slice(
+        0,
+        MESSAGE_CAP,
+      ),
     });
   }
   return { diagnostics };

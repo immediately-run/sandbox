@@ -10,5 +10,6 @@ dist-worker
 static/cached_node_module_requests.tar.gz
 static/immediately-run-sdk
 
-# Generated authoring-worker lib bundle (scripts/gen-authoring-libs.mjs)
+# Generated authoring-worker bundles (scripts/gen-authoring-{libs,types}.mjs)
 src/services/authoring/bundled-libs.generated.ts
+src/services/authoring/bundled-types.generated.ts
