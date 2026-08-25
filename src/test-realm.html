@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <!--
+      The `run_tests` EXECUTION REALM document — roadmap R3-222 Phase 1,
+      `plans/in-browser-test-runner/01-execution-realm.mdx` decision D1.
+
+      A test body is model-written or repo-supplied CODE. Executing it is arbitrary
+      in-sandbox code execution, so it runs here: an opaque-origin document (the host
+      points a frame at it with `sandbox="allow-scripts"` and NO `allow-same-origin`)
+      holding no fs port, no catalog channel, and — per the policy below — no network.
+
+      Note what is NOT here: no bundler, no import map, no CDN. Unlike `index.html` and
+      `m3.html`, this document never resolves a dependency; the host seeds it with
+      modules the kernel Babel worker already transpiled. That is exactly why this
+      policy CAN be a literal `connect-src 'none'` where the M3 policy cannot.
+
+      DO NOT EDIT THE POLICY BY HAND. It is generated from `src/security/testRealmCsp.ts`
+      (`buildTestRealmCsp()`), and `src/security/testRealmCsp.test.ts` fails if the two
+      drift — a policy that quietly stops matching the code is worse than no policy,
+      because it still reads like containment.
+    -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; worker-src 'self' blob:; connect-src 'none'; img-src 'none'; media-src 'none'; font-src 'none'; style-src 'unsafe-inline'; frame-src 'none'; child-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none'" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Test realm</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <noscript>The test realm requires JavaScript.</noscript>
+    <script type="module" src="./services/tests/realm-main.ts"></script>
+  </body>
+</html>
