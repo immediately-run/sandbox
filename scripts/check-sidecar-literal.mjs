@@ -25,7 +25,17 @@ function walk(dir, out = []) {
     const st = statSync(p);
     if (st.isDirectory()) {
       if (e !== 'node_modules') walk(p, out);
-    } else if (/\.(ts|tsx|mts|cts|js|mjs)$/.test(e) && !/\.test\./.test(e) && !p.includes('/test/')) {
+      // `*.generated.ts` is build-time output, not authored source. The authoring
+      // worker's bundled type set embeds other packages' .d.ts verbatim — including
+      // @immediately-run/platform-constants, whose whole job is to DECLARE these
+      // literals. Scanning it would fail the build for the constants package doing
+      // exactly what R3-104 asks of it (R3-329).
+    } else if (
+      /\.(ts|tsx|mts|cts|js|mjs)$/.test(e) &&
+      !/\.test\./.test(e) &&
+      !/\.generated\.(ts|js)$/.test(e) &&
+      !p.includes('/test/')
+    ) {
       out.push(p);
     }
   }
