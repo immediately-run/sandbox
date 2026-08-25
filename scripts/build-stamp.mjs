@@ -35,8 +35,10 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     console.warn('build-stamp: no dist/ — skipped (not built).');
     process.exit(0);
   }
-  const version = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).version;
-  const stamp = { name: 'sandpack-bundler', version, srcHash: hashSrcDir(join(ROOT, 'src')), builtAt: new Date().toISOString() };
+  // Read BOTH from package.json rather than hardcoding the name — it still said
+  // 'sandpack-bundler' long after this stopped being that package.
+  const { name: pkgName, version } = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
+  const stamp = { name: pkgName, version, srcHash: hashSrcDir(join(ROOT, 'src')), builtAt: new Date().toISOString() };
   writeFileSync(join(distDir, STAMP_FILE), `${JSON.stringify(stamp, null, 2)}\n`);
-  console.log(`build-stamp: sandpack-bundler@${version} → ${stamp.srcHash.slice(0, 12)}`);
+  console.log(`build-stamp: ${pkgName}@${version} → ${stamp.srcHash.slice(0, 12)}`);
 }

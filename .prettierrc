@@ -4,12 +4,5 @@
   "bracketSpacing": true,
   "printWidth": 120,
   "tabWidth": 2,
-  "overrides": [
-    {
-      "files": "*.(scss|css)",
-      "options": {
-        "singleQuote": false
-      }
-    }
-  ]
+  "trailingComma": "all"
 }
