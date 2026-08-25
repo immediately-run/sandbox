@@ -73,7 +73,9 @@ export function runFormat(req: FormatRequest): FormatResult {
   if (typeof source !== 'string') throw new ServiceInputError('source must be a string');
   if (source.length > SOURCE_CAP) throw new ServiceInputError('source exceeds the size budget');
   if (typeof parser !== 'string' || !hasOwn(PARSER_PLUGINS, parser)) {
-    throw new ServiceInputError(`unknown parser ${JSON.stringify(parser)} (one of: ${Object.keys(PARSER_PLUGINS).join(', ')})`);
+    throw new ServiceInputError(
+      `unknown parser ${JSON.stringify(parser)} (one of: ${Object.keys(PARSER_PLUGINS).join(', ')})`,
+    );
   }
   const options = sanitizeOptions(req.options);
   const formatted = prettier.format(source, {

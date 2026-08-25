@@ -99,7 +99,12 @@ describe('CachedFS (G0-2 — read memoization + change invalidation)', () => {
 
   it('dedupes concurrent reads of the same path into one backend round-trip', async () => {
     let resolveRead: ((v: string) => void) | null = null;
-    const readFile = jest.fn(() => new Promise<string>((res) => { resolveRead = res; }));
+    const readFile = jest.fn(
+      () =>
+        new Promise<string>((res) => {
+          resolveRead = res;
+        }),
+    );
     const { context } = makeContext({ readFile });
     const fs = new CachedFS(context);
 

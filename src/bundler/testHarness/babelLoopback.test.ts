@@ -34,17 +34,19 @@ describe('G0-0 babel loopback (in-process babel worker)', () => {
   }, 30000);
 
   it('transpiles TSX/JSX (the react preset path the compile smoke needs)', async () => {
-    const out = await transform(
-      "export default function App() {\n  return <h1>hi</h1>;\n}\n",
-      '/app/App.tsx',
-      { presets: ['react'], plugins: [] },
-    );
+    const out = await transform('export default function App() {\n  return <h1>hi</h1>;\n}\n', '/app/App.tsx', {
+      presets: ['react'],
+      plugins: [],
+    });
     expect(out.code).toMatch(/jsx|createElement/); // JSX lowered, not left as <h1>
     expect(out.code).not.toContain('<h1>');
   }, 30000);
 
   it('collects dependencies from import/require', async () => {
-    const out = await transform("import x from './dep';\nexport default x;\n", '/app/y.ts', { presets: [], plugins: [] });
+    const out = await transform("import x from './dep';\nexport default x;\n", '/app/y.ts', {
+      presets: [],
+      plugins: [],
+    });
     expect(Array.from(out.dependencies)).toContain('./dep');
   }, 30000);
 });

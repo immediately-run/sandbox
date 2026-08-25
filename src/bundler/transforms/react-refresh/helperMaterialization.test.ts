@@ -1,10 +1,6 @@
 import { HELPER_PATH } from '@immediately-run/transpiler';
 
-import {
-  createBundlerHarness,
-  EVAL_FIXTURE,
-  installEvalGlobals,
-} from '../../testHarness/bundlerHarness';
+import { createBundlerHarness, EVAL_FIXTURE, installEvalGlobals } from '../../testHarness/bundlerHarness';
 
 // Regression guard for the pre-transpiled-artifact consumption bug (2026-07-09):
 // the react-refresh HMR helper must be materialized at BOOT (during preset init),

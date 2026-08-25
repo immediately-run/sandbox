@@ -25,15 +25,23 @@ describe('runFormat', () => {
   });
 
   it('rejects a caller-supplied plugins/config option', () => {
-    expect(() => runFormat({ source: 'x', parser: 'babel', options: { plugins: ['./evil.js'] } })).toThrow(/unsupported option/);
+    expect(() => runFormat({ source: 'x', parser: 'babel', options: { plugins: ['./evil.js'] } })).toThrow(
+      /unsupported option/,
+    );
     expect(() => runFormat({ source: 'x', parser: 'babel', options: { parser: 'x' } })).toThrow(/unsupported option/);
   });
 
   it('rejects a non-scalar / function / __proto__ option value', () => {
-    expect(() => runFormat({ source: 'x', parser: 'babel', options: { printWidth: (() => 0) as unknown } })).toThrow(ServiceInputError);
+    expect(() => runFormat({ source: 'x', parser: 'babel', options: { printWidth: (() => 0) as unknown } })).toThrow(
+      ServiceInputError,
+    );
     // a literal __proto__ key must not resolve to a validator via the prototype chain
-    expect(() => runFormat({ source: 'x', parser: 'babel', options: JSON.parse('{"__proto__":{"x":1}}') })).toThrow(/unsupported option/);
-    expect(() => runFormat({ source: 'x', parser: 'babel', options: { trailingComma: 'evil' } })).toThrow(/invalid value/);
+    expect(() => runFormat({ source: 'x', parser: 'babel', options: JSON.parse('{"__proto__":{"x":1}}') })).toThrow(
+      /unsupported option/,
+    );
+    expect(() => runFormat({ source: 'x', parser: 'babel', options: { trailingComma: 'evil' } })).toThrow(
+      /invalid value/,
+    );
   });
 
   it('rejects a non-string or oversize source', () => {

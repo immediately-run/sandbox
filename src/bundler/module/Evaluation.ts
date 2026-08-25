@@ -41,8 +41,8 @@ class EvaluationContext {
         .map((moduleName) => this.evaluation.module.bundler.modules.get(moduleName))
         .filter((mod) => mod && mod.compiled === null)
         .map((mod) =>
-          this.evaluation.module.bundler.transformationQueue.getItem(mod!.filepath)?.then((mod) => mod.evaluate())
-        )
+          this.evaluation.module.bundler.transformationQueue.getItem(mod!.filepath)?.then((mod) => mod.evaluate()),
+        ),
     );
     return moduleToEvaluate.evaluate().context;
   }
@@ -73,7 +73,7 @@ export class Evaluation {
       {},
       {
         [IMPORT_META_GLOBAL]: importMeta,
-      }
+      },
     );
   }
 
@@ -97,7 +97,7 @@ export class Evaluation {
       throw new Error(
         `Module "${moduleFilePath}" is unavailable — its source was not loaded ` +
           `(commonly a failed fetch: a network error or a GitHub API rate limit), so it ` +
-          `was never transpiled. Required by "${this.module.filepath}".`
+          `was never transpiled. Required by "${this.module.filepath}".`,
       );
     }
     return module.evaluate().context.exports ?? {};

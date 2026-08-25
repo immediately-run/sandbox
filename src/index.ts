@@ -146,7 +146,7 @@ class SandpackInstance {
         this.messageBus.protocolRequest('immutable-fetch', 'fetch', [
           url,
           integrity,
-        ]) as Promise<ParentImmutableFetchResult>
+        ]) as Promise<ParentImmutableFetchResult>,
     );
 
     this.readyPromise = this.bootstrap().catch((err) => {
@@ -266,7 +266,7 @@ class SandpackInstance {
         root: '/',
         pwd: APP_ROOT,
       }).fs,
-      ['/node_modules', '/transpiled']
+      ['/node_modules', '/transpiled'],
     );
 
     // Zenfs is ready — safe to create the bundler (CachedFS starts a
@@ -683,7 +683,7 @@ class SandpackInstance {
 
         this.messageBus.sendMessage(
           ACTION,
-          errorMessage(error as BundlerError) // TODO: create a evaluation error
+          errorMessage(error as BundlerError), // TODO: create a evaluation error
         );
       }
 

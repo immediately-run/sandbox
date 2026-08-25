@@ -50,8 +50,7 @@ const base = (): Record<string, string> => ({
 const lastMetadataOf = (h: BundlerHarness): Map<string, unknown> =>
   (h.bundler as unknown as { lastMetadata: Map<string, unknown> }).lastMetadata;
 const readdirOps = (h: BundlerHarness) => h.portOps.filter((op) => op.method === 'readdir');
-const mdxReads = (h: BundlerHarness) =>
-  h.portOps.filter((op) => op.method === 'read' && op.path.endsWith('.mdx'));
+const mdxReads = (h: BundlerHarness) => h.portOps.filter((op) => op.method === 'read' && op.path.endsWith('.mdx'));
 
 describe('G-MDX-3 §4 — no-walk: sidecar seed skips the APP_ROOT MDX walk', () => {
   let h: BundlerHarness;

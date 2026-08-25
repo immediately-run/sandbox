@@ -144,11 +144,7 @@ describe('G-MDX-3b — sidecar seeding of the MDX metadata store', () => {
       }),
     ],
     ['unparseable JSON', 'not-an-object', '{"schemaVersion": 1, "files": {'],
-    [
-      'a non-object `files`',
-      'files-not-an-object',
-      JSON.stringify({ schemaVersion: 1, files: 'nope' }),
-    ],
+    ['a non-object `files`', 'files-not-an-object', JSON.stringify({ schemaVersion: 1, files: 'nope' })],
   ])('an unusable sidecar (%s) falls back to the live walk — R3-275c', (_label, verdict, sidecar) => {
     it('live-scans, and says once which verdict fired', async () => {
       const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
@@ -157,9 +153,7 @@ describe('G-MDX-3b — sidecar seeding of the MDX metadata store', () => {
           'package.json': JSON.stringify({ name: 's', main: 'src/index.ts' }),
           'index.html': '<!doctype html><div id="root"></div>',
           'src/index.ts': 'export default 1;\n',
-          '.immediately.run/contribute-manifest.json': manifest([
-            { path: 'content/post.mdx', sha: 'sha-post' },
-          ]),
+          '.immediately.run/contribute-manifest.json': manifest([{ path: 'content/post.mdx', sha: 'sha-post' }]),
           '.immediately.run/artifacts/mdx-metadata.json': sidecar,
           'content/post.mdx': '---\ntitle: FromDisk\n---\n\n# hi\n',
         });
@@ -187,9 +181,7 @@ describe('G-MDX-3b — sidecar seeding of the MDX metadata store', () => {
         'package.json': JSON.stringify({ name: 's', main: 'src/index.ts' }),
         'index.html': '<!doctype html><div id="root"></div>',
         'src/index.ts': 'export default 1;\n',
-        '.immediately.run/contribute-manifest.json': manifest([
-          { path: 'content/post.mdx', sha: 'sha-post' },
-        ]),
+        '.immediately.run/contribute-manifest.json': manifest([{ path: 'content/post.mdx', sha: 'sha-post' }]),
         '.immediately.run/artifacts/mdx-metadata.json': sidecar,
         'content/post.mdx': '---\ntitle: FromDisk\n---\n\n# hi\n',
       });

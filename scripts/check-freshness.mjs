@@ -73,7 +73,9 @@ function check() {
     console.log(`sandbox-freshness: ${pkgName()}${version ? `@${version}` : ''} OK.`);
     return;
   }
-  console.error(`\n  ✗ Stale sandbox build: dist/ ${status === 'unbuilt' ? 'has never been built' : 'is older than src/'}.`);
+  console.error(
+    `\n  ✗ Stale sandbox build: dist/ ${status === 'unbuilt' ? 'has never been built' : 'is older than src/'}.`,
+  );
   console.error('  Rebuild before serving:  npm run build\n');
   process.exit(1);
 }

@@ -40,7 +40,7 @@ export const COMPILE_FIXTURE: Record<string, string> = {
   'package.json': JSON.stringify({ name: 'compile-fixture', main: 'src/index.ts' }),
   'index.html': '<!doctype html><div id="root"></div>',
   'src/index.ts': "import answer from './answer';\nexport default answer + 1;\n",
-  'src/answer.ts': "const answer: number = 41;\nexport default answer;\n",
+  'src/answer.ts': 'const answer: number = 41;\nexport default answer;\n',
 };
 
 /** A full-`compile()` fixture: the entry follows the `src/main` convention the
@@ -50,7 +50,7 @@ export const FULL_COMPILE_FIXTURE: Record<string, string> = {
   'package.json': JSON.stringify({ name: 'full-compile-fixture', main: 'src/main' }),
   'index.html': '<!doctype html><div id="root"></div>',
   'src/main.ts': "import answer from './answer';\nexport default answer + 1;\n",
-  'src/answer.ts': "const answer: number = 41;\nexport default answer;\n",
+  'src/answer.ts': 'const answer: number = 41;\nexport default answer;\n',
 };
 
 /** A no-op `react-refresh/runtime` stub so the HMR runtime the react preset injects
@@ -70,7 +70,7 @@ export const EVAL_FIXTURE: Record<string, string> = {
   'index.html': '<!doctype html><div id="root"></div>',
   'src/main.ts':
     "import answer from './answer';\n" +
-    "(globalThis as Record<string, unknown>).__evalResult = answer + 1;\n" +
+    '(globalThis as Record<string, unknown>).__evalResult = answer + 1;\n' +
     'export default 1;\n',
   'src/answer.ts': 'const answer: number = 41;\nexport default answer;\n',
 };
@@ -82,7 +82,16 @@ export const EVAL_FIXTURE: Record<string, string> = {
 export function installEvalGlobals(): () => void {
   const g = globalThis as Record<string, unknown>;
   const prev = { location: g.location, window: g.window, document: g.document };
-  g.location = { href: 'http://localhost/', protocol: 'http:', host: 'localhost', pathname: '/', search: '', hash: '', origin: 'http://localhost', reload() {} };
+  g.location = {
+    href: 'http://localhost/',
+    protocol: 'http:',
+    host: 'localhost',
+    pathname: '/',
+    search: '',
+    hash: '',
+    origin: 'http://localhost',
+    reload() {},
+  };
   g.window = globalThis;
   g.document = {
     createElement: () => ({ setAttribute() {}, appendChild() {}, style: {} }),
@@ -99,7 +108,7 @@ export function installEvalGlobals(): () => void {
   };
 }
 
-const stub = <T,>(): T => ({}) as unknown as T;
+const stub = <T>(): T => ({} as unknown as T);
 
 export interface BundlerHarness extends BundlerFsHarness {
   bundler: Bundler;
@@ -174,8 +183,16 @@ export async function createBundlerHarness(
       bundler.unmountGitLibraryAliases();
       // Drop the bundler-owned mounts so the next test's fresh bundler can re-mount
       // (ZenFS `configure()` does not clear the table; `mount()` throws if in use).
-      try { umount('/node_modules'); } catch { /* not mounted */ }
-      try { umount('/transpiled'); } catch { /* not mounted */ }
+      try {
+        umount('/node_modules');
+      } catch {
+        /* not mounted */
+      }
+      try {
+        umount('/transpiled');
+      } catch {
+        /* not mounted */
+      }
       await fsHarness.teardown();
     },
   };

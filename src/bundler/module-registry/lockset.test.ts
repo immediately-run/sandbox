@@ -106,9 +106,7 @@ describe('ModuleRegistry.fetchManifest with a lockset', () => {
     // (assertDependenciesResolved) holds. These tests exercise the lockset-vs-live
     // decision; the silent-drop failure mode itself is unit-tested in the shared
     // @immediately-run/transpiler package (depmap.test.mjs).
-    mockedFetchManifest.mockImplementation(async (deps) =>
-      Object.keys(deps).map((n) => ({ n, v: '1.0.0', d: 0 })),
-    );
+    mockedFetchManifest.mockImplementation(async (deps) => Object.keys(deps).map((n) => ({ n, v: '1.0.0', d: 0 })));
   });
 
   it('uses a matching lockset and skips the dep_tree request', async () => {

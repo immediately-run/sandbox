@@ -74,7 +74,10 @@ export function parseReexportStub(src: string): string | null {
     .trim();
   if (!stripped) return null;
   const targets = new Set<string>();
-  for (const stmt of stripped.split(';').map((s) => s.trim()).filter(Boolean)) {
+  for (const stmt of stripped
+    .split(';')
+    .map((s) => s.trim())
+    .filter(Boolean)) {
     const m = stmt.match(/^export\s+(?:\*(?:\s+as\s+\w+)?|\{[^}]*\})\s+from\s*["']([^"']+)["']$/);
     if (!m) return null; // any non-reexport statement → not a stub
     targets.add(m[1]);

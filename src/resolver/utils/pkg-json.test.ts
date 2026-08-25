@@ -8,7 +8,7 @@ const FIXTURE_PATH = path.join(__dirname, '../fixture');
 describe('process package.json', () => {
   it('Should correctly process pkg.exports from @babel/runtime', () => {
     const content = JSON.parse(
-      fs.readFileSync(path.join(FIXTURE_PATH, 'node_modules/@babel/runtime/package.json'), 'utf-8')
+      fs.readFileSync(path.join(FIXTURE_PATH, 'node_modules/@babel/runtime/package.json'), 'utf-8'),
     );
     const processedPkg = processPackageJSON(content, '/node_modules/@babel/runtime');
     expect(processedPkg).toMatchSnapshot();

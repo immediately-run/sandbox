@@ -4,7 +4,7 @@ export function normalizeAliasFilePath(
   specifier: string,
   pkgRoot: string,
   // This can be set to false to fallback to returning the specifier in case it can be a node_module
-  isFilePath: boolean = true
+  isFilePath: boolean = true,
 ): string {
   if (specifier[0] === '/') {
     return specifier;

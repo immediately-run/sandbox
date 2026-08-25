@@ -63,8 +63,7 @@ describe('L2 [harness] git-dependency resolves from a registered local module, n
   });
 
   it('strips the git dep — but NOT the semver dep — from the CDN query (gitDependencyNames)', () => {
-    const deps = (JSON.parse(GIT_DEP_FIXTURE['package.json']) as { dependencies: Record<string, string> })
-      .dependencies;
+    const deps = (JSON.parse(GIT_DEP_FIXTURE['package.json']) as { dependencies: Record<string, string> }).dependencies;
     const names = gitDependencyNames(deps);
     expect(names.has('@scope/lib')).toBe(true); // git dep → stripped (resolves locally)
     expect(names.has('leftpad')).toBe(false); // semver dep → NOT stripped (CDN)

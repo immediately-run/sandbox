@@ -55,10 +55,7 @@ export class RegistryFS extends FileSystem {
   private inoByPath: Map<string, number> = new Map();
   private nextIno = 1;
 
-  constructor(
-    private registry: ModuleRegistry,
-    private fetchFile: RegistryFileFetcher = defaultFetchFile,
-  ) {
+  constructor(private registry: ModuleRegistry, private fetchFile: RegistryFileFetcher = defaultFetchFile) {
     // 0x52454753 = "REGS"; the name surfaces in zenfs diagnostics.
     super(0x52454753, 'registryfs');
   }

@@ -22,7 +22,11 @@ describe('R3-49d CDN-layout fast path — concurrent resolution does not spuriou
     };
     for (let i = 0; i < FILE_COUNT; i++) {
       // internals/iN.js imports a sibling internal relatively (fast-path territory)
-      files[`internals/i${i}.js`] = { c: `require('./i${(i + 1) % FILE_COUNT}'); module.exports = ${i};`, d: [`./i${(i + 1) % FILE_COUNT}`], t: false };
+      files[`internals/i${i}.js`] = {
+        c: `require('./i${(i + 1) % FILE_COUNT}'); module.exports = ${i};`,
+        d: [`./i${(i + 1) % FILE_COUNT}`],
+        t: false,
+      };
       // modules/mN.js are leaf files reachable as bare subpaths
       files[`modules/m${i}.js`] = { c: `module.exports = ${i};`, d: [], t: false };
     }
@@ -50,8 +54,12 @@ describe('R3-49d CDN-layout fast path — concurrent resolution does not spuriou
         const spec = `corish/modules/m${i}.js`;
         tasks.push(
           h.bundler.resolveAsync(spec, '/app/src/index.ts').then(
-            (r) => { if (r !== `/node_modules/corish/modules/m${i}.js`) failures.push(`wrong:${spec}=>${r}`); },
-            (e) => { failures.push(`threw:${spec}:${(e as Error).message}`); },
+            (r) => {
+              if (r !== `/node_modules/corish/modules/m${i}.js`) failures.push(`wrong:${spec}=>${r}`);
+            },
+            (e) => {
+              failures.push(`threw:${spec}:${(e as Error).message}`);
+            },
           ),
         );
       }

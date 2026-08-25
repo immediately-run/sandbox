@@ -12,7 +12,10 @@ import { IPackageJSON } from '../types';
  */
 export function concreteVersion(range: string | undefined): string | undefined {
   if (typeof range !== 'string') return undefined;
-  const trimmed = range.trim().replace(/^[\^~]|^>=|^<=|^>|^<|^=|^v/g, '').trim();
+  const trimmed = range
+    .trim()
+    .replace(/^[\^~]|^>=|^<=|^>|^<|^=|^v/g, '')
+    .trim();
   const m = trimmed.match(/^(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)/);
   return m ? m[1] : undefined;
 }
@@ -71,12 +74,7 @@ export function compareSemver(a: string, b: string): number {
  * - Unparseable package.json → `defaultVersion` (intent unknowable here; a
  *   truly broken package.json fails the boot later in processPackageJSON).
  */
-export function resolveSelfHostVersion(
-  raw: string,
-  moduleName: string,
-  defaultVersion: string,
-  floor: string,
-): string {
+export function resolveSelfHostVersion(raw: string, moduleName: string, defaultVersion: string, floor: string): string {
   let parsed: IPackageJSON | undefined;
   try {
     parsed = JSON.parse(raw) as IPackageJSON;
@@ -137,9 +135,7 @@ export interface VendorTiming {
 }
 
 const vendorNow = (): number =>
-  typeof performance !== 'undefined' && typeof performance.now === 'function'
-    ? performance.now()
-    : Date.now();
+  typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now();
 
 export async function fetchVendoredModule(
   moduleName: string,

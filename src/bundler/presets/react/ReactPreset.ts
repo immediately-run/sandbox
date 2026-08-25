@@ -19,15 +19,12 @@ import { Preset } from '../Preset';
 
 const ASSET_REGEX = new RegExp(`\\.(${ASSET_EXTENSIONS.join('|')})$`, 'i');
 
-
 export class ReactPreset extends Preset {
   defaultHtmlBody = '<div id="root"></div>';
 
   constructor() {
     super('react');
   }
-
-
 
   async init(bundler: Bundler): Promise<void> {
     await super.init(bundler);
@@ -51,7 +48,7 @@ export class ReactPreset extends Preset {
         ['react-refresh-transformer', {}],
       ];
       if (/.*\.(mdx?)$/i.test(module.filepath)) {
-        transfomers.unshift(['mdx-transformer', {}])
+        transfomers.unshift(['mdx-transformer', {}]);
       }
       return transfomers;
     }

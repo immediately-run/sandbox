@@ -141,7 +141,9 @@ describe('ModuleRegistry esm.sh fallback (transpile-through)', () => {
     const fetcher = jest.fn<Promise<string>, [string]>().mockRejectedValue(new Error('HTTP 404'));
     const r = registry(fetcher);
     await r.fetchManifest({ ...DEPS });
-    await expect(r.preloadModules()).rejects.toThrow(/Could not resolve "lucide-react@\^1\.21\.0".*esm\.sh fallback.*404/);
+    await expect(r.preloadModules()).rejects.toThrow(
+      /Could not resolve "lucide-react@\^1\.21\.0".*esm\.sh fallback.*404/,
+    );
   });
 
   it('with the fallback disabled, a dropped package fails fast via the resolution guard', async () => {

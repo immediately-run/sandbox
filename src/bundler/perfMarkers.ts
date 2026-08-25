@@ -17,15 +17,9 @@ export interface PerfMarkerBus {
 }
 
 const now = (): number =>
-  typeof performance !== 'undefined' && typeof performance.now === 'function'
-    ? performance.now()
-    : Date.now();
+  typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now();
 
-export function emitPerfMarker(
-  bus: PerfMarkerBus,
-  name: string,
-  attrs?: Record<string, unknown>
-): void {
+export function emitPerfMarker(bus: PerfMarkerBus, name: string, attrs?: Record<string, unknown>): void {
   try {
     bus.sendMessage(IR_MARKER, { name, at: now(), ...(attrs !== undefined ? { attrs } : {}) });
   } catch {

@@ -28,8 +28,7 @@ function fakeWebPortPair(): { port1: FakePort; port2: FakePort } {
   const a = new Map<string, Set<Listener>>();
   const b = new Map<string, Set<Listener>>();
   const make = (mine: Map<string, Set<Listener>>, theirs: Map<string, Set<Listener>>): FakePort => ({
-    postMessage: (msg: unknown) =>
-      queueMicrotask(() => theirs.get('message')?.forEach((l) => l({ data: msg }))),
+    postMessage: (msg: unknown) => queueMicrotask(() => theirs.get('message')?.forEach((l) => l({ data: msg }))),
     addEventListener: (type: string, listener: Listener) =>
       (mine.get(type) ?? mine.set(type, new Set()).get(type)!).add(listener),
     removeEventListener: (type: string, listener: Listener) => mine.get(type)?.delete(listener),

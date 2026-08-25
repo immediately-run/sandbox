@@ -73,7 +73,7 @@ const CHANGE_STATUSES = new Set(['created', 'modified', 'deleted']);
 const sanitizeChanges = (raw: unknown[]): VcsChange[] =>
   raw.filter(
     (c: unknown): c is VcsChange =>
-      !!c && typeof (c as VcsChange).path === 'string' && CHANGE_STATUSES.has((c as VcsChange).status)
+      !!c && typeof (c as VcsChange).path === 'string' && CHANGE_STATUSES.has((c as VcsChange).status),
   );
 
 const sanitizeBranch = (raw: unknown): VcsBranch | null => {
@@ -105,6 +105,6 @@ const sanitizePRs = (raw: unknown): VcsPR[] => {
       typeof (p as VcsPR).url === 'string' &&
       typeof (p as VcsPR).title === 'string' &&
       typeof (p as VcsPR).state === 'string' &&
-      typeof (p as VcsPR).draft === 'boolean'
+      typeof (p as VcsPR).draft === 'boolean',
   );
 };

@@ -10,7 +10,7 @@ const steps = [
   'Finished',
 ] as const;
 
-export const logFactory = (step: typeof steps[number], details = '') => {
+export const logFactory = (step: (typeof steps)[number], details = '') => {
   const currentStep = steps.findIndex((name) => name === step) + 1;
   const total = steps.length;
 

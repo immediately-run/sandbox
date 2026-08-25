@@ -26,7 +26,7 @@ declare module 'gensync' {
 
   const gensync: {
     <Fn extends (...args: any) => any>(
-      _: Options<Fn> | ((...args: Parameters<Fn>) => Handler<ReturnType<Fn>>)
+      _: Options<Fn> | ((...args: Parameters<Fn>) => Handler<ReturnType<Fn>>),
     ): Gensync<Fn>;
 
     all<Return>(gensyncs: Array<Handler<Return>>): Handler<Return[]>;

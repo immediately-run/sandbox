@@ -84,7 +84,9 @@ describe('normalizeRepoRelPath (§5.1/§5.7 path confinement)', () => {
 
 describe('outWithinArtifacts (§5.1/§5.7 out confinement)', () => {
   it('accepts a path inside the artifacts dir', () => {
-    expect(outWithinArtifacts('transpiled/src/App.tsx.js')).toBe('.immediately.run/artifacts/transpiled/src/App.tsx.js');
+    expect(outWithinArtifacts('transpiled/src/App.tsx.js')).toBe(
+      '.immediately.run/artifacts/transpiled/src/App.tsx.js',
+    );
   });
 
   it('rejects traversal out of the artifacts dir', () => {

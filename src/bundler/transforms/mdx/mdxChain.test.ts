@@ -26,15 +26,11 @@ describe('G-MDX-1 — `.mdx` is routed into the shared package chain', () => {
 
   it('ReactPreset chains mdx-transformer FIRST, then babel + react-refresh', () => {
     const preset = new ReactPreset();
-    const ids = preset
-      .mapTransformers({ filepath: '/app/content/post.mdx' } as Module)
-      .map(([id]) => id);
+    const ids = preset.mapTransformers({ filepath: '/app/content/post.mdx' } as Module).map(([id]) => id);
     expect(ids).toEqual(['mdx-transformer', 'babel-transformer', 'react-refresh-transformer']);
 
     // A `.tsx` gets the same tail WITHOUT the mdx stage.
-    const tsxIds = preset
-      .mapTransformers({ filepath: '/app/src/App.tsx' } as Module)
-      .map(([id]) => id);
+    const tsxIds = preset.mapTransformers({ filepath: '/app/src/App.tsx' } as Module).map(([id]) => id);
     expect(tsxIds).toEqual(['babel-transformer', 'react-refresh-transformer']);
   });
 });

@@ -7,12 +7,7 @@ import { Module } from '../module/Module';
 import { filterBuildDeps } from './build-dep';
 import { depMapsEqual, locksetClosureValid, LocksetSection } from './lockset';
 import { ICDNModule, ICDNModuleFile, IResolvedDependency, fetchManifest, fetchModule } from './module-cdn';
-import {
-  bundledIndexPath,
-  bundledPackagePath,
-  decodeBundledModule,
-  parseBundledIndex,
-} from './bundledPackages';
+import { bundledIndexPath, bundledPackagePath, decodeBundledModule, parseBundledIndex } from './bundledPackages';
 import {
   EsmFallbackFetcher,
   esmFallbackEntryUrl,
@@ -57,10 +52,7 @@ export class ModuleRegistry {
   // the primary CDN actually drops a package; on failure (esm.sh down, a
   // multi-chunk package) it throws the clear `assertDependenciesResolved`-style
   // error. Pass `null` to disable, or a stub fetcher in tests.
-  constructor(
-    bundler: Bundler,
-    private esmFallbackFetcher: EsmFallbackFetcher | null = nativeEsmFallbackFetcher,
-  ) {
+  constructor(bundler: Bundler, private esmFallbackFetcher: EsmFallbackFetcher | null = nativeEsmFallbackFetcher) {
     this.bundler = bundler;
   }
 
@@ -117,7 +109,9 @@ export class ModuleRegistry {
           this.manifest = lockset.resolved;
           resolvedFromLockset = true;
         } else {
-          logger.warn('Sidecar lockset failed closure validation (resolved not closed over declared deps); resolving live');
+          logger.warn(
+            'Sidecar lockset failed closure validation (resolved not closed over declared deps); resolving live',
+          );
         }
       } else {
         logger.debug('Sidecar lockset dependency echo does not match; resolving live', {
@@ -163,7 +157,7 @@ export class ModuleRegistry {
     await Promise.all(
       this.manifest.map((dep) => {
         return this.fetchNodeModule(dep.n, dep.v);
-      })
+      }),
     );
   }
 

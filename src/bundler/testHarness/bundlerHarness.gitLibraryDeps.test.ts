@@ -25,10 +25,7 @@ const APP_FIXTURE: Record<string, string> = {
   'src/index.ts': "import x from '@scope/lib';\nexport default x;\n",
 };
 
-async function mountLibraryFs(
-  mountPath: string,
-  files: Record<string, string>,
-): Promise<() => void> {
+async function mountLibraryFs(mountPath: string, files: Record<string, string>): Promise<() => void> {
   const backing = await resolveMountConfig({ backend: InMemory });
   mount(mountPath, backing);
   for (const [rel, content] of Object.entries(files)) {
@@ -72,15 +69,15 @@ describe('R3-293 a git library contributes its own dependencies to the CDN query
       APP_FIXTURE['package.json'],
     );
     await h.bundler.initPreset('create-react-app'); // the preset augments the closure
-    const registry = (h.bundler as unknown as {
-      moduleRegistry: { fetchManifest: (...a: unknown[]) => Promise<unknown> };
-    }).moduleRegistry;
+    const registry = (
+      h.bundler as unknown as {
+        moduleRegistry: { fetchManifest: (...a: unknown[]) => Promise<unknown> };
+      }
+    ).moduleRegistry;
     let sent: Record<string, string> = {};
-    const spy = jest
-      .spyOn(registry, 'fetchManifest')
-      .mockImplementation(async (deps: unknown) => {
-        sent = deps as Record<string, string>;
-      });
+    const spy = jest.spyOn(registry, 'fetchManifest').mockImplementation(async (deps: unknown) => {
+      sent = deps as Record<string, string>;
+    });
     try {
       await (h.bundler as unknown as { loadNodeModules: () => Promise<void> }).loadNodeModules();
     } finally {
@@ -159,9 +156,7 @@ describe('R3-293 a git library contributes its own dependencies to the CDN query
   it('a library with no package.json contributes nothing and never fails the mount', async () => {
     unmount = await mountLibraryFs('/mnt/barelib', { 'index.js': 'module.exports = 1;' });
 
-    await expect(
-      h.bundler.registerGitLibraryMount('@scope/lib', '/mnt/barelib'),
-    ).resolves.toBeUndefined();
+    await expect(h.bundler.registerGitLibraryMount('@scope/lib', '/mnt/barelib')).resolves.toBeUndefined();
     expect(await depsSentToCdn()).toBeDefined();
   });
 });

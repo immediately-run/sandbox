@@ -21,8 +21,7 @@ export const BUNDLED_PACKAGES_DIR = PACKAGES_DIR;
 export const bundledIndexPath = (): string => underAppRoot(`/${BUNDLED_PACKAGES_DIR}/index.json`);
 
 /** App-rooted path of a bundled package file, given its index `path` (filename). */
-export const bundledPackagePath = (relPath: string): string =>
-  underAppRoot(`/${BUNDLED_PACKAGES_DIR}/${relPath}`);
+export const bundledPackagePath = (relPath: string): string => underAppRoot(`/${BUNDLED_PACKAGES_DIR}/${relPath}`);
 
 interface BundledIndexEntry {
   n: string;
@@ -56,5 +55,4 @@ export const parseBundledIndex = (raw: string): Map<string, string> | null => {
 };
 
 /** Decode verbatim `/package/` msgpack bytes into an `ICDNModule`. */
-export const decodeBundledModule = (bytes: Uint8Array): ICDNModule =>
-  decodeMsgPack(bytes) as ICDNModule;
+export const decodeBundledModule = (bytes: Uint8Array): ICDNModule => decodeMsgPack(bytes) as ICDNModule;

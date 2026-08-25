@@ -54,7 +54,12 @@ describe('CatalogService', () => {
     expect(seen).toEqual([['a:m']]); // immediate replay
 
     fire(catMsg([{ name: 'a:m', capability: 'c' }])); // identical → no fire
-    fire(catMsg([{ name: 'a:m', capability: 'c' }, { name: 'b:m', capability: 'c' }]));
+    fire(
+      catMsg([
+        { name: 'a:m', capability: 'c' },
+        { name: 'b:m', capability: 'c' },
+      ]),
+    );
     expect(seen).toEqual([['a:m'], ['a:m', 'b:m']]);
   });
 });

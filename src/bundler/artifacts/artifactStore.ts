@@ -142,10 +142,7 @@ export class ArtifactStore {
   // does the new ones.
   private seededRoots = new Set<string>();
 
-  constructor(
-    private readonly fs: ArtifactFs,
-    private readonly embedded: EmbeddedToolchainIdentity,
-  ) {}
+  constructor(private readonly fs: ArtifactFs, private readonly embedded: EmbeddedToolchainIdentity) {}
 
   /**
    * Register a git-mounted library's subtree as an artifact root (LIBRARY_MOUNTS_SPEC §7 /

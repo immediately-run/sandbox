@@ -43,7 +43,7 @@ export interface LinterLike {
   verify(
     code: string,
     config: unknown,
-    filename?: string
+    filename?: string,
   ): { line: number; column: number; ruleId: string | null; severity: number; message: string }[];
 }
 // Runtime-supplied linter + parser. REQUIRED — `runLint` has no built-in default so
@@ -91,14 +91,14 @@ export function runLint(req: LintRequest, deps: LintDeps): LintResult {
   for (const k of FORBIDDEN_FIELDS) {
     if (hasOwn(req as object, k))
       throw new ServiceInputError(
-        `option ${JSON.stringify(k)} is not allowed — lint config is kernel-owned (pick a preset)`
+        `option ${JSON.stringify(k)} is not allowed — lint config is kernel-owned (pick a preset)`,
       );
   }
   const files = validateFiles(req.files);
   const presetName = req.preset === undefined ? 'recommended' : req.preset;
   if (typeof presetName !== 'string' || !hasOwn(PRESETS, presetName)) {
     throw new ServiceInputError(
-      `unknown preset ${JSON.stringify(presetName)} (one of: ${Object.keys(PRESETS).join(', ')})`
+      `unknown preset ${JSON.stringify(presetName)} (one of: ${Object.keys(PRESETS).join(', ')})`,
     );
   }
 

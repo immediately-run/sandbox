@@ -29,7 +29,7 @@ describe('Bundler: a failed source load fails fast + clearly, not a misleading r
     jest
       .spyOn(h.bundler.fs, 'readFileAsync')
       .mockImplementation(async (p: string) =>
-        String(p).endsWith('/src/answer.ts') ? Promise.reject(new Error('403: API rate limit exceeded')) : realRead(p)
+        String(p).endsWith('/src/answer.ts') ? Promise.reject(new Error('403: API rate limit exceeded')) : realRead(p),
       );
 
     // Fails fast at the load/transform attempt…

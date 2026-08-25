@@ -62,10 +62,7 @@ describe('G0-4 [harness] edit/reload behavior over the flipped mount table', () 
   it('without HMR, a real edit triggers a full page reload (parity baseline)', async () => {
     // No `enableHMR()` yet — a non-package.json change with no HMR falls back to a reload
     // (returns before any transform, so no babel here).
-    await fs.promises.writeFile(
-      underAppRoot('/src/answer.ts'),
-      'const answer: number = 8;\nexport default answer;\n',
-    );
+    await fs.promises.writeFile(underAppRoot('/src/answer.ts'), 'const answer: number = 8;\nexport default answer;\n');
     h.bundler.markFilesChanged([underAppRoot('/src/answer.ts')]);
     reloadSpy.mockClear();
 
@@ -80,15 +77,9 @@ describe('G0-4 [harness] edit/reload behavior over the flipped mount table', () 
     // Two edits queued back-to-back before the recompile drains them: the change queue
     // must retain the racing edit, and the recompile must re-read the LATEST bytes from
     // `/app` (the Port stand-in) — not a stale snapshot, and not drop the second write.
-    await fs.promises.writeFile(
-      underAppRoot('/src/answer.ts'),
-      'const answer: number = 55;\nexport default answer;\n',
-    );
+    await fs.promises.writeFile(underAppRoot('/src/answer.ts'), 'const answer: number = 55;\nexport default answer;\n');
     h.bundler.markFilesChanged([underAppRoot('/src/answer.ts')]);
-    await fs.promises.writeFile(
-      underAppRoot('/src/answer.ts'),
-      'const answer: number = 77;\nexport default answer;\n',
-    );
+    await fs.promises.writeFile(underAppRoot('/src/answer.ts'), 'const answer: number = 77;\nexport default answer;\n');
     h.bundler.markFilesChanged([underAppRoot('/src/answer.ts')]);
     h.sentMessages.length = 0;
 

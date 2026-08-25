@@ -1,11 +1,7 @@
 import { Emitter } from '../utils/emitter';
 import { IFrameParentMessageBus } from '../protocol/iframe';
 import { FormFactorService } from './FormFactorService';
-import {
-  FORM_FACTOR_MESSAGE,
-  FormFactor,
-  DEFAULT_FORM_FACTOR,
-} from './formFactorState';
+import { FORM_FACTOR_MESSAGE, FormFactor, DEFAULT_FORM_FACTOR } from './formFactorState';
 
 const makeBus = () => {
   const emitter = new Emitter<any>();

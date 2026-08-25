@@ -48,7 +48,7 @@ export function installModuleWorkerGuard(scope: any = globalThis, originOverride
           `immediately.run: cannot construct a Worker from the sandbox module space ("${raw}"). ` +
             `Module URLs are virtual — they are transpiled on load, not served as worker scripts. ` +
             `Catch this error and run the work in-process (or on a host-brokered service) instead; ` +
-            `waiting on this worker would hang forever.`
+            `waiting on this worker would hang forever.`,
         );
       }
       super(scriptUrl, options);

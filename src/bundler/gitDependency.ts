@@ -84,9 +84,7 @@ export function parseGitDependency(value: string): GitDependency | null {
     //   https://github.com/owner/repo(.git)
     //   git+ssh://git@github.com/owner/repo(.git)
     //   git://github.com/owner/repo(.git)
-    const url = body.match(
-      /^(?:git\+)?(?:https?|git|ssh):\/\/(?:[^@/]+@)?github\.com\/(.+?)(?:\.git)?\/?$/i,
-    );
+    const url = body.match(/^(?:git\+)?(?:https?|git|ssh):\/\/(?:[^@/]+@)?github\.com\/(.+?)(?:\.git)?\/?$/i);
     if (url) {
       ownerRepo = url[1].trim();
     } else if (hashIx !== -1 && /^[^\s:]+\/[^\s:/]+$/.test(body)) {

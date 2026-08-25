@@ -35,10 +35,7 @@ export const FORM_FACTOR_MESSAGE = FORM_FACTOR;
 export const REQUEST_FORM_FACTOR_MESSAGE = REQUEST_FORM_FACTOR;
 
 export const formFactorsEqual = (a: FormFactor, b: FormFactor): boolean =>
-  a.class === b.class &&
-  a.orientation === b.orientation &&
-  a.width === b.width &&
-  a.height === b.height;
+  a.class === b.class && a.orientation === b.orientation && a.width === b.width && a.height === b.height;
 
 export const isFormFactor = (v: any): v is FormFactor =>
   v &&

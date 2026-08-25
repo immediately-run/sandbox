@@ -19,7 +19,12 @@ describe('MountLifecycle', () => {
   it('isolates a throwing action — others still run, mount not broken', async () => {
     const seen: string[] = [];
     const lc = new MountLifecycle();
-    lc.register({ name: 'boom', onMount: () => { throw new Error('kaboom'); } });
+    lc.register({
+      name: 'boom',
+      onMount: () => {
+        throw new Error('kaboom');
+      },
+    });
     lc.register({ name: 'ok', onMount: () => void seen.push('ok') });
     await expect(lc.runMount(ctx())).resolves.toBeUndefined();
     expect(seen).toEqual(['ok']);

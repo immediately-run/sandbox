@@ -35,9 +35,7 @@ export function createBundledLibHost(_options: ts.CompilerOptions): ts.CompilerH
   return {
     getSourceFile: (fileName, languageVersionOrOptions) => {
       const text = bundledText(fileName);
-      return text !== undefined
-        ? ts.createSourceFile(fileName, text, languageVersionOrOptions, true)
-        : undefined;
+      return text !== undefined ? ts.createSourceFile(fileName, text, languageVersionOrOptions, true) : undefined;
     },
     // The primary lib TS loads unless `noLib`. Its `/// <reference lib=… />`s pull in
     // the rest of the closure, each resolved back here by basename.

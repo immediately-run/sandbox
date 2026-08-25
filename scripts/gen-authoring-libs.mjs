@@ -54,6 +54,4 @@ const body =
 
 writeFileSync(outFile, banner + body);
 const bytes = entries.reduce((n, [, t]) => n + t.length, 0);
-console.log(
-  `gen-authoring-libs: wrote ${entries.length} libs (${(bytes / 1024 / 1024).toFixed(2)} MB) → ${outFile}`,
-);
+console.log(`gen-authoring-libs: wrote ${entries.length} libs (${(bytes / 1024 / 1024).toFixed(2)} MB) → ${outFile}`);

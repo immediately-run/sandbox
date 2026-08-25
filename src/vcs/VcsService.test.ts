@@ -67,7 +67,7 @@ describe('VcsService', () => {
         ],
         branch: { name: 'b' } as any, // missing fields
         prs: [pr, { number: 'nope' } as any],
-      })
+      }),
     );
     expect(svc.getState().changes).toEqual([{ path: 'ok.ts', status: 'created' }]);
     expect(svc.getState().branch).toBeNull();

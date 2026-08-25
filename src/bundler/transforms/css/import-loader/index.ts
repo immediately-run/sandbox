@@ -18,11 +18,7 @@ interface InitialOptions {
    * the path(s). If you do not return an absolute path, your path will be resolved to an absolute path using the default resolver. You can use
    * [resolve](https://github.com/substack/node-resolve) for this.
    */
-  resolve: (
-    id: string,
-    basedir: string,
-    importOptions: Options
-  ) => string | string[] | PromiseLike<string | string[]>;
+  resolve: (id: string, basedir: string, importOptions: Options) => string | string[] | PromiseLike<string | string[]>;
 
   /**
    * You can overwrite the default loading way by setting this option. This function gets `(filename, importOptions)` arguments and returns content or promised content.
@@ -210,7 +206,7 @@ function AtImport(initialOpts: InitialOptions) {
                 throw new Error(
                   `Incompatable @charset statements:
   ${stmt.node.params} specified in ${stmt.node.source.input.file}
-  ${charset.node.params} specified in ${charset.node.source.input.file}`
+  ${charset.node.params} specified in ${charset.node.source.input.file}`,
                 );
               }
             }
@@ -267,7 +263,7 @@ function AtImport(initialOpts: InitialOptions) {
             return Promise.all(
               resolved.map((file) => {
                 return loadImportContent(result, stmt, file, options, state);
-              })
+              }),
             );
           })
           .then((result) => {

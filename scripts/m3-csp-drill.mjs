@@ -154,10 +154,19 @@ const server = http.createServer((req, res) => {
   const url = new URL(req.url, 'http://x');
   if (url.pathname === '/parent') {
     res.writeHead(200, { 'content-type': 'text/html' });
-    return res.end(parentHtml(url.searchParams.get('doc'), url.searchParams.get('flags') || '', url.searchParams.get('port') === '1'));
+    return res.end(
+      parentHtml(
+        url.searchParams.get('doc'),
+        url.searchParams.get('flags') || '',
+        url.searchParams.get('port') === '1',
+      ),
+    );
   }
   const file = path.join(DIST, url.pathname.slice(1));
-  if (!file.startsWith(DIST) || !fs.existsSync(file)) { res.writeHead(404); return res.end('nope'); }
+  if (!file.startsWith(DIST) || !fs.existsSync(file)) {
+    res.writeHead(404);
+    return res.end('nope');
+  }
   const ext = path.extname(file);
   res.writeHead(200, {
     'content-type': ext === '.js' ? 'text/javascript' : 'text/html',
@@ -167,14 +176,27 @@ const server = http.createServer((req, res) => {
 });
 await new Promise((r) => server.listen(PORT, '127.0.0.1', r));
 
-const browser = await puppeteer.launch({ executablePath: CHROME, headless: 'new', args: ['--no-sandbox', '--disable-dev-shm-usage'] });
+const browser = await puppeteer.launch({
+  executablePath: CHROME,
+  headless: 'new',
+  args: ['--no-sandbox', '--disable-dev-shm-usage'],
+});
 const run = async (doc, { flags = '', port = false, wait } = {}) => {
   const page = await browser.newPage();
   const requests = [];
   await page.setRequestInterception(true);
-  page.on('request', (r) => { requests.push(r.url()); r.url().includes('attacker.example') ? r.abort() : r.continue(); });
-  await page.goto(`http://127.0.0.1:${PORT}/parent?doc=${doc}&flags=${flags}&port=${port ? 1 : 0}`, { waitUntil: 'load' });
-  try { await page.waitForFunction(wait, { timeout: 15000 }); } catch { /* nav drills never report back */ }
+  page.on('request', (r) => {
+    requests.push(r.url());
+    r.url().includes('attacker.example') ? r.abort() : r.continue();
+  });
+  await page.goto(`http://127.0.0.1:${PORT}/parent?doc=${doc}&flags=${flags}&port=${port ? 1 : 0}`, {
+    waitUntil: 'load',
+  });
+  try {
+    await page.waitForFunction(wait, { timeout: 15000 });
+  } catch {
+    /* nav drills never report back */
+  }
   const probe = await page.evaluate('window.__probe');
   const frames = page.frames().map((f) => f.url());
   await page.close();
@@ -198,8 +220,14 @@ const checks = [
   ['sendBeacon to an attacker origin is CSP-blocked', violated(main, 'connect-src', 'attacker.example/b')],
   ['pixel exfil is CSP-blocked (img-src)', violated(main, 'img-src', 'attacker.example/p.gif')],
   ['nested-frame GET is CSP-blocked (frame-src)', violated(main, 'frame-src', 'attacker.example')],
-  ['the module CDN is reachable ONLY on its allowlisted paths', violated(main, 'connect-src', 'blazingly.io/?d=secret')],
-  ['native form POST is CSP-blocked (form-action, isolated from the sandbox flag)', violated(form, 'form-action', 'attacker.example/f')],
+  [
+    'the module CDN is reachable ONLY on its allowlisted paths',
+    violated(main, 'connect-src', 'blazingly.io/?d=secret'),
+  ],
+  [
+    'native form POST is CSP-blocked (form-action, isolated from the sandbox flag)',
+    violated(form, 'form-action', 'attacker.example/f'),
+  ],
   ['no attacker request escaped the frame', main.attackerRequests.length === 0 && form.attackerRequests.length === 0],
   // Controls — an M3 app must still BOOT AND RUN.
   ["the frame's own origin stays fetchable ('self' resolves in an opaque origin)", results.fetchSelf?.value === 200],

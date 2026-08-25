@@ -51,7 +51,7 @@ export default function parseStatements(result, styles) {
   }
 
   return statements;
-};
+}
 
 function parseMedia(result, atRule) {
   const params = valueParser(atRule.params).nodes;
@@ -97,7 +97,7 @@ function parseImport(result, atRule) {
   if (atRule.nodes) {
     return result.warn(
       "It looks like you didn't end your @import statement correctly. " + 'Child nodes are attached to it.',
-      { node: atRule }
+      { node: atRule },
     );
   }
 

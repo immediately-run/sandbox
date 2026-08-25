@@ -1,12 +1,7 @@
 import { IDisposable } from '../utils/Disposable';
 import { Emitter } from '../utils/emitter';
 import { IFrameParentMessageBus } from '../protocol/iframe';
-import {
-  HostTheme,
-  DEFAULT_THEME,
-  THEME_MESSAGE,
-  themesEqual,
-} from './themeState';
+import { HostTheme, DEFAULT_THEME, THEME_MESSAGE, themesEqual } from './themeState';
 
 /**
  * Caches the host UI theme the parent relays over postMessage and exposes it to
@@ -28,11 +23,7 @@ export class ThemeService {
 
   constructor(messageBus: IFrameParentMessageBus) {
     messageBus.onMessage((msg: any) => {
-      if (
-        msg &&
-        msg.type === THEME_MESSAGE &&
-        (msg.theme === 'light' || msg.theme === 'dark')
-      ) {
+      if (msg && msg.type === THEME_MESSAGE && (msg.theme === 'light' || msg.theme === 'dark')) {
         this.setTheme(msg.theme as HostTheme);
       }
     });

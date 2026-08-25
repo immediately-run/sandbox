@@ -95,8 +95,8 @@ export class DisposableStore implements IDisposable {
       if (!DisposableStore.DISABLE_DISPOSED_WARNING) {
         logger.warn(
           new Error(
-            'Trying to add a disposable to a DisposableStore that has already been disposed of. The added object will be leaked!'
-          ).stack
+            'Trying to add a disposable to a DisposableStore that has already been disposed of. The added object will be leaked!',
+          ).stack,
         );
       }
     } else {

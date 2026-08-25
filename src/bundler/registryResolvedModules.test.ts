@@ -72,9 +72,7 @@ describe('resolveSelfHostVersion (implicit resolution, fail-closed §5.1)', () =
   });
 
   it('FAILS CLOSED on a prerelease of the floor version', () => {
-    expect(() => resolve(JSON.stringify({ dependencies: { [SDK]: '0.2.8-beta.1' } }))).toThrow(
-      SelfHostResolutionError,
-    );
+    expect(() => resolve(JSON.stringify({ dependencies: { [SDK]: '0.2.8-beta.1' } }))).toThrow(SelfHostResolutionError);
   });
 
   it('FAILS CLOSED on a declared non-concrete specifier (§5.1(c) — no silent aliasing)', () => {
@@ -133,7 +131,7 @@ describe('fetchVendoredModule', () => {
     expect(calls).toContain(`${base}/package.json`);
   });
 
-  it('threads each file\'s host pin to the fetch (cache-poisoning prevention)', async () => {
+  it("threads each file's host pin to the fetch (cache-poisoning prevention)", async () => {
     const base = 'https://immediately-run.github.io/immediately-run-sdk/v/0.8.0';
     const { fetchSource: inner } = makeFetch(base);
     const seen = new Map<string, string | undefined>();
@@ -201,9 +199,7 @@ describe('fetchVendoredModule', () => {
     await expect(fetchVendoredModule('@immediately-run/sdk', base, failingFetch)).rejects.toThrow(
       SelfHostResolutionError,
     );
-    await expect(fetchVendoredModule('@immediately-run/sdk', base, failingFetch)).rejects.toThrow(
-      /unavailable/,
-    );
+    await expect(fetchVendoredModule('@immediately-run/sdk', base, failingFetch)).rejects.toThrow(/unavailable/);
   });
 
   it('maps each file to its /node_modules path and flags .js as modules', async () => {
@@ -256,11 +252,7 @@ describe('fetchVendoredModule', () => {
     const expected = { 'manifest.json': 'sha384-M', 'index.js': 'sha384-I', 'package.json': 'sha384-P' };
     const vendored = await fetchVendoredModule('@immediately-run/sdk', base, fetchSource, expected);
     // Fetched EXACTLY the pinned set (manifest.json included), and never the rogue.
-    expect([...calls].sort()).toEqual([
-      `${base}/index.js`,
-      `${base}/manifest.json`,
-      `${base}/package.json`,
-    ]);
+    expect([...calls].sort()).toEqual([`${base}/index.js`, `${base}/manifest.json`, `${base}/package.json`]);
     expect(calls).not.toContain(`${base}/ROGUE.js`);
     // manifest.json is vendored (written) but not registered as a module.
     expect(vendored.find((v) => v.path.endsWith('/manifest.json'))?.isModule).toBe(false);
