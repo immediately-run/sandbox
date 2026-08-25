@@ -25,10 +25,7 @@ const APP_FIXTURE: Record<string, string> = {
 
 /** Mount an InMemory fs at `mountPath` seeded with `files` (rel → content), the
  *  way the host mounts a git-library repo's read-only fs. Returns an unmount fn. */
-async function mountLibraryFs(
-  mountPath: string,
-  files: Record<string, string>,
-): Promise<() => void> {
+async function mountLibraryFs(mountPath: string, files: Record<string, string>): Promise<() => void> {
   const backing = await resolveMountConfig({ backend: InMemory });
   await fs.promises.mkdir(mountPath, { recursive: true }).catch(() => undefined);
   mount(mountPath, backing);
@@ -106,9 +103,11 @@ describe('L3 [harness] git-library mount registers under /node_modules and resol
       'index.js': 'module.exports = 1;',
     });
 
-    const fsp = (h.bundler as unknown as {
-      fs: { boundContext: { fs: { promises: { readdir: (p: string) => Promise<string[]> } } } };
-    }).fs.boundContext.fs.promises;
+    const fsp = (
+      h.bundler as unknown as {
+        fs: { boundContext: { fs: { promises: { readdir: (p: string) => Promise<string[]> } } } };
+      }
+    ).fs.boundContext.fs.promises;
     const realReaddir = fsp.readdir.bind(fsp);
     const spy = jest.spyOn(fsp, 'readdir').mockImplementation(async (p: string) => {
       if (p === '/mnt/hostilelib') {
@@ -125,9 +124,7 @@ describe('L3 [harness] git-library mount registers under /node_modules and resol
 
     // Registration never reads the tree at all, so the hostile names are inert.
     await expect(fs.promises.readFile('/node_modules/escape.js', 'utf8')).rejects.toBeTruthy();
-    await expect(
-      fs.promises.readFile('/node_modules/@scope/escape.js', 'utf8'),
-    ).rejects.toBeTruthy();
+    await expect(fs.promises.readFile('/node_modules/@scope/escape.js', 'utf8')).rejects.toBeTruthy();
     // The library still resolves — through the alias, not through copied bytes.
     const content = await fs.promises.readFile('/node_modules/@scope/hostile/index.js', 'utf8');
     expect(content).toBe('module.exports = 1;');
@@ -185,9 +182,11 @@ describe('L3 [harness] git-library mount registers under /node_modules and resol
 
     h.resetSpies();
 
-    await (h.bundler as unknown as {
-      registerDeclaredGitLibraries: () => Promise<void>;
-    }).registerDeclaredGitLibraries();
+    await (
+      h.bundler as unknown as {
+        registerDeclaredGitLibraries: () => Promise<void>;
+      }
+    ).registerDeclaredGitLibraries();
 
     const resolved = await h.bundler.resolveAsync('@scope/lib', '/app/src/index.ts');
     expect(resolved).toBe('/node_modules/@scope/lib/index.js');

@@ -31,9 +31,7 @@ export class JSONTransformer extends Transformer {
       // rather than an encoding detail. Strip it; everything else is left to the parser.
       parsed = JSON.parse(ctx.code.replace(/^\uFEFF/, ''));
     } catch (err) {
-      throw new Error(
-        `Invalid JSON in ${ctx.module.filepath}: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      throw new Error(`Invalid JSON in ${ctx.module.filepath}: ${err instanceof Error ? err.message : String(err)}`);
     }
     // Re-serialize the PARSED value rather than pasting the source: it normalizes away a
     // BOM/trailing whitespace, and guarantees the emitted text is a JS expression (a raw

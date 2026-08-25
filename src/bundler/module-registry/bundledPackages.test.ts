@@ -28,10 +28,7 @@ const indexJson = (entries: Array<{ n: string; v: string; path: string }>) =>
   JSON.stringify({ cdnVersion: 5, packages: entries.map((e) => ({ ...e, key: `k:${e.n}` })) });
 
 // Minimal Bundler stand-in exposing only the FS reads the consume path uses.
-const makeBundler = (opts: {
-  index?: string | Error;
-  bytes?: Record<string, Uint8Array>;
-}): Bundler =>
+const makeBundler = (opts: { index?: string | Error; bytes?: Record<string, Uint8Array> }): Bundler =>
   ({
     fs: {
       readFileAsync: async () => {
@@ -46,7 +43,7 @@ const makeBundler = (opts: {
       },
     },
     modules: new Map(),
-  }) as unknown as Bundler;
+  } as unknown as Bundler);
 
 beforeEach(() => {
   mockedFetchModule.mockReset();

@@ -47,7 +47,7 @@ describe('M3 per-frame CSP (UI_AS_APPS §G1a / R3-234)', () => {
         html.replace(/<!--[\s\S]*?-->/g, '').replace(/<meta[^>]*Content-Security-Policy[\s\S]*?\/>/i, '');
       const normalize = (html: string) => strip(html).replace(/\s+/g, ' ').trim();
       expect(normalize(readFileSync(join(SRC, 'm3.html'), 'utf8'))).toBe(
-        normalize(readFileSync(join(SRC, 'index.html'), 'utf8'))
+        normalize(readFileSync(join(SRC, 'index.html'), 'utf8')),
       );
     });
   });

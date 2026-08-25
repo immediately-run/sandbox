@@ -18,15 +18,18 @@ import { ArtifactStore } from './artifacts/artifactStore';
 import { getEmbeddedToolchain } from './artifacts/embeddedToolchain';
 import { BundlerStatus } from '../protocol/message-types';
 import { ResolverCache, resolveAsync } from '../resolver/resolver';
-import { resolveSelfHostVersion, fetchVendoredModule, SelfHostResolutionError, type VendorTiming } from './registryResolvedModules';
+import {
+  resolveSelfHostVersion,
+  fetchVendoredModule,
+  SelfHostResolutionError,
+  type VendorTiming,
+} from './registryResolvedModules';
 import { gitDependencyNames } from './gitDependency';
 
 // Module-level monotonic clock for the `[ir-perf:addlocal]` sub-phase breakdown
 // (LOAD_PROFILING_SPEC §2 phase 3) — falls back to Date.now when unavailable.
 const vendorBootNow = (): number =>
-  typeof performance !== 'undefined' && typeof performance.now === 'function'
-    ? performance.now()
-    : Date.now();
+  typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now();
 import { verifyVendoredFiles, decideIntegrity, type SdkIntegrity, type FileHashes } from './sdkIntegrity';
 import { MountLifecycle, type MountContext } from './mountLifecycle';
 import { IPackageJSON, ISandboxFile } from '../types';
@@ -44,16 +47,26 @@ import { Module } from './module/Module';
 import { Preset } from './presets/Preset';
 import { getPreset } from './presets/registry';
 import { emitPerfMarker } from './perfMarkers';
-import { SELF_HOST_BASES } from './moduleOrigins'
-import { retryFetch, registerImmutableUrlPrefix } from '../utils/fetch'
-import { basename, dirname } from '../utils/path'
+import { SELF_HOST_BASES } from './moduleOrigins';
+import { retryFetch, registerImmutableUrlPrefix } from '../utils/fetch';
+import { basename, dirname } from '../utils/path';
 import { FrontmatterParseResult, parseFrontmatter } from '@immediately-run/transpiler';
-import { bindContext, globToRegex, CopyOnWrite, InMemory, mount, mounts, umount, resolveMountConfig, fs as zenfs } from '@zenfs/core';
+import {
+  bindContext,
+  globToRegex,
+  CopyOnWrite,
+  InMemory,
+  mount,
+  mounts,
+  umount,
+  resolveMountConfig,
+  fs as zenfs,
+} from '@zenfs/core';
 
 export type TransformationQueue = NamedPromiseQueue<Module>;
 export type MetadataChange = {
-  type: 'metadata-update',
-  update: Record<string, Record<string, any>>
+  type: 'metadata-update';
+  update: Record<string, Record<string, any>>;
 };
 
 // Self-hosted, versioned packages the bundler resolves from an origin we control
@@ -101,7 +114,7 @@ export const DEFAULT_CODE = `
 Object.defineProperty(exports, "__esModule", {
   value: true
 });
-`.trim()
+`.trim();
 
 /**
  * Source for the sandbox's `fs` module. It re-exports the shared filesystem the
@@ -120,7 +133,7 @@ if (!__fs) {
   throw new Error("[sandpack] shared filesystem is unavailable");
 }
 module.exports = __fs;
-`.trim()
+`.trim();
 
 interface IBundlerOpts {
   messageBus: IFrameParentMessageBus;
@@ -133,19 +146,19 @@ interface IBundlerOpts {
   mounts: MountService;
 }
 
-const extractMetadata = (file: ISandboxFile):(FrontmatterParseResult|null) => {
-    if (file.path.endsWith('.mdx')) {
-      try {
-        const parseResult = parseFrontmatter(file.code);
-        if (Object.keys(parseResult.data).length > 0) {
-          return parseResult;
-        }
-      } catch (e) {
-        console.warn(`Error parsing metadata for ${file.path}`, e);
+const extractMetadata = (file: ISandboxFile): FrontmatterParseResult | null => {
+  if (file.path.endsWith('.mdx')) {
+    try {
+      const parseResult = parseFrontmatter(file.code);
+      if (Object.keys(parseResult.data).length > 0) {
+        return parseResult;
       }
+    } catch (e) {
+      console.warn(`Error parsing metadata for ${file.path}`, e);
     }
-    return null;
   }
+  return null;
+};
 
 export class Bundler {
   private lastHTML: string | null = null;
@@ -483,7 +496,7 @@ export class Bundler {
         this.parsedPackageJSON.source,
         this.parsedPackageJSON.module,
         ...this.preset.defaultEntryPoints,
-      ].filter((e) => typeof e === 'string')
+      ].filter((e) => typeof e === 'string'),
     );
 
     for (let potentialEntry of potentialEntries) {
@@ -510,8 +523,8 @@ export class Bundler {
     }
     throw new BundlerError(
       `Could not resolve entry point, potential entrypoints: ${Array.from(potentialEntries).join(
-        ', '
-      )}. You can define one by changing the "main" field in package.json.`
+        ', ',
+      )}. You can define one by changing the "main" field in package.json.`,
     );
   }
 
@@ -545,9 +558,7 @@ export class Bundler {
       // transitive deps are added by the preset augmentation below regardless.
       const registryResolved = this.registryResolvedNames();
       if (registryResolved.size) {
-        dependencies = Object.fromEntries(
-          Object.entries(dependencies).filter(([name]) => !registryResolved.has(name))
-        );
+        dependencies = Object.fromEntries(Object.entries(dependencies).filter(([name]) => !registryResolved.has(name)));
       }
       // R3-293: a mounted git library brings its OWN dependencies. npm would have installed
       // them beside it; the mount path has no such step, so without this the first import
@@ -562,7 +573,7 @@ export class Bundler {
       }
       dependencies = nullthrows(
         this.preset,
-        'Preset needs to be defined when loading node modules'
+        'Preset needs to be defined when loading node modules',
       ).augmentDependencies(dependencies);
 
       await this.moduleRegistry.fetchManifest(dependencies, true, await this.readSidecarLockset());
@@ -576,7 +587,7 @@ export class Bundler {
   async resolveAsync(
     specifier: string,
     filename: string,
-    extensions: string[] = ['.js', '.jsx', '.mjs', '.cjs', '.ts', '.tsx', '.mdx']
+    extensions: string[] = ['.js', '.jsx', '.mjs', '.cjs', '.ts', '.tsx', '.mdx'],
   ): Promise<string> {
     // Resolution result is a pure function of (specifier, the dir chain from
     // `filename` up, extensions) for the FS snapshot of this compile — node
@@ -646,7 +657,7 @@ export class Bundler {
             `Failed to re-read source for "${path}" — its source could not be read ` +
               `(usually a failed fetch: a network error or a GitHub API rate limit)` +
               (cause instanceof Error ? `: ${cause.message}` : '') +
-              '.'
+              '.',
           );
         }
       }
@@ -683,7 +694,7 @@ export class Bundler {
             `was never transpiled. This is usually a failed source fetch (a network error, ` +
             `or a GitHub API rate limit), not a transpiler bug` +
             (cause instanceof Error ? `: ${cause.message}` : '') +
-            '.'
+            '.',
         );
       }
       module = new Module(path, content, false, this);
@@ -768,7 +779,7 @@ export class Bundler {
       // likely failed to load (a failed fetch: network error or GitHub API rate limit).
       throw new BundlerError(
         `Asset "${id}" is not in the compilation tree — its source likely failed to load ` +
-          `(a failed fetch: a network error or a GitHub API rate limit).`
+          `(a failed fetch: a network error or a GitHub API rate limit).`,
       );
     } else {
       if (asset.compilationError != null) {
@@ -776,7 +787,7 @@ export class Bundler {
       } else if (asset.compiled == null) {
         throw new BundlerError(
           `Asset "${id}" has not been compiled — its source likely failed to load ` +
-            `(a failed fetch: a network error or a GitHub API rate limit).`
+            `(a failed fetch: a network error or a GitHub API rate limit).`,
         );
       }
     }
@@ -798,17 +809,21 @@ export class Bundler {
 
   private getNodeModuleFiles(moduleName: string, code?: string, packageJSON?: string): [string, string][] {
     return [
-      [`/node_modules/${moduleName}/package.json`, packageJSON ?? JSON.stringify({
-        name: moduleName,
-        main: "./index.js",
-      })],
-      [`/node_modules/${moduleName}/index.js`, code ?? DEFAULT_CODE]
-    ]
+      [
+        `/node_modules/${moduleName}/package.json`,
+        packageJSON ??
+          JSON.stringify({
+            name: moduleName,
+            main: './index.js',
+          }),
+      ],
+      [`/node_modules/${moduleName}/index.js`, code ?? DEFAULT_CODE],
+    ];
   }
 
   async addPreloadedModule(moduleName: string, code?: string, packageJSON?: string): Promise<void> {
     const files = this.getNodeModuleFiles(moduleName, code, packageJSON);
-    const manifest = files.filter(([filename, _]) => basename(filename) === 'package.json')
+    const manifest = files.filter(([filename, _]) => basename(filename) === 'package.json');
     if (manifest.length !== 1) {
       throw Error('addPreloadedModule did not find manifest for ' + moduleName);
     }
@@ -824,15 +839,15 @@ export class Bundler {
 
   async preloadModules(): Promise<void> {
     await Promise.all([
-      this.addPreloadedModule("path"),
+      this.addPreloadedModule('path'),
       // `fs` is backed by the shared filesystem (parent window over the Port),
       // not a CDN polyfill — so app-code writes reach the parent and reflect in
       // the editor.
-      this.addPreloadedModule("fs", SHARED_FS_MODULE_CODE),
-      this.addPreloadedModule("util"),
-      this.addPreloadedModule("assert"),
-      this.addPreloadedModule("module"),
-      this.addPreloadedModule("os"),
+      this.addPreloadedModule('fs', SHARED_FS_MODULE_CODE),
+      this.addPreloadedModule('util'),
+      this.addPreloadedModule('assert'),
+      this.addPreloadedModule('module'),
+      this.addPreloadedModule('os'),
       // this.addPreloadedModule("@internationalized/date"),
     ]);
   }
@@ -841,7 +856,7 @@ export class Bundler {
     // `pinnedSri` makes the immutable cache integrity-aware for this URL: it
     // never serves or persists bytes that don't match (cache-poisoning
     // prevention). Undefined for unpinned URLs (cached by URL as before).
-    return await (await retryFetch(url, { pinnedSri: integrity })).text()
+    return await (await retryFetch(url, { pinnedSri: integrity })).text();
   }
 
   /**
@@ -889,7 +904,10 @@ export class Bundler {
     if (expectedHashes) {
       const prefix = `/node_modules/${moduleName}/`;
       const result = await verifyVendoredFiles(
-        vendored.map((v) => ({ rel: v.path.startsWith(prefix) ? v.path.slice(prefix.length) : v.path, content: v.content })),
+        vendored.map((v) => ({
+          rel: v.path.startsWith(prefix) ? v.path.slice(prefix.length) : v.path,
+          content: v.content,
+        })),
         expectedHashes,
       );
       if (!result.ok) {
@@ -1076,9 +1094,7 @@ export class Bundler {
       const selfHosted = new Set(Object.keys(SELF_HOST_BASES));
       const gitForm = gitDependencyNames(declared);
       deps = Object.fromEntries(
-        Object.entries(declared).filter(
-          ([name]) => !selfHosted.has(name) && !gitForm.has(name),
-        ),
+        Object.entries(declared).filter(([name]) => !selfHosted.has(name) && !gitForm.has(name)),
       );
     } catch {
       // No/unreadable/unparseable package.json: the library still resolves by path, it
@@ -1099,9 +1115,7 @@ export class Bundler {
    * for something else and got yours" is exactly the kind of thing that surfaces later as
    * a mystery.
    */
-  private libraryContributedDependencies(
-    appDependencies: Record<string, string>,
-  ): Record<string, string> {
+  private libraryContributedDependencies(appDependencies: Record<string, string>): Record<string, string> {
     const contributed: Record<string, string> = {};
     for (const [libName, deps] of this.gitLibraryDependencies) {
       for (const [name, range] of Object.entries(deps)) {
@@ -1117,8 +1131,7 @@ export class Bundler {
         const existing = contributed[name];
         if (existing !== undefined && existing !== range) {
           logger.warn(
-            `Git libraries disagree on ${name} (${existing} vs ${range} from '${libName}'); ` +
-              `keeping ${existing}.`,
+            `Git libraries disagree on ${name} (${existing} vs ${range} from '${libName}'); ` + `keeping ${existing}.`,
           );
           continue;
         }
@@ -1265,7 +1278,9 @@ export class Bundler {
     // The specific mismatch kind (§5.7 transpile byte-check vs §3 frontmatter) goes in
     // the log; the wire `reason` stays the stable `spot-verify-mismatch` the parent keys on.
     logger.warn(
-      `Artifact spot-verify ${verdict.reason ?? 'mismatch'} at ${verdict.path} — all artifacts discarded for this session (UI_AS_APPS §8.14).`,
+      `Artifact spot-verify ${verdict.reason ?? 'mismatch'} at ${
+        verdict.path
+      } — all artifacts discarded for this session (UI_AS_APPS §8.14).`,
     );
     this.messageBus.sendMessage(ARTIFACT_DISTRUST, {
       commitSha: this.artifactStore.getCommitSha(),
@@ -1385,9 +1400,7 @@ export class Bundler {
       // commitSha) and disables the whole pre-transpiled artifact section until a new
       // commit clears it. A malformed sidecar is a build-output defect, not evidence of
       // tampering, and there is no reason to take the transpiled artifacts down with it.
-      logger.warn(
-        `MDX metadata sidecar unusable (${seed.unusable}) — live-scanning frontmatter instead.`,
-      );
+      logger.warn(`MDX metadata sidecar unusable (${seed.unusable}) — live-scanning frontmatter instead.`);
       // fall through to the live walk
     } else if (seed.present) {
       for (const [appPath, frontmatter] of seed.entries) this.seedMetadataEntry(appPath, frontmatter);
@@ -1439,30 +1452,33 @@ export class Bundler {
       } catch {
         return; // unreadable directory — skip, never fail the scan
       }
-      await Promise.all(names.map(async (name) => {
-        const full = `${dir}/${name}`;
-        let isDir: boolean;
-        try {
-          isDir = (await fsp.stat(full)).isDirectory();
-        } catch {
-          return; // vanished between readdir and stat — skip
-        }
-        if (isDir) await walk(full);
-        else if (full.match(re)) mdxFiles.push(full);
-      }));
+      await Promise.all(
+        names.map(async (name) => {
+          const full = `${dir}/${name}`;
+          let isDir: boolean;
+          try {
+            isDir = (await fsp.stat(full)).isDirectory();
+          } catch {
+            return; // vanished between readdir and stat — skip
+          }
+          if (isDir) await walk(full);
+          else if (full.match(re)) mdxFiles.push(full);
+        }),
+      );
     };
     await walk(APP_ROOT);
 
-    await Promise.all(mdxFiles.map(async (filepath) => {
-      try {
-        const source = await zenFsLayer.readFileAsync(filepath);
-        this.refreshMetadata(filepath, source);
-      } catch {
-        /* file vanished mid-scan — ignore (lazy refreshMetadata still covers it) */
-      }
-    }));
+    await Promise.all(
+      mdxFiles.map(async (filepath) => {
+        try {
+          const source = await zenFsLayer.readFileAsync(filepath);
+          this.refreshMetadata(filepath, source);
+        } catch {
+          /* file vanished mid-scan — ignore (lazy refreshMetadata still covers it) */
+        }
+      }),
+    );
   }
-
 
   /**
    * Lazily extracts MDX frontmatter metadata when a file is (re-)read during
@@ -1554,9 +1570,7 @@ export class Bundler {
     // the /app source-read + transpile cost lives in the separate ir.deps→ir.transpile
     // span. Lapping is a no-op off the first load.
     const bootNow = (): number =>
-      typeof performance !== 'undefined' && typeof performance.now === 'function'
-        ? performance.now()
-        : Date.now();
+      typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now();
     const bootPhases: Array<[string, number]> = [];
     let bootLast = bootNow();
     const bootLap = (name: string): void => {
@@ -1590,7 +1604,7 @@ export class Bundler {
 
       if (!changedFiles.length) {
         logger.debug('Skipping compilation, no changes detected');
-        return () => { };
+        return () => {};
       }
 
       // If it's a change and we don't have any hmr modules we simply reload the
@@ -1606,7 +1620,7 @@ export class Bundler {
       if (!this.hasHMR && changesNeedingHMR.length) {
         logger.debug('HMR is not enabled, doing a full page refresh');
         window.location.reload();
-        return () => { };
+        return () => {};
       }
     } else {
       // First load: files are read lazily from zenfs as the bundler traverses
@@ -1652,7 +1666,7 @@ export class Bundler {
       if (this._previousDepString != null && depString !== this._previousDepString) {
         logger.debug('Dependencies changed, reloading');
         location.reload();
-        return () => { };
+        return () => {};
       }
 
       this._previousDepString = depString;
@@ -1873,8 +1887,7 @@ export class Bundler {
     for (const filepath of [underAppRoot('/index.html'), underAppRoot('/public/index.html')]) {
       try {
         content = await this.fs.readFileAsync(filepath);
-      } catch (err) {
-      }
+      } catch (err) {}
       if (content) {
         return content;
       }

@@ -24,8 +24,7 @@ describe('MDX metadata is keyed by the absolute /app module path', () => {
 
     await h.bundler.preloadMDXMetadata();
 
-    const lastMetadata = (h.bundler as unknown as { lastMetadata: Map<string, Record<string, unknown>> })
-      .lastMetadata;
+    const lastMetadata = (h.bundler as unknown as { lastMetadata: Map<string, Record<string, unknown>> }).lastMetadata;
 
     // Asserted THROUGH the shared helper (R3-275): the sandbox and the SDK derive
     // this key space from one definition now, so the two sides can no longer diverge

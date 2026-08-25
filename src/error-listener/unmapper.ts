@@ -33,23 +33,18 @@ function count(search: string, string: string): number {
  * @param {number} [fileContents=3] The number of lines to provide before and after the line specified in the <code>StackFrame</code>.
  */
 async function unmap(
-  _fileUri: string | { uri: string, contents: string },
+  _fileUri: string | { uri: string; contents: string },
   frames: StackFrame[],
-  contextLines: number = 3
+  contextLines: number = 3,
 ): Promise<StackFrame[]> {
   let fileContents: string | null = typeof _fileUri === 'object' ? _fileUri.contents : null;
   let fileUri = typeof _fileUri === 'object' ? _fileUri.uri : _fileUri;
   if (fileContents == null) {
-    fileContents = await fetch(fileUri).then(res => res.text());
+    fileContents = await fetch(fileUri).then((res) => res.text());
   }
   const map = await getSourceMap(fileUri, fileContents as string);
-  return frames.map(frame => {
-    const {
-      functionName,
-      lineNumber,
-      columnNumber,
-      _originalLineNumber,
-    } = frame;
+  return frames.map((frame) => {
+    const { functionName, lineNumber, columnNumber, _originalLineNumber } = frame;
     if (_originalLineNumber != null) {
       return frame;
     }
@@ -63,13 +58,13 @@ async function unmap(
     const fN: string = fileName;
     const source = map
       .getSources()
-      .map(s => s.replace(/[\\]+/g, '/'))
-      .filter(p => {
+      .map((s) => s.replace(/[\\]+/g, '/'))
+      .filter((p) => {
         p = path.normalize(p);
         const i = p.lastIndexOf(fN);
         return i !== -1 && i === p.length - fN.length;
       })
-      .map(p => ({
+      .map((p) => ({
         token: p,
         seps: count(path.sep, path.normalize(p)),
         penalties: count('node_modules', p) + count('~', p),
@@ -82,25 +77,14 @@ async function unmap(
         return Math.sign(a.penalties - b.penalties);
       });
     if (source.length < 1 || lineNumber == null) {
-      return new StackFrame(
-        null,
-        null,
-        null,
-        null,
-        null,
-        functionName,
-        fN,
-        lineNumber,
-        columnNumber,
-        null
-      );
+      return new StackFrame(null, null, null, null, null, functionName, fN, lineNumber, columnNumber, null);
     }
     const sourceT = source[0].token;
     const { line, column } = map.getGeneratedPosition(
       sourceT,
       lineNumber,
       // @ts-ignore
-      columnNumber
+      columnNumber,
     );
     const originalSource = map.getSource(sourceT);
     return new StackFrame(
@@ -113,7 +97,7 @@ async function unmap(
       fN,
       lineNumber,
       columnNumber,
-      getLinesAround(lineNumber, contextLines, originalSource)
+      getLinesAround(lineNumber, contextLines, originalSource),
     );
   });
 }

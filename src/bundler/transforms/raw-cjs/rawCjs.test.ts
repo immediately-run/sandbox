@@ -116,7 +116,10 @@ describe('RawCjsTransformer', () => {
   it('returns dependency source byte-for-byte unchanged + collected deps', async () => {
     // Modern syntax preset-env WOULD lower (optional chaining) — proving no transpile.
     const code = 'var react=require("react");var s=require("scheduler");module.exports=react?.render;';
-    const result = await new RawCjsTransformer().transform({ module: mod('/node_modules/react-dom/index.js', code), code });
+    const result = await new RawCjsTransformer().transform({
+      module: mod('/node_modules/react-dom/index.js', code),
+      code,
+    });
     if (!('dependencies' in result)) {
       throw new Error('expected a transpilation result, got a BundlerError');
     }

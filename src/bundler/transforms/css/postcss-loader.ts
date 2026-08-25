@@ -56,7 +56,7 @@ export default async function (ctx: ITranspilationContext): Promise<ITranspilati
         if (m.type === 'dependency') {
           dependencies.add(m.file);
         }
-      })
+      }),
     );
   }
 

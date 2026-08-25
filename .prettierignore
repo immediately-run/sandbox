@@ -1,2 +1,11 @@
 fixture
 fixtures
+
+# Build-time generated bundles (scripts/gen-authoring-{libs,types}.mjs). Megabytes of
+# embedded .d.ts text, regenerated on every prebuild and gitignored — formatting them
+# is pointless and slow. They also only EXIST after a generate step, so leaving them in
+# scope would make `format:check` pass in CI (where it runs before the generators) and
+# fail locally (where it runs after) — exactly the local/CI divergence ways_of_working §4
+# warns about.
+src/services/authoring/bundled-libs.generated.ts
+src/services/authoring/bundled-types.generated.ts

@@ -1,12 +1,7 @@
 import { IDisposable } from '../utils/Disposable';
 import { Emitter } from '../utils/emitter';
 import { IFrameParentMessageBus } from '../protocol/iframe';
-import {
-  AUTH_STATE_MESSAGE,
-  SandboxAuthState,
-  UNKNOWN_AUTH_STATE,
-  authStatesEqual,
-} from './authState';
+import { AUTH_STATE_MESSAGE, SandboxAuthState, UNKNOWN_AUTH_STATE, authStatesEqual } from './authState';
 
 /**
  * Caches the auth/account state the parent relays over postMessage and exposes

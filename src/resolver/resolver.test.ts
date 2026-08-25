@@ -456,7 +456,7 @@ describe('resolve', () => {
           extensions: ['.ts', '.tsx', '.js', '.jsx'],
           isFile,
           readFile,
-        })
+        }),
       ).toThrow();
     });
 

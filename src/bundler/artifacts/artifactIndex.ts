@@ -57,12 +57,7 @@ export interface EmbeddedToolchainIdentity {
 }
 
 /** Why a single `files` entry was skipped (§5.5 fall-through is per-file). */
-export type SeedRejectReason =
-  | 'bad-path'
-  | 'not-in-manifest'
-  | 'out-escapes-artifacts'
-  | 'dirty'
-  | 'srcsha-mismatch';
+export type SeedRejectReason = 'bad-path' | 'not-in-manifest' | 'out-escapes-artifacts' | 'dirty' | 'srcsha-mismatch';
 
 export type SeedValidation =
   | { ok: true; path: string; out: string; deps: string[] }
@@ -197,10 +192,7 @@ export function validateSeedEntry(
  * readable-layer-only. The writable-layer set is parent-attested (it computes
  * `dirtyPaths`, §5.2), so this check is cheap.
  */
-export function readableLayerOnly(
-  seedingInputPaths: readonly string[],
-  writableLayer: ReadonlySet<string>,
-): boolean {
+export function readableLayerOnly(seedingInputPaths: readonly string[], writableLayer: ReadonlySet<string>): boolean {
   return seedingInputPaths.every((p) => !writableLayer.has(p));
 }
 

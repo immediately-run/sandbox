@@ -65,18 +65,13 @@ const libraryRepo = (
   '.immediately.run/artifacts/transpiled/src/greet.ts.js': LIB_ARTIFACT,
 });
 
-async function mountLibraryFs(
-  mountPath: string,
-  files: Record<string, string>,
-): Promise<() => void> {
+async function mountLibraryFs(mountPath: string, files: Record<string, string>): Promise<() => void> {
   const backing = await resolveMountConfig({ backend: InMemory });
   await fs.promises.mkdir(mountPath, { recursive: true }).catch(() => undefined);
   mount(mountPath, backing);
   for (const [rel, content] of Object.entries(files)) {
     const abs = `${mountPath}/${rel}`;
-    await fs.promises
-      .mkdir(abs.slice(0, abs.lastIndexOf('/')), { recursive: true })
-      .catch(() => undefined);
+    await fs.promises.mkdir(abs.slice(0, abs.lastIndexOf('/')), { recursive: true }).catch(() => undefined);
     await fs.promises.writeFile(abs, content);
   }
   return () => {
@@ -130,7 +125,7 @@ describe("a git-mounted library's own artifacts are seeded and consumed", () => 
     expect((await h.bundler.seedArtifacts(EMPTY_DIRTY)).seeded).toBe(0);
   });
 
-  it("skips a library built with a different toolchain WITHOUT costing the app its own", async () => {
+  it('skips a library built with a different toolchain WITHOUT costing the app its own', async () => {
     // §4.4 is per-root: a stale library must degrade to live transpile for itself alone.
     await register(libraryRepo({ toolchainHash: 'not-our-toolchain' }));
     expect((await h.bundler.seedArtifacts(EMPTY_DIRTY)).seeded).toBe(0);

@@ -15,7 +15,9 @@ describe('runTypecheck', () => {
   });
 
   it('returns no diagnostics for a clean file', () => {
-    const { diagnostics } = runTypecheck({ files: [{ path: 'ok.ts', content: 'export const add = (a: number, b: number): number => a + b;' }] });
+    const { diagnostics } = runTypecheck({
+      files: [{ path: 'ok.ts', content: 'export const add = (a: number, b: number): number => a + b;' }],
+    });
     expect(diagnostics).toEqual([]);
   });
 

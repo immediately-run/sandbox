@@ -1,9 +1,4 @@
-import {
-  APP_ROOT,
-  CONTRIBUTE_MANIFEST_PATH,
-  stripAppRoot,
-  underAppRoot,
-} from '@immediately-run/platform-constants';
+import { APP_ROOT, CONTRIBUTE_MANIFEST_PATH, stripAppRoot, underAppRoot } from '@immediately-run/platform-constants';
 
 /**
  * The app-root path space now has ONE definition, in
@@ -25,5 +20,3 @@ export { APP_ROOT, underAppRoot, stripAppRoot };
  * reads its optional `lockset` section (PRETRANSPILED_ARTIFACTS_SPEC §5.4).
  */
 export const MANIFEST_SIDECAR_PATH = `/${CONTRIBUTE_MANIFEST_PATH}`;
-
-

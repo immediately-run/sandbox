@@ -34,10 +34,7 @@ describe('G0-0 bundler evaluate smoke (run the compiled graph + edit pickup)', (
     // re-transpile); a real app enables HMR by registering `module.hot`, so do the
     // same here to exercise the incremental edit path.
     h.bundler.enableHMR();
-    await fs.promises.writeFile(
-      underAppRoot('/src/answer.ts'),
-      'const answer: number = 99;\nexport default answer;\n',
-    );
+    await fs.promises.writeFile(underAppRoot('/src/answer.ts'), 'const answer: number = 99;\nexport default answer;\n');
     h.bundler.markFilesChanged([underAppRoot('/src/answer.ts')]);
     h.sentMessages.length = 0;
 

@@ -53,9 +53,7 @@ const knownNames = () => {
   const frame = JSON.parse(
     readFileSync(require.resolve('@immediately-run/sandbox-protocol/snapshots/sandbox'), 'utf8'),
   );
-  const sdk = JSON.parse(
-    readFileSync(require.resolve('@immediately-run/sandbox-protocol/snapshots/sdk'), 'utf8'),
-  );
+  const sdk = JSON.parse(readFileSync(require.resolve('@immediately-run/sandbox-protocol/snapshots/sdk'), 'utf8'));
   return {
     frame: new Set(Object.keys(frame.channels)),
     all: new Set([...Object.keys(frame.channels), ...Object.keys(sdk.channels)]),

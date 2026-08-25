@@ -76,10 +76,20 @@ describe('isFastPathEligible', () => {
     expect(eligible({ 'package.json': '{"name":"pkg"}', 'index.js': 'x' })).toBe(true);
   });
   it('is INELIGIBLE with a browser-object remap', () => {
-    expect(eligible({ 'package.json': JSON.stringify({ main: 'index.js', browser: { './a.js': './b.js' } }), 'index.js': 'x' })).toBe(false);
+    expect(
+      eligible({
+        'package.json': JSON.stringify({ main: 'index.js', browser: { './a.js': './b.js' } }),
+        'index.js': 'x',
+      }),
+    ).toBe(false);
   });
   it('is INELIGIBLE with an exports subpath map', () => {
-    expect(eligible({ 'package.json': JSON.stringify({ exports: { '.': './index.js', './feature': './feature.js' } }), 'index.js': 'x' })).toBe(false);
+    expect(
+      eligible({
+        'package.json': JSON.stringify({ exports: { '.': './index.js', './feature': './feature.js' } }),
+        'index.js': 'x',
+      }),
+    ).toBe(false);
   });
   it('is INELIGIBLE with an alias field (adds globs)', () => {
     expect(eligible({ 'package.json': JSON.stringify({ alias: { './a': './b' } }), 'index.js': 'x' })).toBe(false);
@@ -151,7 +161,12 @@ describe('resolveFromCdnLayout', () => {
   });
   it('falls through (null) for an ineligible (aliased) package', () => {
     const pkgs = {
-      pkg: { 'package.json': JSON.stringify({ main: 'index.js', browser: { './lib/a.js': './lib/b.js' } }), 'index.js': 'x', 'lib/a.js': 'a', 'lib/b.js': 'b' },
+      pkg: {
+        'package.json': JSON.stringify({ main: 'index.js', browser: { './lib/a.js': './lib/b.js' } }),
+        'index.js': 'x',
+        'lib/a.js': 'a',
+        'lib/b.js': 'b',
+      },
     };
     expect(run('./lib/a', '/node_modules/pkg/index.js', pkgs)).toBeNull();
   });

@@ -76,12 +76,12 @@ export class DelayedEmitter<T> extends Emitter<T> {
   enable(isEnabled = true) {
     this.enabled = isEnabled;
     if (isEnabled) {
-      this.emptyQueue()
+      this.emptyQueue();
     }
   }
 
   dispose(): void {
     this.emptyQueue();
-    super.dispose()
+    super.dispose();
   }
 }

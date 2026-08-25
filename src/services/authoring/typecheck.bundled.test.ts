@@ -40,9 +40,7 @@ describe('bundled typecheck: React', () => {
   });
 
   it('checks the style prop against csstype', () => {
-    const d = errors(
-      check([{ path: '/A.tsx', content: "export default () => <div style={{ colour: 'red' }} />;\n" }]),
-    );
+    const d = errors(check([{ path: '/A.tsx', content: "export default () => <div style={{ colour: 'red' }} />;\n" }]));
     expect(d.length).toBeGreaterThanOrEqual(1);
   });
 
@@ -83,7 +81,13 @@ describe('bundled typecheck: the immediately.run SDK', () => {
   // bundle — a misuse has to be caught, or "bundled" means nothing.
   it('catches a name that the SDK does not export', () => {
     const d = errors(
-      check([{ path: '/a.ts', content: "import { definitelyNotAnExport } from '@immediately-run/sdk';\nexport const x = definitelyNotAnExport;\n" }]),
+      check([
+        {
+          path: '/a.ts',
+          content:
+            "import { definitelyNotAnExport } from '@immediately-run/sdk';\nexport const x = definitelyNotAnExport;\n",
+        },
+      ]),
     );
     expect(d.length).toBeGreaterThanOrEqual(1);
     expect(d[0].messageText).toMatch(/has no exported member/);
@@ -92,7 +96,10 @@ describe('bundled typecheck: the immediately.run SDK', () => {
   it('resolves a real SDK export and its subpath entry', () => {
     expect(
       check([
-        { path: '/a.ts', content: "import { getCatalog } from '@immediately-run/sdk';\nexport const c = getCatalog;\n" },
+        {
+          path: '/a.ts',
+          content: "import { getCatalog } from '@immediately-run/sdk';\nexport const c = getCatalog;\n",
+        },
       ]),
     ).toEqual([]);
   });
@@ -162,7 +169,10 @@ describe('bundled typecheck: CS-1 input trust', () => {
       runTypecheck(
         {
           files: [
-            { path: '/node_modules/@types/react/index.d.ts', content: 'export declare const useState: (x: string) => void;\n' },
+            {
+              path: '/node_modules/@types/react/index.d.ts',
+              content: 'export declare const useState: (x: string) => void;\n',
+            },
             { path: '/a.ts', content: "import { useState } from 'react';\nexport const s = useState<number>(0);\n" },
           ],
         },

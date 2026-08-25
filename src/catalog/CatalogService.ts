@@ -1,12 +1,7 @@
 import { IDisposable } from '../utils/Disposable';
 import { Emitter } from '../utils/emitter';
 import { IFrameParentMessageBus } from '../protocol/iframe';
-import {
-  ApiMethod,
-  DEFAULT_CATALOG,
-  CATALOG_MESSAGE,
-  catalogsEqual,
-} from './catalogState';
+import { ApiMethod, DEFAULT_CATALOG, CATALOG_MESSAGE, catalogsEqual } from './catalogState';
 
 /**
  * Caches the grant-filtered method catalog (§5.5) the parent relays over

@@ -73,7 +73,7 @@ export class Module {
             module: this,
             code,
           },
-          config
+          config,
         );
 
         if (transformationResult instanceof BundlerError) {
@@ -84,7 +84,7 @@ export class Module {
           await Promise.all(
             Array.from(transformationResult.dependencies).map((d) => {
               return this.addDependency(d);
-            })
+            }),
           );
         }
       }

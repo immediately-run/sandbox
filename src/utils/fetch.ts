@@ -96,9 +96,7 @@ export interface ParentImmutableFetchResult {
 // all, so immutable fetches are forwarded to the parent window, which serves
 // them from its own persistent cache. Registered by SandpackInstance (which
 // owns the message bus) to avoid an import cycle into the protocol layer.
-let parentImmutableFetch:
-  | ((url: string, integrity?: string) => Promise<ParentImmutableFetchResult>)
-  | undefined;
+let parentImmutableFetch: ((url: string, integrity?: string) => Promise<ParentImmutableFetchResult>) | undefined;
 
 export const registerParentImmutableFetch = (
   fn: (url: string, integrity?: string) => Promise<ParentImmutableFetchResult>,

@@ -126,8 +126,7 @@ const MAX_DEPTH = 2;
  */
 const describeType = (checker, type, node, depth = 0) => {
   if (!type) return { type: 'unknown' };
-  const text = (t = type) =>
-    normalize(checker.typeToString(t, undefined, ts.TypeFormatFlags.NoTruncation));
+  const text = (t = type) => normalize(checker.typeToString(t, undefined, ts.TypeFormatFlags.NoTruncation));
   if (depth > MAX_DEPTH) return { type: text() };
   if (checker.isArrayType?.(type)) {
     const [el] = checker.getTypeArguments(type);
@@ -141,9 +140,7 @@ const describeType = (checker, type, node, depth = 0) => {
   // `boolean` is internally `true | false`; keep it spelled as itself.
   if (type.flags & ts.TypeFlags.Boolean) return { type: 'boolean' };
   if (type.isUnion?.()) {
-    const members = type.types
-      .map((t) => describeType(checker, t, node, depth + 1))
-      .map((d) => JSON.stringify(d));
+    const members = type.types.map((t) => describeType(checker, t, node, depth + 1)).map((d) => JSON.stringify(d));
     return { union: [...new Set(members)].sort().map((j) => JSON.parse(j)) };
   }
   const isObject = Boolean(type.flags & ts.TypeFlags.Object);
@@ -172,11 +169,7 @@ const readsOf = (node, subject) => {
   const reads = new Set();
   if (!node || !subject) return [];
   const walk = (n) => {
-    if (
-      ts.isPropertyAccessExpression(n) &&
-      ts.isIdentifier(n.expression) &&
-      n.expression.text === subject
-    ) {
+    if (ts.isPropertyAccessExpression(n) && ts.isIdentifier(n.expression) && n.expression.text === subject) {
       reads.add(n.name.text);
     }
     if (
@@ -253,9 +246,7 @@ export const extract = (opts = {}) => {
       if (ts.isCallExpression(n)) {
         n.arguments.forEach((arg, i) => {
           if (!ts.isIdentifier(arg) || arg.text !== subject) return;
-          const target = ts.isPropertyAccessExpression(n.expression)
-            ? n.expression.name
-            : n.expression;
+          const target = ts.isPropertyAccessExpression(n.expression) ? n.expression.name : n.expression;
           const sym = checker.getSymbolAtLocation(target);
           const decl = sym?.valueDeclaration ?? sym?.declarations?.[0];
           if (!decl || !ts.isFunctionLike(decl)) return;
@@ -299,9 +290,7 @@ export const extract = (opts = {}) => {
     const visit = (node) => {
       // ── declared message shapes: `interface X { type: typeof NAME; … }` ──────
       if (ts.isInterfaceDeclaration(node) || ts.isTypeLiteralNode(node)) {
-        const disc = node.members.find(
-          (m) => ts.isPropertySignature(m) && m.name?.getText() === 'type' && m.type,
-        );
+        const disc = node.members.find((m) => ts.isPropertySignature(m) && m.name?.getText() === 'type' && m.type);
         if (disc) {
           const t = checker.getTypeAtLocation(disc.type);
           if (t.isStringLiteral?.()) {
@@ -328,11 +317,7 @@ export const extract = (opts = {}) => {
             const name = asLiteral(clause.expression);
             if (!name) continue;
             const reads = [...new Set([...readsOf(clause, subj), ...followCalls(clause, subj)])].sort();
-            record(
-              name,
-              { kind: 'message', direction: 'host->app', payload: reads.length ? { reads } : {} },
-              clause,
-            );
+            record(name, { kind: 'message', direction: 'host->app', payload: reads.length ? { reads } : {} }, clause);
           }
         }
       }
@@ -358,14 +343,8 @@ export const extract = (opts = {}) => {
             scope = scope.parent;
           }
           const guard = ts.isIfStatement(scope.parent) ? scope.parent : scope;
-          const reads = [
-            ...new Set([...readsOf(guard, subj), ...followCalls(guard, subj)]),
-          ].sort();
-          record(
-            name,
-            { kind: 'message', direction: 'host->app', payload: reads.length ? { reads } : {} },
-            node,
-          );
+          const reads = [...new Set([...readsOf(guard, subj), ...followCalls(guard, subj)])].sort();
+          record(name, { kind: 'message', direction: 'host->app', payload: reads.length ? { reads } : {} }, node);
         }
       }
 
@@ -374,15 +353,13 @@ export const extract = (opts = {}) => {
         const callee = ts.isIdentifier(node.expression)
           ? node.expression.text
           : ts.isPropertyAccessExpression(node.expression)
-            ? node.expression.name.text
-            : undefined;
+          ? node.expression.name.text
+          : undefined;
         if (callee === 'sendMessage') {
           const name = asLiteral(node.arguments[0]);
           if (name) {
             const arg = node.arguments[1];
-            const payload = arg
-              ? describeType(checker, checker.getTypeAtLocation(arg), arg)
-              : { fields: [] };
+            const payload = arg ? describeType(checker, checker.getTypeAtLocation(arg), arg) : { fields: [] };
             record(name, { kind: 'message', direction: 'app->host', payload }, node);
           }
         }
@@ -390,8 +367,7 @@ export const extract = (opts = {}) => {
 
       // ── the `protocol-${scheme}` family ─────────────────────────────────────
       if (ts.isTemplateExpression(node)) {
-        const template =
-          node.head.text + node.templateSpans.map((s) => `<scheme>${s.literal.text}`).join('');
+        const template = node.head.text + node.templateSpans.map((s) => `<scheme>${s.literal.text}`).join('');
         if (template.startsWith('protocol-')) {
           const fam = (dynamicFamilies[template] ??= { schemes: [], sites: [] });
           fam.sites = [...new Set([...fam.sites, site(node)])].sort();
@@ -432,9 +408,7 @@ export const extract = (opts = {}) => {
   if (busSrc) {
     const visitBus = (node) => {
       if (ts.isCallExpression(node)) {
-        const callee = ts.isPropertyAccessExpression(node.expression)
-          ? node.expression.name.text
-          : undefined;
+        const callee = ts.isPropertyAccessExpression(node.expression) ? node.expression.name.text : undefined;
         const arg = node.arguments[0];
         if (callee === '_postMessage' && arg && ts.isObjectLiteralExpression(arg)) {
           envelopes.outbound = describeType(checker, checker.getTypeAtLocation(arg), arg);
@@ -453,11 +427,7 @@ export const extract = (opts = {}) => {
     // The reply-matching fields: what `protocolRequest`'s listener reads off a reply.
     const replyReads = new Set();
     const collectReply = (node) => {
-      if (
-        ts.isPropertyAccessExpression(node) &&
-        ts.isIdentifier(node.expression) &&
-        node.expression.text === 'msg'
-      ) {
+      if (ts.isPropertyAccessExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === 'msg') {
         replyReads.add(node.name.text);
       }
       ts.forEachChild(node, collectReply);
@@ -546,8 +516,7 @@ const main = () => {
   const { removed, added, changed } = compare(mergeHandKeys(current, snapshot), snapshot);
   if (!removed.length && !added.length && !changed.length) {
     console.log(
-      `PASS  this frame's source matches @immediately-run/sandbox-protocol@${pkgVersion} ` +
-        `(${count} wire names).`,
+      `PASS  this frame's source matches @immediately-run/sandbox-protocol@${pkgVersion} ` + `(${count} wire names).`,
     );
     return;
   }
@@ -609,7 +578,11 @@ const selfTest = () => {
     ],
     [
       'a RENAMED dispatch-case name arriving from the pinned contract',
-      patchFile(CONTRACT_DTS, 'export declare const REPO_MOUNT = "repo-mount";', 'export declare const REPO_MOUNT = "repository-mount";'),
+      patchFile(
+        CONTRACT_DTS,
+        'export declare const REPO_MOUNT = "repo-mount";',
+        'export declare const REPO_MOUNT = "repository-mount";',
+      ),
     ],
     [
       'a payload field made OPTIONAL (name unchanged)',
@@ -622,9 +595,13 @@ const selfTest = () => {
     ],
     [
       'a payload field TYPE change (name unchanged)',
-      patchOf('theme/themeState.ts', "export type HostTheme = 'light' | 'dark';", "export type HostTheme = 'light' | 'dark' | 'auto';"),
+      patchOf(
+        'theme/themeState.ts',
+        "export type HostTheme = 'light' | 'dark';",
+        "export type HostTheme = 'light' | 'dark' | 'auto';",
+      ),
     ],
-    ['a DELETED outbound call site', patchOf('index.ts', "this.messageBus.sendMessage(REQUEST_MOUNTS_MESSAGE);", '')],
+    ['a DELETED outbound call site', patchOf('index.ts', 'this.messageBus.sendMessage(REQUEST_MOUNTS_MESSAGE);', '')],
   ];
 
   let ok = 0;
@@ -662,7 +639,6 @@ const selfTest = () => {
     process.exit(1);
   }
 };
-
 
 // ── --audit <other-snapshot.json>: the cross-repo divergence table ────────────
 /*
@@ -709,9 +685,7 @@ const fieldNames = (entry) => {
 
 const typeSig = (entry) => {
   const fields = entry?.payload?.fields;
-  return fields
-    ? JSON.stringify(fields.map((f) => [f.name, f.optional, f.type ?? f.union ?? f.fields]))
-    : null;
+  return fields ? JSON.stringify(fields.map((f) => [f.name, f.optional, f.type ?? f.union ?? f.fields])) : null;
 };
 
 const audit = (otherPath) => {
@@ -743,8 +717,7 @@ const audit = (otherPath) => {
     const onlyB = fb.names.filter((n) => !setA.has(n));
     // Backticked: this table is pasted into the MDX roadmap item, where a bare
     // `{a,b}` is parsed as an MDX expression and fails the corpus safe-surface check.
-    const show =
-      `${mine.repo}: \`{${fa.names.join(',')}}\` vs ` + `${other.repo}: \`{${fb.names.join(',')}}\``;
+    const show = `${mine.repo}: \`{${fa.names.join(',')}}\` vs ` + `${other.repo}: \`{${fb.names.join(',')}}\``;
     let cls;
     let note = '';
     if (fa.typed && fb.typed) {
@@ -788,9 +761,7 @@ const audit = (otherPath) => {
         .join(', '),
   );
   const divergent = rows
-    .filter(
-      ([, c]) => c === 'divergent-declared' || c === 'divergent-reads' || c === 'declared-incomplete',
-    )
+    .filter(([, c]) => c === 'divergent-declared' || c === 'divergent-reads' || c === 'declared-incomplete')
     .map(([n]) => n);
   console.log(
     divergent.length

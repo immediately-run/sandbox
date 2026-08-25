@@ -37,13 +37,13 @@ export const crashWithFrames = (bundler: Bundler, crash: (record: ErrorRecord) =
 export function listenToRuntimeErrors(
   bundler: Bundler,
   crash: (record: ErrorRecord) => void,
-  filename: string = '/bundle.js'
+  filename: string = '/bundle.js',
 ) {
   const crashWithFramesRunTime = crashWithFrames(bundler, crash);
 
   const unregisterError = registerUnhandledError(window, (error) => crashWithFramesRunTime(error, false));
   const unregisterUnhandledRejection = registerUnhandledRejection(window, (error) =>
-    crashWithFramesRunTime(error, true)
+    crashWithFramesRunTime(error, true),
   );
   registerStackTraceLimit();
   const unregisterReactStack = registerReactStack();
@@ -56,7 +56,7 @@ export function listenToRuntimeErrors(
         // @ts-ignore
         __unmap_source: filename,
       },
-      false
+      false,
     );
   });
 

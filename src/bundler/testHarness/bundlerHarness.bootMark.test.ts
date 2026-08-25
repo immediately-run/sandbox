@@ -15,9 +15,7 @@ describe('ir.sandbox.boot marker', () => {
   afterAll(() => h.teardown());
 
   const irMarks = () =>
-    h.sentMessages
-      .filter((m) => m.type === 'ir-marker')
-      .map((m) => (m.data as { name: string }).name);
+    h.sentMessages.filter((m) => m.type === 'ir-marker').map((m) => (m.data as { name: string }).name);
 
   it('emits exactly one ir.sandbox.boot on the first compile, as a bare mark', () => {
     const boots = h.sentMessages.filter(

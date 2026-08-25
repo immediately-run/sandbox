@@ -48,7 +48,7 @@ interface IFoundPackageJSON {
 function* loadPackageJSON(
   filepath: string,
   opts: IResolveOptions,
-  rootDir: string = '/'
+  rootDir: string = '/',
 ): Generator<any, IFoundPackageJSON | null, any> {
   const directories = getParentDirectories(filepath, rootDir);
   for (const directory of directories) {
@@ -58,7 +58,7 @@ function* loadPackageJSON(
       try {
         packageContent = processPackageJSON(
           JSON.parse(yield* opts.readFile(packageFilePath)),
-          pathUtils.dirname(packageFilePath)
+          pathUtils.dirname(packageFilePath),
         );
         opts.resolverCache.set(packageFilePath, packageContent);
       } catch (err) {
@@ -204,7 +204,7 @@ function* findPackageJSON(filepath: string, opts: IResolveOptions): Generator<an
 function* expandFile(
   filepath: string,
   opts: IResolveOptions,
-  expandCount: number = 0
+  expandCount: number = 0,
 ): Generator<any, string | null, any> {
   const pkg = yield* findPackageJSON(filepath, opts);
 
@@ -269,7 +269,7 @@ function* getTSConfig(opts: IResolveOptions): Generator<any, ProcessedTSConfig |
 
 export const resolver = gensync<(moduleSpecifier: string, inputOpts: IResolveOptionsInput) => string>(function* resolve(
   moduleSpecifier,
-  inputOpts
+  inputOpts,
 ): Generator<any, string, any> {
   const normalizedSpecifier = normalizeModuleSpecifier(moduleSpecifier);
   const opts = normalizeResolverOptions(inputOpts);

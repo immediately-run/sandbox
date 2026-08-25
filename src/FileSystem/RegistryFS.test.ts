@@ -26,7 +26,12 @@ function fixture(): { registry: ModuleRegistry; fetcher: jest.Mock } {
     },
     [],
   );
-  const babelRuntime = new NodeModule('@babel/runtime', '7.24.0', { 'helpers/esm/x.js': inlined('export const x = 1;') }, []);
+  const babelRuntime = new NodeModule(
+    '@babel/runtime',
+    '7.24.0',
+    { 'helpers/esm/x.js': inlined('export const x = 1;') },
+    [],
+  );
   const fetcher = jest.fn<Promise<string>, [string, string, string]>(async () => 'FETCHED CONTENT');
   return { registry: stubRegistry([react, babelRuntime]), fetcher: fetcher as jest.Mock };
 }
@@ -209,14 +214,19 @@ describe('RegistryFS (mounted in a real ZenFS VFS)', () => {
   });
 
   it('rejects an overwrite of an existing dependency file with EROFS', async () => {
-    await expect(fs.promises.writeFile('/node_modules/react/index.js', 'hacked')).rejects.toMatchObject({ code: 'EROFS' });
+    await expect(fs.promises.writeFile('/node_modules/react/index.js', 'hacked')).rejects.toMatchObject({
+      code: 'EROFS',
+    });
   });
 
   it('rejects NEW-file creation under the mount with EROFS (not a silent drop)', async () => {
     await expect(fs.promises.writeFile('/node_modules/react/evil.js', 'evil')).rejects.toMatchObject({ code: 'EROFS' });
     // the rejection is real: the file never came into existence
-    expect(await fs.promises.readFile('/node_modules/react/evil.js', 'utf8').then(() => 'exists').catch(() => 'absent')).toBe(
-      'absent',
-    );
+    expect(
+      await fs.promises
+        .readFile('/node_modules/react/evil.js', 'utf8')
+        .then(() => 'exists')
+        .catch(() => 'absent'),
+    ).toBe('absent');
   });
 });

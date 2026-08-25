@@ -1,15 +1,8 @@
-import {
-  prettyModuleName,
-  formatCircularImport,
-  CircularImportError,
-  detectCycle,
-} from './circularImport';
+import { prettyModuleName, formatCircularImport, CircularImportError, detectCycle } from './circularImport';
 
 describe('prettyModuleName', () => {
   it('strips the virtual /node_modules/ prefix', () => {
-    expect(prettyModuleName('/node_modules/@immediately-run/sdk/runtime.js')).toBe(
-      '@immediately-run/sdk/runtime.js',
-    );
+    expect(prettyModuleName('/node_modules/@immediately-run/sdk/runtime.js')).toBe('@immediately-run/sdk/runtime.js');
   });
   it('leaves app paths untouched', () => {
     expect(prettyModuleName('/app/src/index.tsx')).toBe('/app/src/index.tsx');

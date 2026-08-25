@@ -52,7 +52,7 @@ async function map(bundler: Bundler, frames: StackFrame[], contextLines: number 
           }
         }
       }
-    })
+    }),
   );
 
   return frames.map((frame) => {
@@ -83,7 +83,7 @@ async function map(bundler: Bundler, frames: StackFrame[], contextLines: number 
         filepath,
         lineNumber,
         columnNumber,
-        getLinesAround(lineNumber, contextLines, fileSource)
+        getLinesAround(lineNumber, contextLines, fileSource),
       );
     }
 
@@ -100,7 +100,7 @@ async function map(bundler: Bundler, frames: StackFrame[], contextLines: number 
       source,
       line,
       column,
-      getLinesAround(line, contextLines, originalSource)
+      getLinesAround(line, contextLines, originalSource),
     );
   });
 }

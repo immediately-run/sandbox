@@ -1,13 +1,6 @@
 import { IDisposable } from '../utils/Disposable';
 import { Emitter } from '../utils/emitter';
-import {
-  SandboxMount,
-  MountChange,
-  MountRemoveReason,
-  RemovedMount,
-  mountKey,
-  mountListsEqual,
-} from './mountState';
+import { SandboxMount, MountChange, MountRemoveReason, RemovedMount, mountKey, mountListsEqual } from './mountState';
 
 /**
  * Caches the set of mounts currently available to the sandbox and exposes it to
@@ -40,9 +33,7 @@ export class MountService {
    *  `reason` (AM2-4) is surfaced on the removed descriptor delivered to listeners
    *  so app code can say *why* the filesystem vanished; defaults to `'revoked'`. */
   remove(keyOrPath: string, reason: MountRemoveReason = 'revoked'): void {
-    const removed: RemovedMount[] = this.mounts
-      .filter((m) => mountKey(m) === keyOrPath)
-      .map((m) => ({ ...m, reason }));
+    const removed: RemovedMount[] = this.mounts.filter((m) => mountKey(m) === keyOrPath).map((m) => ({ ...m, reason }));
     this.setMounts(
       this.mounts.filter((m) => mountKey(m) !== keyOrPath),
       removed,

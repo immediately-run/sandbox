@@ -1,12 +1,4 @@
-import {
-  configure,
-  fs,
-  mount,
-  umount,
-  resolveMountConfig,
-  InMemory,
-  type FileSystem,
-} from '@zenfs/core';
+import { configure, fs, mount, umount, resolveMountConfig, InMemory, type FileSystem } from '@zenfs/core';
 
 import { APP_ROOT } from '../../fsLayout';
 import { RegistryFileFetcher } from '../../FileSystem/RegistryFS';
@@ -40,10 +32,14 @@ import { RegistryFileFetcher } from '../../FileSystem/RegistryFS';
 
 /** A minimal fixture app: enough to exercise transpile + a CSS import + a dep. */
 export const FIXTURE_APP: Record<string, string> = {
-  'package.json': JSON.stringify({ name: 'harness-fixture', main: 'src/index.tsx', dependencies: { react: '^18.0.0' } }),
+  'package.json': JSON.stringify({
+    name: 'harness-fixture',
+    main: 'src/index.tsx',
+    dependencies: { react: '^18.0.0' },
+  }),
   'index.html': '<!doctype html><div id="root"></div>',
   'src/index.tsx': "import App from './App';\nimport './App.css';\nexport default App;\n",
-  'src/App.tsx': "export default function App() {\n  return <h1>hello</h1>;\n}\n",
+  'src/App.tsx': 'export default function App() {\n  return <h1>hello</h1>;\n}\n',
   'src/App.css': 'h1 { color: rebeccapurple; }\n',
 };
 
@@ -64,8 +60,23 @@ export interface FetchOp {
 // fs methods that carry a path as their first argument — the ones worth recording
 // as "Port traffic". Non-path members pass through untouched.
 const PATHFUL = new Set<string>([
-  'stat', 'read', 'write', 'readdir', 'exists', 'createFile', 'mkdir', 'rename',
-  'unlink', 'rm', 'rmdir', 'touch', 'link', 'metadata', 'sync', 'openFile', 'createFileSync',
+  'stat',
+  'read',
+  'write',
+  'readdir',
+  'exists',
+  'createFile',
+  'mkdir',
+  'rename',
+  'unlink',
+  'rm',
+  'rmdir',
+  'touch',
+  'link',
+  'metadata',
+  'sync',
+  'openFile',
+  'createFileSync',
 ]);
 
 /** Wrap a `FileSystem` so every path-bearing op is recorded before delegating. */
@@ -103,9 +114,7 @@ export interface BundlerFsHarness {
  * Port-traffic spy) seeded from `fixture`, plus the network-spy fetcher the
  * bundler-owned `/node_modules` mount consumes. Returns the spies + teardown.
  */
-export async function createBundlerFsHarness(
-  fixture: Record<string, string> = FIXTURE_APP,
-): Promise<BundlerFsHarness> {
+export async function createBundlerFsHarness(fixture: Record<string, string> = FIXTURE_APP): Promise<BundlerFsHarness> {
   await configure({ disableAccessChecks: true, disableAsyncCache: true });
 
   const portOps: PortOp[] = [];
@@ -139,7 +148,11 @@ export async function createBundlerFsHarness(
   resetSpies(); // drop the seeding writes
 
   const teardown = async () => {
-    try { umount(APP_ROOT); } catch { /* not mounted */ }
+    try {
+      umount(APP_ROOT);
+    } catch {
+      /* not mounted */
+    }
   };
 
   return { portOps, fetchOps, fetcher, resetSpies, teardown };

@@ -34,8 +34,7 @@ export interface CjsScan {
   isEsm: boolean;
 }
 
-const isIdentStart = (c: string): boolean =>
-  (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c === '_' || c === '$';
+const isIdentStart = (c: string): boolean => (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c === '_' || c === '$';
 const isIdentPart = (c: string): boolean => isIdentStart(c) || (c >= '0' && c <= '9');
 
 // A `/` begins a regex literal (not a division operator) when the previous
@@ -46,8 +45,20 @@ const isIdentPart = (c: string): boolean => isIdentStart(c) || (c >= '0' && c <=
 // followed by an expression (`return /re/`, `typeof /re/`), so those are checked
 // against the previous WORD.
 const KEYWORDS_BEFORE_REGEX = new Set([
-  'return', 'typeof', 'instanceof', 'in', 'of', 'new', 'delete', 'void', 'do',
-  'else', 'yield', 'await', 'case', 'throw',
+  'return',
+  'typeof',
+  'instanceof',
+  'in',
+  'of',
+  'new',
+  'delete',
+  'void',
+  'do',
+  'else',
+  'yield',
+  'await',
+  'case',
+  'throw',
 ]);
 
 export function scanCjsModule(source: string): CjsScan {
@@ -150,8 +161,7 @@ export function scanCjsModule(source: string): CjsScan {
     // follows a value — identifier char, `)`, or `]` — and is left as an operator;
     // keyword-preceded expressions (`return /re/`) are caught via `prevWord`.
     if (c === '/') {
-      const prevEndsExpr =
-        /[A-Za-z0-9_$)\]]/.test(prevSignificant) && !KEYWORDS_BEFORE_REGEX.has(prevWord);
+      const prevEndsExpr = /[A-Za-z0-9_$)\]]/.test(prevSignificant) && !KEYWORDS_BEFORE_REGEX.has(prevWord);
       if (!prevEndsExpr) {
         i = skipRegexFrom(i);
         // A regex literal is a complete value; a following `/` is division.

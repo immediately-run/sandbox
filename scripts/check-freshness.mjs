@@ -11,6 +11,9 @@ import { fileURLToPath } from 'node:url';
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const STAMP_FILE = '.ir-build-stamp.json';
 
+/** The package's own name, so a rename cannot leave this log line lying. */
+const pkgName = () => JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).name;
+
 function newestMtime(dir) {
   let newest = 0;
   const walk = (d) => {
@@ -67,10 +70,12 @@ async function selfTest() {
 function check() {
   const { status, version } = freshnessOf(ROOT);
   if (status === 'ok') {
-    console.log(`sandbox-freshness: sandpack-bundler${version ? `@${version}` : ''} OK.`);
+    console.log(`sandbox-freshness: ${pkgName()}${version ? `@${version}` : ''} OK.`);
     return;
   }
-  console.error(`\n  ✗ Stale sandbox build: dist/ ${status === 'unbuilt' ? 'has never been built' : 'is older than src/'}.`);
+  console.error(
+    `\n  ✗ Stale sandbox build: dist/ ${status === 'unbuilt' ? 'has never been built' : 'is older than src/'}.`,
+  );
   console.error('  Rebuild before serving:  npm run build\n');
   process.exit(1);
 }

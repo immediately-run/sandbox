@@ -14,7 +14,7 @@ import { unmap } from './unmapper';
 export async function getStackFrames(
   bundler: Bundler,
   error: Error,
-  contextSize: number = 3
+  contextSize: number = 3,
 ): Promise<StackFrame[] | null> {
   const parsedFrames = parse(error);
   let enhancedFrames;
@@ -24,7 +24,7 @@ export async function getStackFrames(
       // @ts-ignore
       error.__unmap_source,
       parsedFrames,
-      contextSize
+      contextSize,
     );
   } else {
     enhancedFrames = await map(bundler, parsedFrames, contextSize);

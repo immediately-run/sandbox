@@ -7,7 +7,7 @@ declare module 'eslint-linter-browserify' {
     verify(
       code: string,
       config: unknown,
-      filename?: string
+      filename?: string,
     ): { line: number; column: number; ruleId: string | null; severity: number; message: string }[];
   }
 }

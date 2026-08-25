@@ -54,7 +54,8 @@ class MapFs {
 //      free functions in artifactStore.ts / fsLayout.ts) --------------------------
 const ARTIFACTS = '.immediately.run/artifacts';
 const underRoot = (root: string, repoRel: string) => `${root}${repoRel.startsWith('/') ? '' : '/'}${repoRel}`;
-const stripRoot = (root: string, abs: string) => (abs === root ? '/' : abs.startsWith(`${root}/`) ? abs.slice(root.length) : abs);
+const stripRoot = (root: string, abs: string) =>
+  abs === root ? '/' : abs.startsWith(`${root}/`) ? abs.slice(root.length) : abs;
 // Namespace `/transpiled` per root so two mounts with the same repo-relative path
 // never collide (defect 2). `/app` → `/transpiled/app/...`, `/mnt/spike` →
 // `/transpiled/mnt/spike/...`.
@@ -94,7 +95,9 @@ async function consultFromRoot(fs: MapFs, root: string, absModulePath: string): 
 async function seedMetadataFromRoot(fs: MapFs, root: string, manifestShas: Map<string, string>) {
   const entries = new Map<string, Record<string, unknown>>();
   const parsed = JSON.parse(await fs.readFileAsync(underRoot(root, `${ARTIFACTS}/mdx-metadata.json`)));
-  for (const [rawKey, value] of Object.entries(parsed.files as Record<string, { srcSha: string; frontmatter: Record<string, unknown> }>)) {
+  for (const [rawKey, value] of Object.entries(
+    parsed.files as Record<string, { srcSha: string; frontmatter: Record<string, unknown> }>,
+  )) {
     const path = normalizeRepoRelPath(rawKey);
     if (!path) continue;
     const sha = manifestShas.get(path);
@@ -111,14 +114,25 @@ const contentFixture = (root: string, fs: MapFs) => {
     underRoot(root, `${ARTIFACTS}/index.json`),
     JSON.stringify({
       schemaVersion: 1,
-      toolchain: { transpiler: '@immediately-run/transpiler', version: TRANSPILER_VERSION, toolchainHash: EMBEDDED_TOOLCHAIN_HASH, preset: 'react' },
+      toolchain: {
+        transpiler: '@immediately-run/transpiler',
+        version: TRANSPILER_VERSION,
+        toolchainHash: EMBEDDED_TOOLCHAIN_HASH,
+        preset: 'react',
+      },
       files: { '/content/post.mdx': { srcSha: 'sha-post', out: 'transpiled/content/post.mdx.js', deps: [] } },
     }),
   );
-  fs.set(underRoot(root, `/${ARTIFACTS}/transpiled/content/post.mdx.js`), `/* pre-compiled ${root} */ export default 1;\n`);
+  fs.set(
+    underRoot(root, `/${ARTIFACTS}/transpiled/content/post.mdx.js`),
+    `/* pre-compiled ${root} */ export default 1;\n`,
+  );
   fs.set(
     underRoot(root, `${ARTIFACTS}/mdx-metadata.json`),
-    JSON.stringify({ schemaVersion: 1, files: { '/content/post.mdx': { srcSha: 'sha-post', frontmatter: { title: 'Post', tags: ['x'] } } } }),
+    JSON.stringify({
+      schemaVersion: 1,
+      files: { '/content/post.mdx': { srcSha: 'sha-post', frontmatter: { title: 'Post', tags: ['x'] } } },
+    }),
   );
 };
 

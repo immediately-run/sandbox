@@ -134,10 +134,7 @@ const isRelative = (spec: string): boolean => spec.startsWith('.') || spec.start
 
 /** Rewrite an unresolved-module diagnostic into an honest coverage note, or return
  *  `undefined` to leave the diagnostic exactly as TypeScript reported it. */
-function coverageNote(
-  d: ts.Diagnostic,
-  file: ts.SourceFile,
-): Pick<Diag, 'category' | 'messageText'> | undefined {
+function coverageNote(d: ts.Diagnostic, file: ts.SourceFile): Pick<Diag, 'category' | 'messageText'> | undefined {
   if (!UNRESOLVED_MODULE_CODES.has(d.code)) return undefined;
   const spec = specifierAt(file, d.start ?? 0, d.length ?? 0);
   if (spec === undefined) return undefined;
@@ -171,10 +168,7 @@ export function runTypecheck(req: TypecheckRequest, opts: TypecheckOptions = {})
       length: d.length ?? 0,
       category: note?.category ?? CATEGORY[d.category],
       code: d.code,
-      messageText: (note?.messageText ?? ts.flattenDiagnosticMessageText(d.messageText, '\n')).slice(
-        0,
-        MESSAGE_CAP,
-      ),
+      messageText: (note?.messageText ?? ts.flattenDiagnosticMessageText(d.messageText, '\n')).slice(0, MESSAGE_CAP),
     });
   }
   return { diagnostics };

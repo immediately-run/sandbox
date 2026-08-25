@@ -12,14 +12,14 @@ const uppercaseFirst = (s: string) => {
     return s;
   }
   return s.substring(0, 1).toUpperCase() + s.substring(1);
-}
+};
 
-const extendedSWCHelpers = {...swcHelpers, interopRequireDefault: swcHelpers._interop_require_default }
+const extendedSWCHelpers = { ...swcHelpers, interopRequireDefault: swcHelpers._interop_require_default };
 for (let [snake_case, v] of Object.entries(swcHelpers)) {
-  const parts = snake_case.split("_").filter(p => p.length > 0);
+  const parts = snake_case.split('_').filter((p) => p.length > 0);
   if (parts.length > 0) {
-    const camelCase = [parts[0], ...(parts.slice(1).map(part => uppercaseFirst(part)))].join('')
-    extendedSWCHelpers[camelCase] = v
+    const camelCase = [parts[0], ...parts.slice(1).map((part) => uppercaseFirst(part))].join('');
+    extendedSWCHelpers[camelCase] = v;
   }
 }
 
@@ -31,7 +31,7 @@ export default function (
   require: Function,
   context: { id: string; exports: any; hot?: any },
   env: Object = {},
-  globals: Object = {}
+  globals: Object = {},
 ) {
   const global = g;
   const process = {
