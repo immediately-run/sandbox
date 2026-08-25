@@ -26,6 +26,20 @@
                         {
                             "key": "Permissions-Policy",
                             "value": "camera=(), microphone=(), geolocation=(), display-capture=(), midi=(), usb=()"
+                        },
+                        {
+                            "key": "Cache-Control",
+                            "value": "no-cache"
+                        }
+                    ]
+                },
+                {
+                    "comment": "The ENTRY POINT must never outlive the hashed chunks it names. Firebase's default for index.html is max-age=3600, while the chunks below are immutable for a year - so a deploy that rotates a bundle hash leaves every browser that loaded in the previous hour asking for a file the same deploy deleted, and the sandbox iframe dies on a 404 until the hour is up. A parent hard-reload does NOT rescue it: Chrome partitions its HTTP cache by top-level site, so the stale copy is only reachable from the page that is broken by it. `no-cache` still stores the file and still 304s on the ETag; it just refuses to serve it without asking first, which is the only setting under which content-hashed assets are safe to delete.",
+                    "source": "**/*.html",
+                    "headers": [
+                        {
+                            "key": "Cache-Control",
+                            "value": "no-cache"
                         }
                     ]
                 },
