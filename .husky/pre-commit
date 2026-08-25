@@ -1,9 +1,0 @@
-#!/bin/sh
-. "$(dirname "$0")/_/husky.sh"
-
-# Keep an unformatted commit from ever reaching a branch. CI's `format:check` is the
-# real gate (a hook is bypassable with --no-verify and absent until `npm install` runs
-# `prepare`); this just moves the failure from a CI round-trip to the moment you commit.
-# Checks the whole source scope rather than staged files only — the scope is small, and
-# a staged-files-only check passes while `main` is red, which is how drift starts.
-npm run format:check

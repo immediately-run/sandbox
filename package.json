@@ -14,7 +14,7 @@
   },
   "scripts": {
     "clean": "rm -rf dist/* .parcel-cache",
-    "prepare": "husky install",
+    "prepare": "git config core.hooksPath .githooks || true",
     "check:freshness": "node scripts/check-freshness.mjs",
     "predev": "node scripts/check-freshness.mjs",
     "dev": "parcel ./src/index.html ./src/m3.html",
@@ -94,6 +94,7 @@
     "url-join": "^5.0.0"
   },
   "devDependencies": {
+    "@immediately-run/prettier-config": "0.1.0",
     "@immediately-run/sdk": "^0.46.0",
     "@octokit/rest": "^18.12.0",
     "@swc-node/jest": "^1.4.3",
@@ -116,7 +117,6 @@
     "fastify-static": "^4.6.1",
     "firebase-tools": "^14.4.0",
     "gzip-size": "^7.0.0",
-    "husky": "^7.0.4",
     "jest": "^27.5.1",
     "jest-extended": "^2.0.0",
     "node-fetch": "^3.2.4",
@@ -148,5 +148,6 @@
   "private": true,
   "contributors": [
     "CodeSandbox BV (original sandpack-bundler author)"
-  ]
+  ],
+  "prettier": "@immediately-run/prettier-config"
 }

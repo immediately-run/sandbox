@@ -1,0 +1,8 @@
+#!/bin/sh
+# Keep an unformatted commit from reaching a branch. CI's `format:check` is the real
+# gate — this only moves the failure from a CI round-trip to the moment you commit.
+# Wired by the `prepare` script (git config core.hooksPath .githooks), so it needs no
+# hook-manager dependency: this replaced husky, which guarded nothing else here.
+# Checks the whole source scope rather than staged files only — the scope is small, and
+# a staged-files-only check passes while `main` is red, which is how drift starts.
+npm run format:check
