@@ -1,30 +1,21 @@
-import { fs, mount, umount, configure, resolveMountConfig, bindContext } from '@zenfs/core';
+import { bindContext, configure, fs, mount, resolveMountConfig, umount } from '@zenfs/core';
 import { Port } from '@zenfs/core/backends/port.js';
 
+import { AuthService } from './auth/AuthService';
+import { REQUEST_AUTH_STATE_MESSAGE } from './auth/authState';
 import { Bundler } from './bundler/bundler';
+import { CatalogService } from './catalog/CatalogService';
+import { REQUEST_CATALOG_MESSAGE } from './catalog/catalogState';
+import { EditorContextService } from './editor/EditorContextService';
+import { REQUEST_EDITOR_CONTEXT_MESSAGE } from './editor/editorContextState';
 import { ErrorRecord, listenToRuntimeErrors } from './error-listener';
 import { BundlerError } from './errors/BundlerError';
 import { CompilationError } from './errors/CompilationError';
 import { errorMessage } from './errors/util';
-import { handleEvaluate, hookConsole } from './integrations/console';
-import { IFrameParentMessageBus } from './protocol/iframe';
-import { AuthService } from './auth/AuthService';
-import { REQUEST_AUTH_STATE_MESSAGE } from './auth/authState';
-import { ThemeService } from './theme/ThemeService';
-import { applyThemeCanvas } from './theme/themeCanvas';
-import { REQUEST_THEME_MESSAGE } from './theme/themeState';
-import { EditorContextService } from './editor/EditorContextService';
-import { REQUEST_EDITOR_CONTEXT_MESSAGE } from './editor/editorContextState';
-import { CatalogService } from './catalog/CatalogService';
-import { REQUEST_CATALOG_MESSAGE } from './catalog/catalogState';
-import { VcsService } from './vcs/VcsService';
-import { REQUEST_VCS_STATE_MESSAGE } from './vcs/vcsState';
+import { withReadOnlyMounts } from './FileSystem/readOnlyMounts';
 import { FormFactorService } from './formFactor/FormFactorService';
 import { REQUEST_FORM_FACTOR_MESSAGE } from './formFactor/formFactorState';
-// The versions this frame announces on the handshake (T45). Both are plain
-// compile-time constants OWNED BY THIS REPO — R3-274d retired the build step that
-// read the SDK's number out of a sibling checkout. See protocol/version.ts.
-import { handshakePayload, SDK_PROTOCOL_VERSION } from './protocol/version';
+import { APP_ROOT, underAppRoot } from './fsLayout';
 import {
   ACTION,
   CONSOLE,
@@ -38,12 +29,12 @@ import {
   REQUEST_REPO_MOUNT,
   RESIZE,
   SDK_HANDSHAKE,
-  type SdkHandshakePayload,
   START,
   STATUS,
   SUCCESS,
+  SdkHandshakePayload,
 } from './generated/protocol';
-
+import { handleEvaluate, hookConsole } from './integrations/console';
 import { MountService } from './mounts/MountService';
 import {
   MOUNT_ADD_MESSAGE,
@@ -52,13 +43,28 @@ import {
   SandboxMount,
   asMountRemoveReason,
 } from './mounts/mountState';
-import { APP_ROOT, underAppRoot } from './fsLayout';
-import { withReadOnlyMounts } from './FileSystem/readOnlyMounts';
+import { IFrameParentMessageBus } from './protocol/iframe';
+// The versions this frame announces on the handshake (T45). Both are plain
+// compile-time constants OWNED BY THIS REPO — R3-274d retired the build step that
+// read the SDK's number out of a sibling checkout. See protocol/version.ts.
+import { SDK_PROTOCOL_VERSION, handshakePayload } from './protocol/version';
+import { installModuleWorkerGuard } from './security/moduleWorkerGuard';
+import { applyThemeCanvas } from './theme/themeCanvas';
+import { ThemeService } from './theme/ThemeService';
+import { REQUEST_THEME_MESSAGE } from './theme/themeState';
 import { Debouncer } from './utils/Debouncer';
 import { DisposableStore } from './utils/Disposable';
 import { getDocumentHeight } from './utils/document';
-import { registerParentImmutableFetch, ParentImmutableFetchResult } from './utils/fetch';
+import { ParentImmutableFetchResult, registerParentImmutableFetch } from './utils/fetch';
 import * as logger from './utils/logger';
+import { VcsService } from './vcs/VcsService';
+import { REQUEST_VCS_STATE_MESSAGE } from './vcs/vcsState';
+
+// R3-328: installed before ANY app module evaluates — with the import.meta shim live,
+// `new Worker(new URL('./x', import.meta.url))` now resolves to a virtual module-space
+// URL, and constructing from it must fail FAST (synchronously, catchably) rather than
+// hanging on a worker that can never load. See security/moduleWorkerGuard.ts.
+installModuleWorkerGuard();
 
 const bundlerStartTime = Date.now();
 
@@ -137,7 +143,10 @@ class SandpackInstance {
     // fetch when the parent predates the protocol.
     registerParentImmutableFetch(
       (url, integrity) =>
-        this.messageBus.protocolRequest('immutable-fetch', 'fetch', [url, integrity]) as Promise<ParentImmutableFetchResult>,
+        this.messageBus.protocolRequest('immutable-fetch', 'fetch', [
+          url,
+          integrity,
+        ]) as Promise<ParentImmutableFetchResult>
     );
 
     this.readyPromise = this.bootstrap().catch((err) => {
@@ -197,20 +206,19 @@ class SandpackInstance {
     // DOM `MessagePort` satisfies this structurally even though TS's union
     // also includes `WebSocket`.
 
-
     await configure({
       onlySyncOnClose: true,
       disableAccessChecks: true,
       disableAsyncCache: true,
       log: {
         enabled: true,
-        level: "debug",
+        level: 'debug',
         dumpBacklog: true,
         // A logger output sink, not stray logging — keep the global no-console
         // policy strict (console.debug stays blocked elsewhere).
         // eslint-disable-next-line no-console
-        output: console.debug
-      }
+        output: console.debug,
+      },
     });
     // Generous RPC timeout: each `fs.*` call here is an RPC round-trip to the
     // parent, served on the parent's main thread. During rapid edits the parent
@@ -218,7 +226,12 @@ class SandpackInstance {
     // spuriously time out — and the late response then throws "Invalid RPC id"
     // (a timed-out request is removed before its response arrives), breaking the
     // preview. 30s is a safety net for genuinely lost messages, not normal load.
-    const portfs = await resolveMountConfig({ backend: Port, port: fsPort as any, disableAsyncCache: true, timeout: 30000 });
+    const portfs = await resolveMountConfig({
+      backend: Port,
+      port: fsPort as any,
+      disableAsyncCache: true,
+      timeout: 30000,
+    });
     portfs.attributes.set('no_atime', true);
     await materializeMountPoint(APP_ROOT);
     mount(APP_ROOT, portfs);
@@ -253,7 +266,7 @@ class SandpackInstance {
         root: '/',
         pwd: APP_ROOT,
       }).fs,
-      ['/node_modules', '/transpiled'],
+      ['/node_modules', '/transpiled']
     );
 
     // Zenfs is ready — safe to create the bundler (CachedFS starts a

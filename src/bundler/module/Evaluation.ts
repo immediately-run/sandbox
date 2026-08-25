@@ -1,10 +1,10 @@
 import * as logger from '../../utils/logger';
 import evaluate from './eval';
 import { HotContext } from './hot';
+import { IMPORT_META_GLOBAL, importMetaFor } from './importMeta';
 import { Module } from './Module';
 
 class EvaluationContext {
-
   exports: any;
   globals: any;
   hot: HotContext;
@@ -25,10 +25,10 @@ class EvaluationContext {
   }
 
   async getModuleEvaluationContext(moduleName: string): Promise<EvaluationContext> {
-    const resolvedModuleName = (await this.resolve(moduleName));
-    let moduleToEvaluate = this.evaluation.module.bundler.modules.get(resolvedModuleName)
+    const resolvedModuleName = await this.resolve(moduleName);
+    let moduleToEvaluate = this.evaluation.module.bundler.modules.get(resolvedModuleName);
     if (moduleToEvaluate && moduleToEvaluate.compiled != null) {
-      return moduleToEvaluate.evaluation!.context
+      return moduleToEvaluate.evaluation!.context;
     }
     await this.evaluation.module.addDependency(resolvedModuleName);
     moduleToEvaluate = await this.evaluation.module.bundler.transformModule(resolvedModuleName);
@@ -37,22 +37,18 @@ class EvaluationContext {
     // wait for all deps to be compiled before evaluating the module to ensure correct execution
     await this.evaluation.module.bundler.transformationQueue.onIdle();
     const evaluatedDeps = await Promise.all(
-      allDependencies.map(
-        moduleName => this.evaluation.module.bundler.modules.get(moduleName)
-      ).filter(
-        mod => mod && (mod.compiled === null)
-      ).map(
-        mod => this.evaluation.module.bundler.transformationQueue.getItem(mod!.filepath)?.then(mod => mod.evaluate())
-      )
+      allDependencies
+        .map((moduleName) => this.evaluation.module.bundler.modules.get(moduleName))
+        .filter((mod) => mod && mod.compiled === null)
+        .map((mod) =>
+          this.evaluation.module.bundler.transformationQueue.getItem(mod!.filepath)?.then((mod) => mod.evaluate())
+        )
     );
-    return moduleToEvaluate.evaluate().context
+    return moduleToEvaluate.evaluate().context;
   }
 
   async resolve(moduleName: string): Promise<string> {
-    return await this.evaluation.module.bundler.resolveAsync(
-      moduleName,
-      this.evaluation.module.filepath
-    );
+    return await this.evaluation.module.bundler.resolveAsync(moduleName, this.evaluation.module.filepath);
   }
 }
 
@@ -66,7 +62,19 @@ export class Evaluation {
     const code = module.compiled + `\n//# sourceURL=${location.origin}${this.module.filepath}`;
 
     this.context = new EvaluationContext(this);
-    this.context.exports = evaluate(code, this.require.bind(this), this.context, {}, {});
+    // The import.meta shim's runtime value (R3-328): the module's own URL — the same
+    // expression the sourceURL stamp above uses — provided under the identifier the
+    // transpiler rewrites `import.meta` to (see ./importMeta.ts for the contract).
+    const importMeta = importMetaFor(`${location.origin}${this.module.filepath}`);
+    this.context.exports = evaluate(
+      code,
+      this.require.bind(this),
+      this.context,
+      {},
+      {
+        [IMPORT_META_GLOBAL]: importMeta,
+      }
+    );
   }
 
   require(specifier: string): any {
