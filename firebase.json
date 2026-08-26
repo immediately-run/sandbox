@@ -5,7 +5,7 @@
             "public": "dist",
             "rewrites": [
                 {
-                    "source": "**/!(*.@(js|js.map))",
+                    "source": "**/!(*.@(js|js.map|html))",
                     "destination": "/index.html"
                 }
             ],
@@ -30,6 +30,69 @@
                         {
                             "key": "Cache-Control",
                             "value": "no-cache"
+                        }
+                    ]
+                },
+                {
+                    "comment": "The ENTRY POINT must never outlive the hashed chunks it names. Firebase's default for index.html is max-age=3600, while the chunks below are immutable for a year - so a deploy that rotates a bundle hash leaves every browser that loaded in the previous hour asking for a file the same deploy deleted, and the sandbox iframe dies on a 404 until the hour is up. A parent hard-reload does NOT rescue it: Chrome partitions its HTTP cache by top-level site, so the stale copy is only reachable from the page that is broken by it. `no-cache` still stores the file and still 304s on the ETag; it just refuses to serve it without asking first, which is the only setting under which content-hashed assets are safe to delete.",
+                    "source": "**/*.html",
+                    "headers": [
+                        {
+                            "key": "Cache-Control",
+                            "value": "no-cache"
+                        }
+                    ]
+                },
+                {
+                    "source": "**/*.@(eot|otf|ttf|ttc|woff|woff2|font.css|json)",
+                    "headers": [
+                        {
+                            "key": "Access-Control-Allow-Origin",
+                            "value": "*"
+                        }
+                    ]
+                },
+                {
+                    "source": "**/*.@(js|js.map)",
+                    "headers": [
+                        {
+                            "key": "Access-Control-Allow-Origin",
+                            "value": "*"
+                        },
+                        {
+                            "key": "Cache-Control",
+                            "value": "public, max-age=31536000"
+                        }
+                    ]
+                }
+            ]
+        },
+        {
+            "site": "tinkerable-site-sandbox-m3",
+            "public": "dist",
+            "rewrites": [
+                {
+                    "source": "**/!(*.@(js|js.map|html))",
+                    "destination": "/m3.html"
+                }
+            ],
+            "ignore": [
+                "**/types/**",
+                "firebase.json",
+                "**/.*",
+                "**/node_modules/**"
+            ],
+            "headers": [
+                {
+                    "source": "**",
+                    "headers": [
+                        {
+                            "key": "Content-Security-Policy",
+                            "value": "default-src 'none'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob: data:; worker-src 'self' blob:; style-src 'self' 'unsafe-inline' blob: data:; img-src 'self' blob: data:; media-src 'self' blob: data:; font-src 'self' blob: data:; connect-src 'self' blob: data: https://sandpack-cdn-staging.blazingly.io/dep_tree/ https://sandpack-cdn-staging.blazingly.io/package/ https://unpkg.com/ https://esm.sh/ https://immediately-run.github.io/immediately-run-sdk/; frame-src 'none'; child-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
+                        },
+                        {
+                            "key": "Permissions-Policy",
+                            "value": "camera=(), microphone=(), geolocation=(), display-capture=(), midi=(), usb=()"
                         }
                     ]
                 },

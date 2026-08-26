@@ -155,12 +155,59 @@ describe('M3 per-frame CSP (UI_AS_APPS §G1a / R3-234)', () => {
       }
     });
 
-    it('keeps m3.html out of the SPA rewrite (it is a real emitted document)', () => {
+    it('no *.html can be FABRICATED by the SPA rewrite (R3-353/R3-354)', () => {
       // Hosting serves a matching static file before consulting rewrites, and
       // parcel emits dist/m3.html as a second entry — but if that entry ever
-      // stopped being emitted, the `**/!(*.js…)` rewrite would silently serve
-      // index.html (NO CSP) in its place. Fail closed on the rewrite shape.
-      expect(hosting.rewrites).toEqual([{ source: '**/!(*.@(js|js.map))', destination: '/index.html' }]);
+      // stopped being emitted, the old `**/!(*.@(js|js.map))` rewrite silently
+      // served index.html (NO CSP) in its place: a containment document that
+      // 404s INTO the policy-free one, i.e. fail-open by construction. Excluding
+      // `html` from the rewrite makes a missing document a real 404 — a bad day
+      // rather than a silent uncontained boot.
+      expect(hosting.rewrites).toEqual([{ source: '**/!(*.@(js|js.map|html))', destination: '/index.html' }]);
+    });
+  });
+
+  describe('the hardened ORIGIN carries the policy (R3-353 origin separation)', () => {
+    // The finding: a policy that arrives with ONE document is only as strong as
+    // the frame's inability to fetch a different one — and a sandboxed frame may
+    // always navigate itself. The fix is to make the policy a property of the
+    // ORIGIN: a second Hosting site serving the same `dist`, where every path
+    // answers with the M3 policy and every extensionless route resolves to the
+    // hardened document. There is then no policy-free document to reach
+    // same-origin, whatever the frame navigates to.
+    const hosting = JSON.parse(readFileSync(join(SRC, '..', 'firebase.json'), 'utf8')).hosting;
+    const m3Site = hosting.find((h: { site: string }) => h.site.endsWith('-m3'));
+
+    it('exists as its own Hosting site serving the same artifact set', () => {
+      expect(m3Site).toBeDefined();
+      expect(m3Site.public).toBe(hosting[0].public);
+    });
+
+    it('applies the policy to EVERY path, not just /m3.html', () => {
+      // `source: '**'` is the whole point — a per-file header would leave
+      // `/index.html` on this origin policy-free, which is the hole again.
+      const catchAll = m3Site.headers.find((h: { source: string }) => h.source === '**');
+      expect(catchAll).toBeDefined();
+      const value = (key: string) => catchAll.headers.find((h: { key: string }) => h.key === key)?.value;
+      expect(value('Content-Security-Policy')).toBe(policy);
+      expect(value('Permissions-Policy')).toBe(M3_PERMISSIONS_POLICY);
+    });
+
+    it('resolves extensionless routes to the HARDENED document', () => {
+      // An app's client-side routes must keep working (value 3), and on this
+      // origin they must land on m3.html — never index.html.
+      expect(m3Site.rewrites).toEqual([{ source: '**/!(*.@(js|js.map|html))', destination: '/m3.html' }]);
+    });
+
+    it('keeps the CORS headers the opaque-origin frame needs for its own chunks', () => {
+      // The frame runs at an opaque origin, so every subresource request it makes
+      // carries `Origin: null` — without `Access-Control-Allow-Origin: *` the
+      // chunks die on CORS before CSP is ever consulted, which reads exactly like
+      // a CSP failure. Copied from the baseline site rather than re-derived.
+      const jsBlock = m3Site.headers.find((h: { source: string }) => h.source.includes('js|js.map'));
+      expect(jsBlock?.headers).toEqual(
+        hosting[0].headers.find((h: { source: string }) => h.source.includes('js|js.map'))?.headers,
+      );
     });
   });
 
