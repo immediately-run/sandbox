@@ -15,6 +15,16 @@ jobs:
           node-version: '24'
           cache: 'npm'
 
+      # R3-327 check 1 — a pin to an unpublished @immediately-run/* version, and a
+      # package.json/package-lock.json disagreement about it. Runs BEFORE `npm ci`,
+      # deliberately: that is the command such a pin breaks, so afterwards the
+      # informative message never appears — the run has already died on 40 lines of
+      # `ETARGET` nobody reads, which is why the red check on sdk #112 read as noise
+      # and merged anyway. `--self-test` runs first: a gate that cannot fail is not a
+      # gate, and it replays sdk #112's real diff rather than a hypothetical.
+      - name: Release | Dependency pins are published and lock-agreeing (R3-327)
+        run: npm run check:pins
+
       - name: Setup | Install dependencies
         run: npm ci
 
