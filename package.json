@@ -20,7 +20,7 @@
     "dev": "parcel ./src/index.html ./src/m3.html",
     "start": "node ./server.js",
     "gen:toolchain-hash": "node scripts/gen-toolchain-hash.mjs",
-    "build": "npm run clean && npm run gen:toolchain-hash && npm run build:authoring-worker && npm run sync:authoring-worker && npm run build:parcel && npm run check:parity && node scripts/build-stamp.mjs",
+    "build": "npm run clean && npm run gen:toolchain-hash && npm run build:authoring-worker && npm run sync:authoring-worker && npm run build:parcel && npm run check:parity && npm run check:dist-documents && node scripts/build-stamp.mjs",
     "check:parity": "node scripts/check-importmap-parity.mjs",
     "build:parcel": "parcel build --target default --no-scope-hoist",
     "gen:authoring-bundles": "node scripts/gen-authoring-libs.mjs && node scripts/gen-authoring-types.mjs",
@@ -37,10 +37,12 @@
     "format": "prettier --write \"src/**/*.{ts,tsx,js,jsx,json}\" \"scripts/**/*.mjs\"",
     "format:check": "prettier --check \"src/**/*.{ts,tsx,js,jsx,json}\" \"scripts/**/*.mjs\"",
     "lint": "eslint '**/*.ts?(x)'",
-    "verify": "npm run lint && npm run format:check && npm run typecheck && npm run protocol:check && npm run protocol:selftest && npm test -- --forceExit && npm run build",
+    "verify": "npm run lint && npm run format:check && npm run typecheck && npm run protocol:check && npm run protocol:selftest && npm run check:dist-documents:selftest && npm test -- --forceExit && npm run build",
     "drill:m3-csp": "node scripts/m3-csp-drill.mjs",
     "deploy": "firebase deploy",
-    "drill:test-realm": "node scripts/test-realm-drill.mjs"
+    "drill:test-realm": "node scripts/test-realm-drill.mjs",
+    "check:dist-documents": "node scripts/check-dist-documents.mjs",
+    "check:dist-documents:selftest": "node scripts/check-dist-documents.mjs --self-test"
   },
   "browserslist": "> 2.5%, not ie 11, not dead, not op_mini all",
   "alias": {
