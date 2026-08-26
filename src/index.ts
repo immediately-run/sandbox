@@ -44,6 +44,7 @@ import {
   asMountRemoveReason,
 } from './mounts/mountState';
 import { IFrameParentMessageBus } from './protocol/iframe';
+import { HOST_MOUNT_ROOTS, REPO_MOUNT_ROOTS, admitMountAdd, isAllowedMountPath } from './protocol/mountAdmission';
 // The versions this frame announces on the handshake (T45). Both are plain
 // compile-time constants OWNED BY THIS REPO — R3-274d retired the build step that
 // read the SDK's number out of a sibling checkout. See protocol/version.ts.
@@ -442,12 +443,38 @@ class SandpackInstance {
   // it at the descriptor's absolute path so app code can read/write it, then
   // record the descriptor for polling/subscription.
   private async handleMountAdd(message: any): Promise<void> {
-    const mountDescriptor: SandboxMount | undefined = message.mount;
-    const port: MessagePort | undefined = message.ports && message.ports[0];
-    if (!mountDescriptor || !port) {
-      logger.error('mount-add missing descriptor or port', message);
+    // R3-352 / T4: the mount PATH decides what this mount shadows, so it is gated
+    // before anything is mounted — `/app` or `/node_modules` here would put an
+    // announcer-served filesystem under the evaluator. `mount-add` only ever
+    // arrives from the parent now (`IFrameParentMessageBus` binds window messages
+    // to `window.parent`), so a refusal here means a HOST bug: surface it loudly
+    // rather than honor it. The decision itself lives in `protocol/mountAdmission`
+    // so the adversarial tests drive the real thing.
+    const admission = admitMountAdd(message);
+    if (!admission.ok) {
+      if (admission.reason === 'path-outside-namespace') {
+        logger.error(
+          `mount-add: refused mount path outside the host mount namespace (${HOST_MOUNT_ROOTS.map((r) => `/${r}/`).join(
+            ', ',
+          )})`,
+          admission.path,
+        );
+      } else {
+        logger.error('mount-add missing descriptor or port', message);
+      }
+      // Close the transferred port rather than leaving the host with a serving
+      // channel for a mount that will never exist (a refusal must fail fast, not
+      // hang — ways_of_working §3).
+      const orphan = message.ports && message.ports[0];
+      try {
+        orphan?.close();
+      } catch {
+        /* already closed */
+      }
       return;
     }
+    const mountDescriptor = message.mount as SandboxMount;
+    const port = admission.port;
     port.start();
     const mountfs = await resolveMountConfig({
       backend: Port,
@@ -554,8 +581,10 @@ class SandpackInstance {
     const path = message?.path;
     if (this.repoDualMounted || !path || typeof path !== 'string' || !this.repoPortFs) return;
     // Defense in depth (review H4): the sandbox independently rejects a path that
-    // isn't a clean `/mnt/...` address before materializing/mounting it.
-    if (!path.startsWith('/mnt/') || path.split('/').includes('..')) {
+    // isn't a clean `/mnt/...` address before materializing/mounting it. R3-352
+    // routed this through the shared gate so `mount-add` and `repo-mount` cannot
+    // drift into two differently-strict copies of the same rule.
+    if (!isAllowedMountPath(path, REPO_MOUNT_ROOTS)) {
       logger.error('repo-mount: refused non-/mnt or traversing path', path);
       return;
     }

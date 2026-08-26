@@ -1,5 +1,6 @@
 import { MOUNT_ADD, REGISTER_FRAME } from '../generated/protocol';
 import { Emitter } from '../utils/emitter';
+import * as logger from '../utils/logger';
 import { IInitConfig } from './message-types';
 
 /**
@@ -22,16 +23,83 @@ export class IFrameParentMessageBus {
   private initConfig: IInitConfig | null = null;
   private initConfigResolvers: Array<(config: IInitConfig) => void> = [];
 
+  /** First-wins latch for `register-frame` (R3-352). */
+  private registered = false;
+  /** How many window messages we dropped for coming from somewhere other than the
+   *  parent. Counted rather than logged per-event: a hostile sibling can post in a
+   *  loop, and an unbounded `console.error` would hand it a log-flood DoS. */
+  private foreignMessageCount = 0;
+
   constructor() {
     this._messageListener = this._messageListener.bind(this);
 
     window.addEventListener('message', this._messageListener);
   }
 
+  /** How many window-level messages arrived from a window that is not the parent
+   *  (R3-352). Exposed for the adversarial tests and for host-side diagnostics —
+   *  a non-zero value means some other frame is probing this one. */
+  get droppedForeignMessages(): number {
+    return this.foreignMessageCount;
+  }
+
   private _messageListener(evt: MessageEvent) {
+    // HOST_ORIGIN_HARDENING_SPEC §2.4 (R3-352): a message is trusted by WHICH
+    // WINDOW it came from, never by its content. Any iframe on the page can reach
+    // any other through `window.parent.frames[i]` and `postMessage` cross-origin,
+    // so without this check a hostile app in one frame could forge `register-frame`
+    // (swapping this frame's fs/babel ports for its own), `mount-add` (shadowing
+    // `/app` with an attacker-served filesystem), `fs-change` (forcing the
+    // recompile that evaluates it) or `refresh` (a reload loop) into a PRIVILEGED
+    // sibling frame — and the attacker's code would then run inside that frame's
+    // realm, holding that frame's grants. Every legitimate window→frame message in
+    // this protocol is posted by the sandpack client in the host document, i.e. by
+    // `window.parent`; the fs/babel/mount `MessagePort`s ride inside those same
+    // messages, so nothing legitimate is lost.
+    //
+    // This is the frame-side half of the identity rule. The parent side has always
+    // had its own (`evt.source !== this.frameWindow`, sandpack-client
+    // `iframe-protocol.ts`); this half was never built.
+    if (evt.source !== window.parent) {
+      this.foreignMessageCount++;
+      // Debug level on purpose — see `foreignMessageCount`. The counter, not the
+      // log line, is the durable signal.
+      logger.debug('ignoring window message from a non-parent source', evt.data && evt.data.type);
+      return;
+    }
+
     const data = evt.data;
 
     if (data && data.type === REGISTER_FRAME) {
+      // Single-shot (R3-352). `register-frame` transfers this frame's fs and babel
+      // ports and settles `initConfig`; honoring a second one would re-fire the
+      // resolvers and swap live ports underneath the running bundler. First wins —
+      // for a forged duplicate AND for a benign parent re-render race, which is why
+      // this is a latch rather than a source check alone.
+      //
+      // Legitimate re-registration does not go through here: every path that gives
+      // this frame a new client NAVIGATES the iframe first (the sandpack client's
+      // constructor and its `refresh` dispatch both call `setLocationURLIntoIFrame`,
+      // and `refresh` reloads the document), which builds a FRESH bus with the latch
+      // clear. A duplicate reaching a live bus is therefore a host bug or a forgery,
+      // and either way honoring it is worse than refusing it: the pre-R3-352 code
+      // half-swapped (already-drained resolvers keep the OLD ports while `fsPort`,
+      // `initConfig` and `parentId` become the NEW ones).
+      if (this.registered) {
+        logger.warn('ignoring duplicate register-frame; this frame is already registered');
+        // Close the ports we are not going to adopt rather than leaving the sender
+        // with a channel that silently never answers — a refused handshake should
+        // fail fast, not hang (ways_of_working §3).
+        for (const orphan of evt.ports ?? []) {
+          try {
+            orphan.close();
+          } catch {
+            /* already closed */
+          }
+        }
+        return;
+      }
+      this.registered = true;
       this.parentId = data.id;
 
       // Bootstrap config rides on the same handshake message that transfers the
