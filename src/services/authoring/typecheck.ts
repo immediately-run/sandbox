@@ -42,6 +42,16 @@ export interface TypecheckRequest {
 }
 export interface TypecheckResult {
   diagnostics: Diag[];
+  /** R3-384. `true` when {@link MAX_DIAGS} stopped the list short of what the
+   *  compiler actually reported. Without it a caller receiving exactly `MAX_DIAGS`
+   *  entries cannot tell "that was all" from "200 of 1,400" — and a consumer whose
+   *  contract is that a truncated run may never render as a clean bill of health
+   *  cannot honour it for a truncation it cannot see. */
+  truncated: boolean;
+  /** How many diagnostics the caller's files produced in total, whether or not they
+   *  were emitted. Counting is cheap — the program has already computed them; only
+   *  the formatting above the cap is skipped. */
+  total: number;
 }
 export interface TypecheckOptions {
   /** Injected for the Worker (bundled libs) / overridden in tests. */
@@ -242,10 +252,17 @@ export function runTypecheck(req: TypecheckRequest, opts: TypecheckOptions = {})
 
   const raw = [...program.getSyntacticDiagnostics(), ...program.getSemanticDiagnostics()];
   const diagnostics: Diag[] = [];
+  // R3-384: keep counting past the cap. The loop no longer BREAKS on MAX_DIAGS — it
+  // stops *emitting* and keeps tallying, so `total` is the honest number and
+  // `truncated` is derivable. The saved work above the cap was never the compiler
+  // (the diagnostics are already computed by the time `raw` exists); it was only the
+  // message flattening and the object allocation, which is what stays skipped.
+  let total = 0;
   for (const d of raw) {
-    if (diagnostics.length >= MAX_DIAGS) break;
     // Only report diagnostics anchored in the caller's files (skip lib noise).
     if (!d.file || !fileMap.has(d.file.fileName)) continue;
+    total += 1;
+    if (diagnostics.length >= MAX_DIAGS) continue;
     const note = coverageNote(d, d.file);
     diagnostics.push({
       path: asSent.get(d.file.fileName) ?? d.file.fileName,
@@ -256,5 +273,5 @@ export function runTypecheck(req: TypecheckRequest, opts: TypecheckOptions = {})
       messageText: (note?.messageText ?? ts.flattenDiagnosticMessageText(d.messageText, '\n')).slice(0, MESSAGE_CAP),
     });
   }
-  return { diagnostics };
+  return { diagnostics, total, truncated: total > diagnostics.length };
 }

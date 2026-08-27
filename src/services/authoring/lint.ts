@@ -32,8 +32,25 @@ export interface LintRequest {
   files?: unknown;
   preset?: unknown;
 }
+/** A file the lint pass did not report on, and why (R3-384). Losing a file silently
+ *  is worse than losing a diagnostic: the caller believes the file was checked. */
+export interface LintSkip {
+  path: string;
+  /** `parse-error` — the parser threw, so this file produced nothing. `not-reached`
+   *  — the diagnostic cap was already full, so the file was never linted at all. */
+  reason: 'parse-error' | 'not-reached';
+}
 export interface LintResult {
   diagnostics: LintDiag[];
+  /** `true` when the {@link MAX_DIAGS} cap stopped the list short. */
+  truncated: boolean;
+  /** Diagnostics produced across every file that WAS linted, emitted or not. Files in
+   *  {@link LintResult.skipped} contributed nothing to this, by definition. */
+  total: number;
+  /** Files that produced no diagnostics because something went wrong, not because
+   *  they were clean. Empty is the normal case; a non-empty list means the run is
+   *  incomplete and must not render as a clean bill of health. */
+  skipped: LintSkip[];
 }
 
 // The minimal `Linter` surface used here — so the Worker can inject the browserify
@@ -107,16 +124,29 @@ export function runLint(req: LintRequest, deps: LintDeps): LintResult {
   const config = { parser: TS_PARSER, parserOptions: PARSER_OPTIONS, rules: PRESETS[presetName] };
 
   const diagnostics: LintDiag[] = [];
+  const skipped: LintSkip[] = [];
+  let total = 0;
   for (const f of files) {
-    if (diagnostics.length >= MAX_DIAGS) break;
+    // R3-384: the cap used to `break` the FILE loop, so every remaining file went
+    // unlinted with no signal — the caller could not tell an unchecked file from a
+    // clean one. Record them instead of vanishing them. We stop linting (the parse is
+    // the expensive part and the budget is spent) but we say which files that cost.
+    if (diagnostics.length >= MAX_DIAGS) {
+      skipped.push({ path: f.path, reason: 'not-reached' });
+      continue;
+    }
     let messages: ReturnType<LinterLike['verify']>;
     try {
       messages = linter.verify(f.content, config, f.path);
     } catch {
-      continue; // a parse failure in lint is not fatal — tsc owns syntax errors
+      // A parse failure is not fatal — tsc owns syntax errors — but it is not nothing
+      // either. It was previously a bare `continue`, which reported the file as clean.
+      skipped.push({ path: f.path, reason: 'parse-error' });
+      continue;
     }
+    total += messages.length;
     for (const m of messages) {
-      if (diagnostics.length >= MAX_DIAGS) break;
+      if (diagnostics.length >= MAX_DIAGS) continue;
       diagnostics.push({
         path: f.path,
         line: m.line,
@@ -127,5 +157,5 @@ export function runLint(req: LintRequest, deps: LintDeps): LintResult {
       });
     }
   }
-  return { diagnostics };
+  return { diagnostics, total, truncated: total > diagnostics.length || skipped.length > 0, skipped };
 }
