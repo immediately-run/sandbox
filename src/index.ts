@@ -45,6 +45,7 @@ import {
 } from './mounts/mountState';
 import { IFrameParentMessageBus } from './protocol/iframe';
 import { HOST_MOUNT_ROOTS, REPO_MOUNT_ROOTS, admitMountAdd, isAllowedMountPath } from './protocol/mountAdmission';
+import { applyMountAdd } from './protocol/mountSequence';
 // The versions this frame announces on the handshake (T45). Both are plain
 // compile-time constants OWNED BY THIS REPO — R3-274d retired the build step that
 // read the SDK's number out of a sibling checkout. See protocol/version.ts.
@@ -476,21 +477,34 @@ class SandpackInstance {
     const mountDescriptor = message.mount as SandboxMount;
     const port = admission.port;
     port.start();
-    const mountfs = await resolveMountConfig({
-      backend: Port,
-      port: port as any,
-      disableAsyncCache: true,
-      timeout: 30000,
+    // R3-284: the mount-table sequence, with the ordering + the superseded-announcement
+    // early return stated in `protocol/mountSequence` rather than implied by the order of
+    // statements here. A first announcement that the host's `request-mounts` replay
+    // already revoked resolves `superseded` — dropped at DEBUG, because the terminal
+    // `EACCES` it hit is the FS2-4 rejector doing precisely what it exists for
+    // (FILE_SHARING §6.1), and meeting a designed answer with a red `forbidden` on every
+    // healthy dispatched boot teaches readers to ignore the word. Every other failure
+    // still throws out to the caller's `.catch(logger.error)`.
+    const outcome = await applyMountAdd(mountDescriptor.path, {
+      resolve: async () => {
+        const mountfs = await resolveMountConfig({
+          backend: Port,
+          port: port as any,
+          disableAsyncCache: true,
+          timeout: 30000,
+        });
+        mountfs.attributes.set('no_atime', true);
+        return mountfs;
+      },
+      umount,
+      materialize: materializeMountPoint,
+      mount,
+      closePort: () => port.close(),
     });
-    mountfs.attributes.set('no_atime', true);
-    // Re-mounting the same path: drop the previous mount first.
-    try {
-      umount(mountDescriptor.path);
-    } catch {
-      /* not previously mounted — fine */
+    if (outcome.status === 'superseded') {
+      logger.debug('mount-add: superseded announcement dropped (a newer port serves this mount)', mountDescriptor.path);
+      return;
     }
-    await materializeMountPoint(mountDescriptor.path);
-    mount(mountDescriptor.path, mountfs);
     this.mountService.add(mountDescriptor);
     // LIBRARY_MOUNTS_SPEC L3: a git-library mount is tagged with `moduleName` (the
     // package name = the `dependencies` key). Register the just-mounted repo under
