@@ -81,6 +81,38 @@ const CATEGORY: Record<ts.DiagnosticCategory, Diag['category']> = {
  *  lives there, so refusing it costs nothing. */
 const isReservedPath = (p: string): boolean => p.split('/').includes('node_modules');
 
+/** The TypeScript standard library is ALSO a kernel-owned input, and it is reachable
+ *  by a different route than the type set — so the `node_modules` rule above does not
+ *  cover it.
+ *
+ *  `worker-lib-host` resolves libs by **bare basename** (whatever path TypeScript
+ *  constructs for a lib, only its filename is looked up), while `inMemoryHost` answers
+ *  from the CALLER's file map first. So a submitted file named `lib.es2020.full.d.ts`
+ *  — at any directory, since only the basename is compared — replaces the standard
+ *  library for that request, and a genuine error can be silenced by redefining the
+ *  type it was reported against. Measured, with a control:
+ *
+ *      CONTROL (lib doctored so one symbol errors, no shadow):
+ *        [ "Property 'POISONED' does not exist on type 'Console'." ]
+ *      SHADOWED (a file named lib.es2020.full.d.ts in the request):
+ *        []
+ *
+ *  Not code execution — the residual is INTEGRITY, not RCE — but it is the same CS-1
+ *  violation the `node_modules` rule exists to prevent: the caller influencing a
+ *  kernel-owned input. It matters more the moment the submitted set stops being
+ *  agent-chosen: a panel that enumerates the working tree submits whatever is there,
+ *  and under dispatch that tree is a foreign corpus, so a hostile repository could
+ *  make its own diagnostics read clean.
+ *
+ *  The rule is TypeScript's own default-lib naming convention (`lib.<target>.d.ts`)
+ *  rather than a membership test against `BUNDLED_LIBS`, for two reasons: this module
+ *  deliberately does not import the generated bundle (the lib host is an injected seam
+ *  so the same code serves a Worker and Node), and a pattern is strictly broader than
+ *  the current set, so it stays correct when the bundled closure changes. No app's own
+ *  source is named this way, so refusing it costs nothing. */
+const RESERVED_LIB_BASENAME = /^lib\..*\.d\.ts$/i;
+const isReservedLibPath = (p: string): boolean => RESERVED_LIB_BASENAME.test(p.slice(p.lastIndexOf('/') + 1));
+
 /**
  * Normalize a caller path to the ONE virtual-filesystem spelling the compiler
  * resolves against: rooted at `/`, with `.`/`..`/empty segments collapsed.
@@ -121,8 +153,15 @@ export function validateFiles(raw: unknown): TypecheckFile[] {
     // Check the NORMALIZED path: `src/../node_modules/react/index.d.ts` names the
     // reserved tree just as surely as `/node_modules/react/index.d.ts` does, and only
     // the normalized form is what the compiler would actually be asked for.
-    if (isReservedPath(normalizeFilePath(path))) {
+    // Both reserved-path checks run on the NORMALIZED path: `src/../node_modules/react/index.d.ts`
+    // names the reserved tree as surely as the rooted spelling, and only the normalized form is
+    // what the compiler would actually be asked for.
+    const normalized = normalizeFilePath(path);
+    if (isReservedPath(normalized)) {
       throw new ServiceInputError('file.path must not be under node_modules (reserved for the kernel type set)');
+    }
+    if (isReservedLibPath(normalized)) {
+      throw new ServiceInputError('file.path must not be named lib.*.d.ts (reserved for the kernel standard library)');
     }
     if (typeof content !== 'string') throw new ServiceInputError('file.content must be a string');
     total += content.length;

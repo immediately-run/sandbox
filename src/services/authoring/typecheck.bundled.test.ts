@@ -8,6 +8,7 @@
 import ts from 'typescript';
 import { createBundledLibHost } from './worker-lib-host';
 import { BUNDLED_TYPE_SPECIFIERS } from './bundled-types.generated';
+import { BUNDLED_LIBS, DEFAULT_LIB } from './bundled-libs.generated';
 import { Diag, runTypecheck } from './typecheck';
 import { ServiceInputError } from './format';
 
@@ -208,6 +209,70 @@ describe('bundled typecheck: unresolved imports are a coverage note, not an erro
 });
 
 describe('bundled typecheck: CS-1 input trust', () => {
+  // R3-383. The `node_modules` rule below guards the TYPE SET; the standard LIBRARY is
+  // reachable by a different route and was unguarded. `worker-lib-host` resolves libs by
+  // BARE BASENAME, and `inMemoryHost` answers from the caller's map first — so a file
+  // named `lib.es2020.full.d.ts`, at any directory, replaced the standard library for
+  // that request and could silence a genuine error.
+  //
+  // The control matters: a test that only asserts the refusal cannot tell a working guard
+  // from a typecheck that never saw the symbol. So the lib is doctored to make one symbol
+  // an error, and the control proves that error is visible before the shadow is attempted.
+  describe('the standard library cannot be shadowed', () => {
+    const POISON = 'export const x = console.POISONED;\n';
+    const libByBasename = (f: string): string | undefined => BUNDLED_LIBS[f.slice(f.lastIndexOf('/') + 1)];
+    const poisonedHost = (): ts.CompilerHost => ({
+      getSourceFile: (fileName, lv) => {
+        const text = libByBasename(fileName);
+        return text !== undefined ? ts.createSourceFile(fileName, text, lv, true) : undefined;
+      },
+      getDefaultLibFileName: () => DEFAULT_LIB,
+      getDefaultLibLocation: () => '',
+      writeFile: () => {},
+      getCurrentDirectory: () => '/',
+      getCanonicalFileName: (f) => f,
+      useCaseSensitiveFileNames: () => true,
+      getNewLine: () => '\n',
+      fileExists: (f) => libByBasename(f) !== undefined,
+      readFile: (f) => libByBasename(f),
+      directoryExists: () => true,
+      getDirectories: () => [],
+    });
+    const run = (files: { path: string; content: string }[]) =>
+      runTypecheck({ files }, { createBaseHost: poisonedHost }).diagnostics;
+
+    it('CONTROL: the poisoned symbol is a real error when nothing shadows the lib', () => {
+      expect(
+        run([{ path: 'src/a.ts', content: POISON }])
+          .map((d) => d.messageText)
+          .join(' '),
+      ).toMatch(/POISONED/);
+    });
+
+    it('refuses a file named for the default lib', () => {
+      expect(() =>
+        run([
+          { path: 'src/a.ts', content: POISON },
+          { path: DEFAULT_LIB, content: 'declare var console: { POISONED: number };\n' },
+        ]),
+      ).toThrow(ServiceInputError);
+    });
+
+    it('refuses it from a nested directory — only the basename is compared', () => {
+      expect(() => run([{ path: 'src/vendor/lib.dom.d.ts', content: 'export {};\n' }])).toThrow(ServiceInputError);
+    });
+
+    it('refuses it through `..`, like the node_modules rule', () => {
+      expect(() => run([{ path: 'src/x/../lib.es5.d.ts', content: 'export {};\n' }])).toThrow(ServiceInputError);
+    });
+
+    it("does not refuse an app's ordinary declaration files", () => {
+      expect(() => run([{ path: 'src/devfs.d.ts', content: 'export {};\n' }])).not.toThrow();
+      expect(() => run([{ path: 'src/mdx.d.ts', content: 'export {};\n' }])).not.toThrow();
+      expect(() => run([{ path: 'src/liberty.ts', content: 'export const a = 1;\n' }])).not.toThrow();
+    });
+  });
+
   // The type set is kernel-owned. A caller must not be able to name, add, shadow or
   // redirect it — the whole reason it is a build-time table and not a resolver.
   it('ignores caller-supplied types/typeRoots/paths fields', () => {
