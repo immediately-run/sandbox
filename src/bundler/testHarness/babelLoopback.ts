@@ -1,3 +1,5 @@
+import * as babel from '@babel/standalone';
+
 import type { MessageEndpoint } from '../../utils/WorkerMessageBus';
 
 /**
@@ -54,6 +56,24 @@ const fakeSelf = {
 };
 let workerLoaded: Promise<unknown> | null = null;
 
+// The react-refresh chain's two non-standalone plugins are LAZY dynamic `import()`s in
+// the transpiler (`babel-plugin-registry.ts`) — and jest's vm has no dynamic-import
+// callback (`ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING_FLAG`), so any app-root
+// `.js`/`.jsx`/`.tsx` fixture (e.g. the sql.js Emscripten loader, R3-426) would fail to
+// transpile through the loopback. Pre-register them on the shared @babel/standalone
+// registry (`loadPlugin` only fires for names NOT already present), exactly as the
+// deployed worker ends up with them after its first load.
+function preloadRefreshChainPlugins(): void {
+  const registry = (babel as unknown as { availablePlugins: Record<string, unknown> }).availablePlugins;
+  for (const name of ['react-refresh/babel', '@babel/plugin-proposal-explicit-resource-management']) {
+    if (!registry[name]) {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const loaded = require(name);
+      registry[name] = (loaded as { default?: unknown }).default ?? loaded;
+    }
+  }
+}
+
 export interface BabelLoopback {
   /** The endpoint to hand the bundler as its "babel port" (`getBabelPort`). */
   babelPort: MessageEndpoint;
@@ -75,6 +95,7 @@ export async function createBabelLoopback(): Promise<BabelLoopback> {
   const prevSelf = (globalThis as { self?: unknown }).self;
   (globalThis as { self?: unknown }).self = fakeSelf;
   try {
+    preloadRefreshChainPlugins();
     if (!workerLoaded) workerLoaded = import('../transforms/babel/babel-worker');
     await workerLoaded; // registers the module-level `onConnect` on `fakeSelf`
     const { port1: workerPort, port2: bundlerPort } = fakeWebPortPair();

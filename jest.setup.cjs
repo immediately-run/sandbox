@@ -23,3 +23,31 @@ if (!globalThis.structuredClone) {
   const v8 = require('v8');
   globalThis.structuredClone = (value) => v8.deserialize(v8.serialize(value));
 }
+
+// TextDecoder/TextEncoder are main-realm globals jest 27 does not copy in either;
+// Emscripten-emitted loaders (the R3-426 sql.js fixture) decode wasm strings with them.
+if (!globalThis.TextDecoder) {
+  const util = require('util');
+  globalThis.TextDecoder = util.TextDecoder;
+  globalThis.TextEncoder = util.TextEncoder;
+}
+
+// Node's WHATWG fetch stack (`fetch`, `Response`, `Request`, `Headers`, `Blob`) lives on
+// the MAIN realm's global; jest 27's vm sandbox does not copy it in. The wasm tests
+// (R3-426) exercise `fetch(dataUrl)` and `WebAssembly.instantiateStreaming(fetch(...))`,
+// so bridge the real classes across: the sandbox's `process` is the main realm's, so its
+// Function intrinsic hands back the main-realm global. Same isolate, same-realm brand
+// checks — Node's `instantiateStreaming` accepts these `Response` instances (a re-
+// implemented polyfill would NOT pass its brand check). Copy-if-missing only, so a
+// future jest that ships its own fetch wins.
+if (!globalThis.fetch) {
+  const realGlobal = process.constructor.constructor('return globalThis')();
+  for (const name of ['Response', 'Request', 'Headers', 'Blob', 'FormData']) {
+    if (!globalThis[name] && realGlobal[name]) {
+      globalThis[name] = realGlobal[name];
+    }
+  }
+  if (realGlobal.fetch) {
+    globalThis.fetch = realGlobal.fetch.bind(realGlobal);
+  }
+}

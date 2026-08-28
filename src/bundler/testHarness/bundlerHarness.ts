@@ -126,7 +126,7 @@ export interface BundlerHarness extends BundlerFsHarness {
  * preset's HMR runtime imports. Without it the harness is for the transpile path
  * (`transformModule`) — the caller drives `initPreset` itself. */
 export async function createBundlerHarness(
-  fixture: Record<string, string> = COMPILE_FIXTURE,
+  fixture: Record<string, string | Uint8Array> = COMPILE_FIXTURE,
   opts: { forCompile?: boolean } = {},
 ): Promise<BundlerHarness> {
   const fsHarness = await createBundlerFsHarness(fixture);

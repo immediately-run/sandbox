@@ -1,24 +1,8 @@
 import { Bundler } from '../../bundler';
 import { ITranspilationContext, ITranspilationResult, Transformer } from '../Transformer';
+import { assetMimeType } from './mime';
 
-const MIME_TYPES: Record<string, string> = {
-  png: 'image/png',
-  jpg: 'image/jpeg',
-  jpeg: 'image/jpeg',
-  gif: 'image/gif',
-  webp: 'image/webp',
-  avif: 'image/avif',
-  bmp: 'image/bmp',
-  ico: 'image/x-icon',
-  svg: 'image/svg+xml',
-};
-
-export const ASSET_EXTENSIONS = Object.keys(MIME_TYPES);
-
-const getExtension = (filepath: string): string => {
-  const match = /\.([^.]+)$/.exec(filepath);
-  return match ? match[1].toLowerCase() : '';
-};
+export { ASSET_EXTENSIONS } from './mime';
 
 const bytesToBase64 = (bytes: Uint8Array): string => {
   let binary = '';
@@ -31,8 +15,13 @@ const bytesToBase64 = (bytes: Uint8Array): string => {
 };
 
 /**
- * Turns imported binary assets (images) into JS modules that export a base64
- * data URL, e.g. `import logo from './logo.png'` yields the URL string.
+ * Turns imported binary assets (images, WebAssembly) into JS modules that export
+ * a base64 data URL, e.g. `import logo from './logo.png'` — or, R3-426,
+ * `import wasm from './add.wasm'` — yields the URL string. The data URL's MIME is
+ * the asset's real type, which `fetch(dataUrl)` preserves — for `.wasm` that makes
+ * both `r.arrayBuffer()` + `WebAssembly.instantiate` and
+ * `WebAssembly.instantiateStreaming(fetch(url))` (which requires `application/wasm`)
+ * work from the exported URL.
  *
  * The module source handed to transformers is read as UTF-8, which mangles
  * binary data, so we re-read the raw bytes straight from the zenfs layer.
@@ -50,8 +39,7 @@ export class AssetTransformer extends Transformer {
 
   async transform(ctx: ITranspilationContext, config: any): Promise<ITranspilationResult> {
     const filepath = ctx.module.filepath;
-    const ext = getExtension(filepath);
-    const mime = MIME_TYPES[ext];
+    const mime = assetMimeType(filepath);
     if (!mime) {
       throw new Error(`Unsupported asset type for ${filepath}`);
     }

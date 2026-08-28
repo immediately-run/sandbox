@@ -114,7 +114,10 @@ export interface BundlerFsHarness {
  * Port-traffic spy) seeded from `fixture`, plus the network-spy fetcher the
  * bundler-owned `/node_modules` mount consumes. Returns the spies + teardown.
  */
-export async function createBundlerFsHarness(fixture: Record<string, string> = FIXTURE_APP): Promise<BundlerFsHarness> {
+export async function createBundlerFsHarness(
+  // Binary fixture files (e.g. a `.wasm` module, R3-426) are seeded as raw bytes.
+  fixture: Record<string, string | Uint8Array> = FIXTURE_APP,
+): Promise<BundlerFsHarness> {
   await configure({ disableAccessChecks: true, disableAsyncCache: true });
 
   const portOps: PortOp[] = [];
