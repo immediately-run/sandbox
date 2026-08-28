@@ -123,13 +123,79 @@ describe('bundled typecheck: unresolved imports are a coverage note, not an erro
     expect(d[0].messageText).toMatch(/'\.\/helper' was not included in this typecheck request/);
   });
 
-  it('checks a sibling normally when it IS included', () => {
-    expect(
+  // Cross-file resolution is checked under BOTH path spellings a caller actually
+  // uses. It shipped working only for the rooted one: the resolver absolutizes the
+  // containing file against `/` while the file map was keyed on the raw string, so a
+  // repo-relative request resolved `./helper` to nothing and every cross-file error
+  // came back as a "not included in this request" note — on a file that WAS included.
+  // A single rooted sample said "cross-file works" for the spelling nobody sends.
+  describe.each([
+    ['rooted', '/a.ts', '/helper.ts'],
+    ['repo-relative', 'src/a.ts', 'src/helper.ts'],
+  ])('checks a sibling normally when it IS included (%s paths)', (_label, aPath, helperPath) => {
+    const files = [
+      { path: aPath, content: "import { helper } from './helper';\nexport const h: number = helper();\n" },
+      { path: helperPath, content: 'export const helper = (): string => "s";\n' },
+    ];
+
+    it('reports the cross-file type error', () => {
+      const d = errors(check(files));
+      expect(d).toHaveLength(1);
+      expect(d[0].messageText).toMatch(/'string' is not assignable to type 'number'/);
+    });
+
+    it('does not claim the included sibling was left out', () => {
+      expect(
+        check(files)
+          .map((x) => x.messageText)
+          .join('\n'),
+      ).not.toMatch(/was not included in this typecheck/);
+    });
+
+    it('anchors the diagnostic on the path the caller sent', () => {
+      expect(errors(check(files))[0].path).toBe(aPath);
+    });
+  });
+
+  it('resolves a relative sibling across directories, repo-relative', () => {
+    const d = errors(
       check([
-        { path: '/a.ts', content: "import { helper } from './helper';\nexport const h: number = helper();\n" },
-        { path: '/helper.ts', content: 'export const helper = (): string => "s";\n' },
-      ]).filter((x) => x.category === 'error'),
-    ).toHaveLength(1);
+        {
+          path: 'src/components/Card.tsx',
+          content: 'export default function Card({ n }: { n: number }) { return <b>{n}</b>; }\n',
+        },
+        {
+          path: 'src/App.tsx',
+          content: 'import Card from \'./components/Card\';\nexport default () => <Card n="x" />;\n',
+        },
+      ]),
+    );
+    expect(d).toHaveLength(1);
+    expect(d[0].path).toBe('src/App.tsx');
+  });
+
+  it('still notes a sibling that genuinely was not included', () => {
+    const d = check([
+      { path: 'src/a.ts', content: "import { helper } from './helper';\nexport const h = helper();\n" },
+    ]);
+    expect(d).toHaveLength(1);
+    expect(d[0].category).toBe('message');
+    expect(d[0].messageText).toMatch(/was not included in this typecheck request/);
+  });
+
+  it('refuses two paths that name the same file', () => {
+    expect(() =>
+      check([
+        { path: 'src/a.ts', content: 'export const a = 1;\n' },
+        { path: '/src/a.ts', content: 'export const a = 2;\n' },
+      ]),
+    ).toThrow(ServiceInputError);
+  });
+
+  it('refuses the reserved tree reached through `..`', () => {
+    expect(() => check([{ path: 'src/../node_modules/@types/react/index.d.ts', content: 'export {};\n' }])).toThrow(
+      ServiceInputError,
+    );
   });
 
   it('still reports a genuine type error in a file that also has an unbundled import', () => {

@@ -81,6 +81,33 @@ const CATEGORY: Record<ts.DiagnosticCategory, Diag['category']> = {
  *  lives there, so refusing it costs nothing. */
 const isReservedPath = (p: string): boolean => p.split('/').includes('node_modules');
 
+/**
+ * Normalize a caller path to the ONE virtual-filesystem spelling the compiler
+ * resolves against: rooted at `/`, with `.`/`..`/empty segments collapsed.
+ *
+ * This is load-bearing, not tidiness. TypeScript's module resolver absolutizes the
+ * *containing* file against `getCurrentDirectory()` (`/`) before it joins a relative
+ * specifier, while `getSourceFile`/`fileExists` are asked for the raw key the caller
+ * supplied. Give it `src/use.ts` and `src/lib.ts` and the two halves disagree: the
+ * resolver asks for `/src/lib.ts`, the file map holds `src/lib.ts`, and `./lib`
+ * resolves to nothing — so EVERY cross-file type error in the request is invisible
+ * and the unresolved-import policy below turns the miss into a reassuring "not an
+ * error" note. Repo-relative is exactly what a caller sends (it is what the agent's
+ * own `read_file`/`edit_file` paths look like), so the working spelling was the one
+ * nobody used. Normalizing both halves to `/…` makes the two agree for either.
+ */
+export function normalizeFilePath(p: string): string {
+  const out: string[] = [];
+  for (const seg of p.split('/')) {
+    if (seg === '' || seg === '.') continue;
+    // `..` above the root is clamped at the root — there is nothing above it in a
+    // virtual fs, and silently escaping would be the one outcome worth refusing.
+    if (seg === '..') out.pop();
+    else out.push(seg);
+  }
+  return '/' + out.join('/');
+}
+
 /** Validate + bound an in-memory `{ path, content }[]` request (shared by lint). */
 export function validateFiles(raw: unknown): TypecheckFile[] {
   if (!Array.isArray(raw) || raw.length === 0) throw new ServiceInputError('files must be a non-empty array');
@@ -91,7 +118,10 @@ export function validateFiles(raw: unknown): TypecheckFile[] {
     if (!f || typeof f !== 'object') throw new ServiceInputError('each file must be { path, content }');
     const { path, content } = f as Record<string, unknown>;
     if (typeof path !== 'string' || !path) throw new ServiceInputError('file.path must be a non-empty string');
-    if (isReservedPath(path)) {
+    // Check the NORMALIZED path: `src/../node_modules/react/index.d.ts` names the
+    // reserved tree just as surely as `/node_modules/react/index.d.ts` does, and only
+    // the normalized form is what the compiler would actually be asked for.
+    if (isReservedPath(normalizeFilePath(path))) {
       throw new ServiceInputError('file.path must not be under node_modules (reserved for the kernel type set)');
     }
     if (typeof content !== 'string') throw new ServiceInputError('file.content must be a string');
@@ -150,7 +180,23 @@ function coverageNote(d: ts.Diagnostic, file: ts.SourceFile): Pick<Diag, 'catego
 
 export function runTypecheck(req: TypecheckRequest, opts: TypecheckOptions = {}): TypecheckResult {
   const files = validateFiles(req.files);
-  const fileMap = new Map(files.map((f) => [f.path, f.content]));
+  // The program runs on NORMALIZED paths (see `normalizeFilePath`) so the resolver and
+  // the file map agree; diagnostics are reported back under the caller's OWN spelling,
+  // because a path it did not send is a path it cannot act on.
+  const fileMap = new Map<string, string>();
+  const asSent = new Map<string, string>();
+  for (const f of files) {
+    const key = normalizeFilePath(f.path);
+    // Two entries normalizing to one file is ambiguous — `src/a.ts` and `/src/a.ts`
+    // carry different bytes but name the same module, and silently keeping one would
+    // typecheck source the caller never sent.
+    const prior = asSent.get(key);
+    if (prior !== undefined && prior !== f.path) {
+      throw new ServiceInputError(`file.path ${JSON.stringify(f.path)} duplicates ${JSON.stringify(prior)}`);
+    }
+    fileMap.set(key, f.content);
+    asSent.set(key, f.path);
+  }
   const base = (opts.createBaseHost ?? ((o) => ts.createCompilerHost(o, true)))(COMPILER_OPTIONS);
   const host = inMemoryHost(base, fileMap);
   const program = ts.createProgram([...fileMap.keys()], COMPILER_OPTIONS, host);
@@ -163,7 +209,7 @@ export function runTypecheck(req: TypecheckRequest, opts: TypecheckOptions = {})
     if (!d.file || !fileMap.has(d.file.fileName)) continue;
     const note = coverageNote(d, d.file);
     diagnostics.push({
-      path: d.file.fileName,
+      path: asSent.get(d.file.fileName) ?? d.file.fileName,
       start: d.start ?? 0,
       length: d.length ?? 0,
       category: note?.category ?? CATEGORY[d.category],
