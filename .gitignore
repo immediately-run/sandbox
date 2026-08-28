@@ -1,9 +1,12 @@
 node_modules
 dist
+dist-dev
 .parcel-cache
+.parcel-cache-dev
 .parcel-cache-worker
 .parcel-cache-authoring-worker
 dist-worker
+dist-authoring-worker
 *.log
 .DS_Store
 .firebase
