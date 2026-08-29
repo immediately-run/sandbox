@@ -13,6 +13,7 @@ import { BundlerError } from './errors/BundlerError';
 import { CompilationError } from './errors/CompilationError';
 import { errorMessage } from './errors/util';
 import { withReadOnlyMounts } from './FileSystem/readOnlyMounts';
+import { withRaceTolerance } from './FileSystem/raceTolerance';
 import { FormFactorService } from './formFactor/FormFactorService';
 import { REQUEST_FORM_FACTOR_MESSAGE } from './formFactor/formFactorState';
 import { APP_ROOT, underAppRoot } from './fsLayout';
@@ -263,11 +264,19 @@ class SandpackInstance {
     // their contents belong to the bundler. Wrap the bound fs so any app-code write
     // under those prefixes fails `EROFS` (incl. new-file creation); `/app` writes
     // still cross the Port to the parent.
+    //
+    // R3-408 (innermost): the fs apps seed through is race-tolerant — a StrictMode
+    // double-boot must not see EEXIST/ENOENT for concurrent recursive mkdirs,
+    // concurrent creates of the same new file, or creates racing their parent's
+    // mkdir. Innermost on purpose: the EROFS guard rejects before anything is
+    // retried, so a read-only violation never loops through a retry.
     (globalThis as any).__sandpackSharedFs = withReadOnlyMounts(
-      bindContext({
-        root: '/',
-        pwd: APP_ROOT,
-      }).fs,
+      withRaceTolerance(
+        bindContext({
+          root: '/',
+          pwd: APP_ROOT,
+        }).fs,
+      ),
       ['/node_modules', '/transpiled'],
     );
 
