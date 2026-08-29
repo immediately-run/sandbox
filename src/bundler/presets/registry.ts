@@ -14,26 +14,28 @@ const PRESET_MAP: Map<string, Preset> = new Map([
   // ['solid', new SolidPreset()],
 ]);
 
-// R3-422: template names the host can legitimately send that are NOT presets of
-// their own. The INIT `template` field carries the sandpack *environment*
-// vocabulary (sandpack-client derives it from the app's package.json, and
-// `loadSandpackClient` defaults to 'parcel' when none is set), so 'node',
-// 'parcel', 'static', … arrive on perfectly healthy boots. immediately.run is
-// React-only — every one of these maps onto the React preset by design — so
-// mapping them must NOT warn: the old unconditional "Unknown preset node" line
-// fired on every load of the local-dev flow and buried real errors. The loud
-// warning is reserved for names outside the known vocabulary, which indicate an
-// actual host/sandbox contract skew.
-const KNOWN_REACT_ALIASES: ReadonlySet<string> = new Set([
-  'angular-cli',
-  'create-react-app-typescript',
-  'node',
-  'parcel',
-  'solid',
-  'static',
-  'svelte',
-  'vue-cli',
-]);
+// R3-422: template names that are NOT presets of their own but are still
+// legitimate, so mapping them onto React must stay quiet — the old unconditional
+// "Unknown preset <name>" line fired on every load and buried real errors.
+//
+// What actually arrives (verified 2026-08-29, not assumed): site-main renders
+// `<SandpackProvider>` with **no** `template` prop and never sets
+// `sandboxSetup.template`, and `sandpack-client` resolves
+// `sandboxSetup.template ?? "parcel"`. So on a healthy boot the value is always
+// exactly `parcel`. An earlier revision of this comment claimed the client
+// "derives it from the app's package.json" — it does not; the shipped client
+// contains no `package.json` reference and no dependency-to-template mapping.
+//
+// The other three below are the sandpack *environment* vocabulary a caller that
+// did set a template could legitimately send; they assert an execution
+// environment, not a framework, so they stay quiet. **Framework names
+// (`vue-cli`, `svelte`, `solid`, `angular-cli`) are deliberately NOT here:** on a
+// React-only platform, one of those is a host/sandbox contract skew — a claim
+// that a non-React template was sent — which is exactly what the loud warning is
+// reserved for. Silencing them bought nothing (they were never part of the
+// recurring noise, since only `parcel` ever arrives) and cost the only signal
+// that the wrong template was sent.
+const KNOWN_REACT_ALIASES: ReadonlySet<string> = new Set(['create-react-app-typescript', 'node', 'parcel', 'static']);
 
 export function getPreset(presetName: string): Preset {
   const foundPreset = PRESET_MAP.get(presetName);
