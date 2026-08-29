@@ -98,6 +98,144 @@ describe('module-space fetch shadow (R3-426)', () => {
     expect(nativeCalls).toHaveLength(3);
   });
 
+  // R3-426 (review): `decodeURIComponent` ran AFTER the `/app/` prefix check, and the
+  // URL parser does not normalize `%2F` — so an encoded-traversal URL passed the
+  // containment check and only then decoded into a path OUTSIDE the module space the
+  // shadow exists to bound.
+  describe('containment: encoded traversal cannot escape the module space', () => {
+    const escapes = [
+      // The reported shape: encoded slashes, undetected by the URL parser.
+      '/app/x/..%2F..%2Fnode_modules/react/index.js',
+      // Lower-case escape, and mixed case in one URL.
+      '/app/x/..%2f..%2fnode_modules/react/index.js',
+      '/app/x/..%2F..%2fnode_modules/react/index.js',
+      // Encoded dots instead of encoded slashes.
+      '/app/%2e%2e/%2e%2e/node_modules/react/index.js',
+      '/app/%2E%2E/%2E%2E/node_modules/react/index.js',
+      // Both halves encoded.
+      '/app/%2e%2e%2f%2e%2e%2fnode_modules/react/index.js',
+      // Plain (unencoded) traversal, for completeness.
+      '/app/../node_modules/react/index.js',
+      // Sideways out of /app/ into a sibling root.
+      '/app/..%2Fapp2/secret.js',
+    ];
+
+    it.each(escapes)('refuses %s', (path) => {
+      expect(moduleSpacePathOf(`${ORIGIN}${path}`)).toBeNull();
+    });
+
+    it('never hands the fs a path outside /app/ (the fetch half)', async () => {
+      const probed: string[] = [];
+      const bundler = {
+        fs: {
+          isFileAsync: async (p: string) => {
+            probed.push(p);
+            return true;
+          },
+          readBytesAsync: async () => new Uint8Array([1]),
+        },
+      } as unknown as Bundler;
+      const fetchShadow = createModuleSpaceFetch(bundler);
+      for (const path of escapes) {
+        const resp = await fetchShadow(`${ORIGIN}${path}`);
+        expect(resp.status).toBe(299); // fell through to the native double
+      }
+      expect(probed).toEqual([]);
+    });
+
+    it('double-encoding decodes exactly once and stays inside the module space', () => {
+      // `%252F` is a file literally named with a `%2F` in it, not a separator: one
+      // decode leaves `%2F` as ordinary characters of a single path segment.
+      expect(moduleSpacePathOf(`${ORIGIN}/app/x/..%252F..%252Fnode_modules/y.js`)).toBe(
+        '/app/x/..%2F..%2Fnode_modules/y.js',
+      );
+    });
+
+    it('malformed percent-escapes are not a module-space path', () => {
+      expect(moduleSpacePathOf(`${ORIGIN}/app/%E0%A4%A.wasm`)).toBeNull();
+    });
+
+    it('legitimate encoded characters in real filenames still resolve', async () => {
+      const bytes = new Uint8Array([7, 7, 7]);
+      const files = {
+        '/app/src/a b.wasm': bytes,
+        '/app/src/hello (1)+#.wasm': bytes,
+        '/app/src/caf\u00e9.wasm': bytes,
+      };
+      expect(moduleSpacePathOf(`${ORIGIN}/app/src/a%20b.wasm`)).toBe('/app/src/a b.wasm');
+      expect(moduleSpacePathOf(`${ORIGIN}/app/src/hello%20(1)%2B%23.wasm`)).toBe('/app/src/hello (1)+#.wasm');
+      expect(moduleSpacePathOf(`${ORIGIN}/app/src/caf%C3%A9.wasm`)).toBe('/app/src/caf\u00e9.wasm');
+
+      const fetchShadow = createModuleSpaceFetch(stubBundler(files));
+      const resp = await fetchShadow(`${ORIGIN}/app/src/caf%C3%A9.wasm`);
+      expect(resp.status).toBe(200);
+      expect(new Uint8Array(await resp.arrayBuffer())).toEqual(bytes);
+    });
+
+    it('a `..` that stays inside the module space is still served', async () => {
+      const fetchShadow = createModuleSpaceFetch(stubBundler({ '/app/src/add.wasm': WASM_ADD }));
+      expect(moduleSpacePathOf(`${ORIGIN}/app/src/nested/..%2Fadd.wasm`)).toBe('/app/src/add.wasm');
+      expect((await fetchShadow(`${ORIGIN}/app/src/nested/../add.wasm`)).status).toBe(200);
+    });
+  });
+
+  // R3-426 (review): a module-space HIT ignored `init` entirely, so an AbortSignal
+  // never aborted — the request resolved 200 instead of rejecting AbortError.
+  describe('honours init.signal on a served hit', () => {
+    it('rejects an already-aborted request without touching the fs', async () => {
+      const probed: string[] = [];
+      const bundler = {
+        fs: {
+          isFileAsync: async (p: string) => {
+            probed.push(p);
+            return true;
+          },
+          readBytesAsync: async () => WASM_ADD,
+        },
+      } as unknown as Bundler;
+      const fetchShadow = createModuleSpaceFetch(bundler);
+      const controller = new AbortController();
+      controller.abort();
+      await expect(fetchShadow(`${ORIGIN}/app/src/add.wasm`, { signal: controller.signal })).rejects.toMatchObject({
+        name: 'AbortError',
+      });
+      expect(probed).toEqual([]);
+    });
+
+    it('rejects a request aborted in flight', async () => {
+      let releaseRead: () => void = () => {};
+      const bundler = {
+        fs: {
+          isFileAsync: async () => true,
+          readBytesAsync: () => new Promise<Uint8Array>((resolve) => (releaseRead = () => resolve(WASM_ADD))),
+        },
+      } as unknown as Bundler;
+      const fetchShadow = createModuleSpaceFetch(bundler);
+      const controller = new AbortController();
+      const pending = fetchShadow(`${ORIGIN}/app/src/add.wasm`, { signal: controller.signal });
+      const assertion = expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+      controller.abort();
+      await assertion;
+      releaseRead(); // the read settles late; nothing observes it
+    });
+
+    it("takes the signal off a Request input too, and honours the signal's abort reason", async () => {
+      const fetchShadow = createModuleSpaceFetch(stubBundler({ '/app/src/add.wasm': WASM_ADD }));
+      const controller = new AbortController();
+      controller.abort(new Error('caller went away'));
+      const req = new Request(`${ORIGIN}/app/src/add.wasm`, { signal: controller.signal });
+      await expect(fetchShadow(req)).rejects.toThrow('caller went away');
+    });
+
+    it('an un-aborted signal changes nothing', async () => {
+      const fetchShadow = createModuleSpaceFetch(stubBundler({ '/app/src/add.wasm': WASM_ADD }));
+      const controller = new AbortController();
+      const resp = await fetchShadow(`${ORIGIN}/app/src/add.wasm`, { signal: controller.signal });
+      expect(resp.status).toBe(200);
+      expect(new Uint8Array(await resp.arrayBuffer())).toEqual(WASM_ADD);
+    });
+  });
+
   it('moduleSpacePathOf resolves relative URLs against the frame location', () => {
     expect(moduleSpacePathOf('/app/src/add.wasm')).toBe('/app/src/add.wasm');
     expect(moduleSpacePathOf(`${ORIGIN}/app/a%20b.wasm`)).toBe('/app/a b.wasm');

@@ -16,6 +16,19 @@
 // verbatim). Everything else — other origins, module-space paths with no backing file,
 // non-GET/HEAD methods — falls through to the native `fetch` untouched.
 //
+// CONTAINMENT (R3-426 follow-up): the served path is percent-DECODED and `.`/`..`-
+// normalized BEFORE the `/app/` containment check, and re-checked afterwards. The URL
+// parser does not normalize `%2F`, so a check on the raw pathname would have let
+// `/app/x/..%2F..%2Fnode_modules/…` decode to `/node_modules/…` — an escape from the
+// module space this shadow is supposed to bound.
+//
+// KNOWN LIMITATION — `Range` is not honoured: a module-space hit always answers `200`
+// with the whole file, never `206`. Chosen over implementing byte ranges because the
+// idiom this shadow exists for (`fetch(new URL('x.wasm', import.meta.url))`, streaming
+// or not) never sends one, ignoring `Range` is a spec-legal server response, and the
+// files are already wholly in memory so a range would save nothing. `init.signal` IS
+// honoured — an aborted request rejects with an `AbortError` like a real fetch.
+//
 // This serves module-RELATIVE resolution for files the bundler can see (the mounted app
 // tree). It cannot make arbitrary-package URLs fetchable — a package whose loader
 // computes a URL outside the module space (a CDN, its own origin) still needs the
@@ -26,6 +39,7 @@
 import type { Bundler } from '../bundler';
 import { MODULE_ROOT } from '../../security/moduleWorkerGuard';
 import { assetMimeType } from '../transforms/asset/mime';
+import { normalize } from '../../utils/path';
 
 /** Non-asset module-space files (source text, data) are served honestly as bytes. */
 const DEFAULT_MIME = 'application/octet-stream';
@@ -56,12 +70,50 @@ export function moduleSpacePathOf(input: unknown, init?: { method?: string }): s
   } catch {
     return null; // unparseable is the native fetch's error to raise, not ours
   }
-  if (parsed.origin !== location.origin || !parsed.pathname.startsWith(MODULE_ROOT)) return null;
+  if (parsed.origin !== location.origin) return null;
+  let decoded: string;
   try {
-    return decodeURIComponent(parsed.pathname);
+    // DECODE FIRST. `new URL()` leaves `%2F`/`%2e` alone, so a containment check on the
+    // raw pathname is checking a string that has not yet become the path we will read:
+    // `/app/x/..%2F..%2Fnode_modules/y` passes `startsWith('/app/')` and only THEN
+    // decodes into an escape. Decode, normalize away `.`/`..`, and check the result —
+    // the path we actually hand to the fs is the path that was authorized.
+    decoded = decodeURIComponent(parsed.pathname);
   } catch {
-    return null;
+    return null; // malformed percent-escapes are not a module-space path
   }
+  const resolved = normalize(decoded);
+  if (!resolved.startsWith(MODULE_ROOT)) return null;
+  return resolved;
+}
+
+/** The `AbortSignal` governing a request, from `init` or from a `Request` input. */
+function signalOf(input: unknown, init?: { signal?: AbortSignal | null }): AbortSignal | null {
+  const fromInit = init?.signal;
+  if (fromInit) return fromInit;
+  const fromInput = (input as { signal?: AbortSignal | null } | null)?.signal;
+  return fromInput ?? null;
+}
+
+/** What `fetch` rejects with on abort: the signal's own reason, else an AbortError. */
+function abortReasonOf(signal: AbortSignal): unknown {
+  const reason = (signal as { reason?: unknown }).reason;
+  if (reason !== undefined) return reason;
+  if (typeof DOMException === 'function') return new DOMException('The operation was aborted.', 'AbortError');
+  const err = new Error('The operation was aborted.');
+  err.name = 'AbortError';
+  return err;
+}
+
+/** Settle `work`, but reject as soon as `signal` aborts (the fs read cannot be cancelled;
+ *  the caller stops waiting on it, which is what an aborted fetch observably does). */
+function withAbort<T>(signal: AbortSignal | null, work: Promise<T>): Promise<T> {
+  if (!signal) return work;
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(abortReasonOf(signal));
+    signal.addEventListener('abort', onAbort, { once: true });
+    work.then(resolve, reject).finally(() => signal.removeEventListener('abort', onAbort));
+  });
 }
 
 /**
@@ -71,18 +123,29 @@ export function moduleSpacePathOf(input: unknown, init?: { method?: string }): s
 export function createModuleSpaceFetch(bundler: Bundler): typeof globalThis.fetch {
   const moduleSpaceFetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const filepath = moduleSpacePathOf(input, init);
-    if (filepath !== null && (await bundler.fs.isFileAsync(filepath))) {
-      const bytes = await bundler.fs.readBytesAsync(filepath);
-      // Copy: the fs layer caches its Uint8Array, and a Response body must not alias
-      // a buffer a later consumer could observe mutated (or detach via transfer).
-      const body = bytes.slice();
-      return new Response(requestMethodOf(input, init) === 'HEAD' ? null : body, {
-        status: 200,
-        headers: {
-          'Content-Type': assetMimeType(filepath) ?? DEFAULT_MIME,
-          'Content-Length': String(bytes.byteLength),
-        },
-      });
+    if (filepath !== null) {
+      // Honour `init.signal` (or a Request's own) the way a real fetch does: an
+      // already-aborted request never touches the fs, and one aborted in flight stops
+      // waiting on the read. Without this a served hit resolved 200 on an aborted
+      // request, so no consumer's abort ever worked in module space.
+      const signal = signalOf(input, init);
+      if (signal?.aborted) throw abortReasonOf(signal);
+      const bytes = await withAbort(
+        signal,
+        (async () => ((await bundler.fs.isFileAsync(filepath)) ? await bundler.fs.readBytesAsync(filepath) : null))(),
+      );
+      if (bytes !== null) {
+        // Copy: the fs layer caches its Uint8Array, and a Response body must not alias
+        // a buffer a later consumer could observe mutated (or detach via transfer).
+        const body = bytes.slice();
+        return new Response(requestMethodOf(input, init) === 'HEAD' ? null : body, {
+          status: 200,
+          headers: {
+            'Content-Type': assetMimeType(filepath) ?? DEFAULT_MIME,
+            'Content-Length': String(bytes.byteLength),
+          },
+        });
+      }
     }
     const native = (globalThis as { fetch?: typeof globalThis.fetch }).fetch;
     if (typeof native !== 'function') {
