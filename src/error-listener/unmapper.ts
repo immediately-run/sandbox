@@ -9,6 +9,7 @@
 
 import StackFrame from './stack-frame';
 import { getSourceMap } from './get-source-map';
+import { fetchSourceText } from './sourceOrigins';
 import { getLinesAround } from './get-lines-around';
 import path from 'path';
 
@@ -40,9 +41,16 @@ async function unmap(
   let fileContents: string | null = typeof _fileUri === 'object' ? _fileUri.contents : null;
   let fileUri = typeof _fileUri === 'object' ? _fileUri.uri : _fileUri;
   if (fileContents == null) {
-    fileContents = await fetch(fileUri).then((res) => res.text());
+    // `fileUri` is `error.__unmap_source`, set from app-reachable state, so this
+    // fetch is app-directed. Bound it to the origins the bundler already reaches
+    // (R3-367 finding 3); refused or over-long yields the frames unmapped.
+    fileContents = await fetchSourceText(fileUri);
+    if (fileContents == null) return frames;
   }
   const map = await getSourceMap(fileUri, fileContents as string);
+  // No map (absent, or its URL refused by the origin bound) — hand the frames back
+  // as they are rather than throwing.
+  if (map == null) return frames;
   return frames.map((frame) => {
     const { functionName, lineNumber, columnNumber, _originalLineNumber } = frame;
     if (_originalLineNumber != null) {
