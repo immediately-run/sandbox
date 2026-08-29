@@ -130,6 +130,30 @@ describe('resolve', () => {
       expect(resolved).toBe('/node_modules/simple/entrypoint.js');
     });
 
+    // R3-411: the `node:` builtin prefix maps onto the bare name, so a guarded
+    // `require("node:fs")` in a dependency resolves to the same shim `fs` does.
+    it('should resolve a node:-prefixed specifier like the bare builtin name', () => {
+      const opts = {
+        filename: '/foo.js',
+        extensions: ['.ts', '.tsx', '.js', '.jsx'],
+        isFile,
+        readFile,
+      };
+      expect(resolveSync('node:util', opts)).toBe(resolveSync('util', opts));
+      expect(resolveSync('node:util', opts)).toBe('/node_modules/util/util.js');
+    });
+
+    it('should throw ModuleNotFound for a node:-prefixed module with no shim', () => {
+      expect(() =>
+        resolveSync('node:child_process', {
+          filename: '/foo.js',
+          extensions: ['.ts', '.tsx', '.js', '.jsx'],
+          isFile,
+          readFile,
+        }),
+      ).toThrow(ModuleNotFoundError);
+    });
+
     // not working in ci???
     it.skip('should fallback to higher level node_module in case of duplicates', () => {
       const resolved = resolveSync('punycode/1.3.2', {
@@ -477,6 +501,12 @@ describe('resolve', () => {
       expect(normalizeModuleSpecifier('//node_modules/react/')).toBe('/node_modules/react');
       expect(normalizeModuleSpecifier('./foo.js')).toBe('./foo.js');
       expect(normalizeModuleSpecifier('react//test')).toBe('react/test');
+    });
+
+    it('strips the node: builtin prefix (R3-411)', () => {
+      expect(normalizeModuleSpecifier('node:fs')).toBe('fs');
+      expect(normalizeModuleSpecifier('node:path')).toBe('path');
+      expect(normalizeModuleSpecifier('node:fs/promises')).toBe('fs/promises');
     });
   });
 
