@@ -25,6 +25,23 @@ for (let [snake_case, v] of Object.entries(swcHelpers)) {
 
 const hasGlobalDeclaration = /^const global/m;
 
+// R3-426: the module-space `fetch` shadow is injected through the same globals
+// channel, so it too becomes a `$csb$eval` PARAMETER name — and a module that
+// declares its own lexical `fetch` (`const`/`let`/`class fetch`, e.g. a
+// cross-runtime package doing `const fetch = globalThis.fetch ?? nodeFetch`) is
+// then a duplicate binding: `SyntaxError: Identifier 'fetch' has already been
+// declared`, thrown at PARSE time, killing the whole module. `var fetch` /
+// `function fetch` are legal parameter redeclarations and are not a hazard.
+// `const` is not downleveled (preset-env targets modern browsers) and
+// precompiled/raw-cjs modules are evaluated verbatim, so published packages do
+// hit this. Remedy is the same as `global` above: drop the injected shadow for
+// that module — it falls back to the ambient `fetch`, losing only module-space
+// URL serving in the one module that opted out by naming the binding itself.
+// Deliberately conservative: a nested (legal) `const fetch` inside a function, or
+// the text inside a string/comment, also drops the shadow. That costs a feature,
+// never correctness; the reverse mistake costs the module.
+const hasFetchDeclaration = /(?:^|[^\w$.])(?:const|let|class)\s+fetch(?![\w$])/;
+
 /* eslint-disable no-unused-vars */
 export default function (
   code: string,
@@ -54,6 +71,9 @@ export default function (
 
   if (hasGlobalDeclaration.test(code)) {
     delete allGlobals.global;
+  }
+  if (allGlobals.fetch !== undefined && hasFetchDeclaration.test(code)) {
+    delete allGlobals.fetch;
   }
 
   const allGlobalKeys = Object.keys(allGlobals);
