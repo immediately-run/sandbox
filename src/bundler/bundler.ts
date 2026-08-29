@@ -44,6 +44,7 @@ import { resolveFromCdnLayout } from './module-registry/cdnLayoutResolve';
 import { LocksetSection, validateLockset } from './module-registry/lockset';
 import { collectLocalEntrySideEffects } from './sideEffectImports';
 import { Module } from './module/Module';
+import { CRYPTO_MODULE_CODE, UNSUPPORTED_BUILTIN_MODULE_CODE } from './shims';
 import { Preset } from './presets/Preset';
 import { getPreset } from './presets/registry';
 import { emitPerfMarker } from './perfMarkers';
@@ -115,6 +116,8 @@ Object.defineProperty(exports, "__esModule", {
   value: true
 });
 `.trim();
+
+export { CRYPTO_MODULE_CODE, UNSUPPORTED_BUILTIN_MODULE_CODE, UNSUPPORTED_BUILTIN_MODULE_PATH } from './shims';
 
 /**
  * Source for the sandbox's `fs` module. It re-exports the shared filesystem the
@@ -996,6 +999,10 @@ export class Bundler {
       this.addPreloadedModule('os'),
       // WebCrypto-backed subset; unshimmable APIs throw only when called (R3-411).
       this.addPreloadedModule('crypto', CRYPTO_MODULE_CODE),
+      // R3-411: the landing spot for a precompiled package's UNRESOLVABLE
+      // builtin require (node:child_process, node:worker_threads, …) — a
+      // guarded require in an un-imported file must not fail the app.
+      this.addPreloadedModule('__node-unsupported', UNSUPPORTED_BUILTIN_MODULE_CODE),
       // this.addPreloadedModule("@internationalized/date"),
     ]);
   }

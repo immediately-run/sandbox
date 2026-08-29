@@ -499,6 +499,13 @@ describe('resolve', () => {
     it('normalize module specifier', () => {
       expect(normalizeModuleSpecifier('/test//fluent-d')).toBe('/test/fluent-d');
       expect(normalizeModuleSpecifier('//node_modules/react/')).toBe('/node_modules/react');
+      // R3-411: the `node:` prefix strips to the bare builtin, so the preloaded
+      // shims (/node_modules/fs, /node_modules/crypto, …) resolve it.
+      expect(normalizeModuleSpecifier('node:fs')).toBe('fs');
+      expect(normalizeModuleSpecifier('node:crypto')).toBe('crypto');
+      expect(normalizeModuleSpecifier('node:fs/promises')).toBe('fs/promises');
+      // Non-prefixed specifiers are unchanged (the pre-existing behavior).
+      expect(normalizeModuleSpecifier('fs')).toBe('fs');
       expect(normalizeModuleSpecifier('./foo.js')).toBe('./foo.js');
       expect(normalizeModuleSpecifier('react//test')).toBe('react/test');
     });
