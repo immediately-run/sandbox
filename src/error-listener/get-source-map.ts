@@ -8,6 +8,7 @@
  */
 
 import { SourceMapConsumer } from 'source-map';
+import { fetchSourceText } from './sourceOrigins';
 
 /**
  * A wrapped instance of a <code>{@link https://github.com/mozilla/source-map SourceMapConsumer}</code>.
@@ -91,7 +92,13 @@ function extractSourceMapUrl(fileUri: string, fileContents: string) {
  * @param {string} fileUri The URI of the source file.
  * @param {string} fileContents The contents of the source file.
  */
-async function getSourceMap(fileUri: string, fileContents: string): Promise<SourceMap> {
+/**
+ * Resolve a module's source map. Returns `null` when there is no map to be had —
+ * including when the map URL is refused by the R3-367 origin bound. A refusal is
+ * deliberately not an exception: throwing would let a hostile `sourceMappingURL`
+ * suppress the whole error overlay, which is worse than an unmapped stack.
+ */
+async function getSourceMap(fileUri: string, fileContents: string): Promise<SourceMap | null> {
   let sm = await extractSourceMapUrl(fileUri, fileContents);
   if (sm.indexOf('data:') === 0) {
     const base64 = /^data:application\/json;([\w=:"-]+;)*base64,/;
@@ -107,8 +114,13 @@ async function getSourceMap(fileUri: string, fileContents: string): Promise<Sour
   } else {
     const index = fileUri.lastIndexOf('/');
     const url = fileUri.substring(0, index + 1) + sm;
-    const obj = await fetch(url).then((res) => res.json());
-    return new SourceMap(new SourceMapConsumer(obj));
+    // `sm` comes from the module's own `//# sourceMappingURL=` comment, so it is
+    // app-controlled and may be absolute and cross-origin. Bound it to what the
+    // bundler already reaches (R3-367 finding 3); a refused or over-long body
+    // yields no map, and the frame stays unmapped rather than throwing.
+    const body = await fetchSourceText(url);
+    if (body == null) return null;
+    return new SourceMap(new SourceMapConsumer(JSON.parse(body)));
   }
 }
 
