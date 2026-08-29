@@ -2,6 +2,7 @@ import * as logger from '../../utils/logger';
 import evaluate from './eval';
 import { HotContext } from './hot';
 import { IMPORT_META_GLOBAL, importMetaFor } from './importMeta';
+import { createModuleSpaceFetch } from './moduleSpaceFetch';
 import { Module } from './Module';
 
 class EvaluationContext {
@@ -73,6 +74,11 @@ export class Evaluation {
       {},
       {
         [IMPORT_META_GLOBAL]: importMeta,
+        // R3-426: `fetch` shadowed per module so URLs derived from import.meta.url
+        // (`new URL('./add.wasm', import.meta.url)` — the Emscripten/wasm-pack loader
+        // idiom) are served from the mounted app tree; everything else delegates to
+        // the native fetch (see ./moduleSpaceFetch.ts).
+        fetch: createModuleSpaceFetch(this.module.bundler),
       },
     );
   }
