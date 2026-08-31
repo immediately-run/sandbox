@@ -84,8 +84,10 @@ describe('R3-411 — node: builtins resolve to the platform shims', () => {
     const again = crypto.randomBytes(16) as Uint8Array;
     expect([...again]).not.toEqual([...bytes]); // actually random
 
-    // Hashing APIs are throw-on-call, not silently wrong.
-    expect(() => (crypto.createHash as (a: string) => unknown)('sha256')).toThrow(/not available/);
+    // Hashing APIs are throw-on-call, not silently wrong. (Message text is the
+    // reviewed shim's — "not supported … use crypto.subtle" — matched loosely so
+    // the pin is the throw itself, not the wording.)
+    expect(() => (crypto.createHash as (a: string) => unknown)('sha256')).toThrow(/crypto\.createHash/);
   });
 
   it('the unsupported-builtin stub: any property access yields a throwing function', () => {
