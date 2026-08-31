@@ -11,6 +11,7 @@ import { REQUEST_EDITOR_CONTEXT_MESSAGE } from './editor/editorContextState';
 import { ErrorRecord, listenToRuntimeErrors } from './error-listener';
 import { BundlerError } from './errors/BundlerError';
 import { CompilationError } from './errors/CompilationError';
+import { EvaluationError } from './errors/positionFromStack';
 import { errorMessage } from './errors/util';
 import { withReadOnlyMounts } from './FileSystem/readOnlyMounts';
 import { withRaceTolerance } from './FileSystem/raceTolerance';
@@ -754,7 +755,11 @@ class SandpackInstance {
 
         this.messageBus.sendMessage(
           ACTION,
-          errorMessage(error as BundlerError), // TODO: create a evaluation error
+          // R3-434: an evaluation error's position lives in its stack (the module's
+          // sourceURL is `${location.origin}${filepath}`); EvaluationError recovers
+          // path/line/column from it so the host files the row under its file
+          // instead of the "not file-located" group. Message stays verbatim.
+          errorMessage(new EvaluationError(error as Error, location.origin)),
         );
       }
 
