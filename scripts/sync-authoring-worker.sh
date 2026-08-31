@@ -21,4 +21,24 @@ fi
 rm -rf "$DEST"
 mkdir -p "$DEST"
 cp "$SRC"/*.js "$DEST"/
+
+# R3-441 — record WHERE the vendored bytes came from, next to the bytes. The
+# site-main CI check reads this file, and the docs reconciler refuses to archive
+# a sandbox item that touched src/services/authoring/** while this commit
+# predates it — the R3-384 case (items archived done while production served a
+# pre-fix worker) could then not recur silently.
+REPO_COMMIT="$(git -C "$SCRIPT_DIR/.." rev-parse HEAD)"
+REPO_DIRTY="$(git -C "$SCRIPT_DIR/.." status --porcelain -- src/services/authoring dist-authoring-worker | wc -l | tr -d ' ')"
+cat > "$DEST/PROVENANCE.json" <<EOF
+{
+  "source": "immediately-run/sandbox",
+  "commit": "$REPO_COMMIT",
+  "dirty": $([ "$REPO_DIRTY" != "0" ] && echo true || echo false),
+  "syncedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "files": [
+$(ls "$DEST"/*.js | xargs -n1 basename | sed 's/^/    "/;s/$/"/' | paste -sd, - | sed 's/,/,\n/g')
+  ]
+}
+EOF
 echo "Synced $(ls "$DEST"/*.js | wc -l | tr -d ' ') authoring worker file(s) to $DEST"
+echo "Provenance: sandbox@${REPO_COMMIT:0:10}$([ "$REPO_DIRTY" != "0" ] && echo ' (dirty authoring sources!)')"
