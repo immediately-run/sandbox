@@ -11,6 +11,14 @@ export interface IPackageJSON {
   source?: string;
   dependencies?: DepMap;
   /**
+   * R3-289: at the ROOT of a run these bind like dependencies (the root has no
+   * consumer — the platform is the environment). Read via
+   * `rootRuntimeDependencies`, never directly, so the runtime and the CLI's
+   * lockset echo agree. Non-optional peers only; `dependencies` wins conflicts.
+   */
+  peerDependencies?: DepMap;
+  peerDependenciesMeta?: Record<string, { optional?: boolean }>;
+  /**
    * The per-repo `immediately.run` config object (same key the host reads for
    * `requireLatest`/`provides`, see immediatelyRunConfig.ts). The bundler only
    * consumes `resolveFromRegistry` (SDK_PACKAGING_SPEC §10, phase 2).

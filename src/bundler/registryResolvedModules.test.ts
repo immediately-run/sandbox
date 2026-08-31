@@ -2,6 +2,7 @@ import {
   concreteVersion,
   compareSemver,
   resolveSelfHostVersion,
+  resolveSelfHostVersionDetailed,
   fetchVendoredModule,
   SelfHostResolutionError,
 } from './registryResolvedModules';
@@ -281,5 +282,40 @@ describe('fetchVendoredModule', () => {
     await fetchVendoredModule('@immediately-run/sdk', base, fetchSource, undefined, timing);
     expect(calls[0]).toBe(`${base}/manifest.json`); // manifest fetched first, serially
     expect(timing.fileCount).toBe(3); // the manifest's `files` list
+  });
+});
+
+describe('resolveSelfHostVersionDetailed (R3-289 — root peers bind; the default is loud)', () => {
+  const DEFAULT = '0.4.0';
+  const FLOOR = '0.2.8';
+  const SDK = '@immediately-run/sdk';
+  const resolveDetailed = (raw: string) => resolveSelfHostVersionDetailed(raw, SDK, DEFAULT, FLOOR);
+
+  it('a peerDependencies pin binds exactly like a dependency pin', () => {
+    const raw = JSON.stringify({ peerDependencies: { [SDK]: '0.2.9' } });
+    expect(resolveDetailed(raw)).toEqual({ version: '0.2.9', source: 'peer' });
+  });
+
+  it('dependencies wins when both declare the SDK', () => {
+    const raw = JSON.stringify({
+      dependencies: { [SDK]: '0.3.0' },
+      peerDependencies: { [SDK]: '0.2.9' },
+    });
+    expect(resolveDetailed(raw)).toEqual({ version: '0.3.0', source: 'dependency' });
+  });
+
+  it('a non-concrete PEER pin fails closed, same as a dependency pin', () => {
+    const raw = JSON.stringify({ peerDependencies: { [SDK]: 'latest' } });
+    expect(() => resolveDetailed(raw)).toThrow(SelfHostResolutionError);
+  });
+
+  it('a below-floor PEER pin fails closed', () => {
+    const raw = JSON.stringify({ peerDependencies: { [SDK]: '0.2.7' } });
+    expect(() => resolveDetailed(raw)).toThrow(SelfHostResolutionError);
+  });
+
+  it('no declaration anywhere reports source "default" — the caller warns', () => {
+    const raw = JSON.stringify({ dependencies: { react: '^19.0.0' } });
+    expect(resolveDetailed(raw)).toEqual({ version: DEFAULT, source: 'default' });
   });
 });
