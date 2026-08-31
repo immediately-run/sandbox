@@ -236,7 +236,9 @@ export function normalizeModuleSpecifier(specifier: string): string {
   // `/node_modules/fs`). Node itself treats the two spellings as the same
   // module; packages increasingly use the prefixed form (e.g. Emscripten's
   // guarded `require("node:fs")` in sql.js), which previously fell through to
-  // "no such package" because no npm package can be named `node:*`.
+  // "no such package" because no npm package can be named `node:*`. A `node:`
+  // prefix on a NON-builtin still resolves as the bare name would (broken
+  // caller code, unchanged outcome).
   const unprefixed = specifier.startsWith('node:') ? specifier.slice('node:'.length) : specifier;
   const normalized = unprefixed.replace(/(\/|\\)+/g, '/');
   if (normalized.endsWith('/')) {

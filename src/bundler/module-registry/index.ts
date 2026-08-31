@@ -1,9 +1,11 @@
 import { assertDependenciesResolved, transformFile } from '@immediately-run/transpiler';
 
+import { UNSUPPORTED_BUILTIN_MODULE_PATH } from '../shims';
 import * as logger from '../../utils/logger';
 import { sortObj } from '../../utils/object';
 import { Bundler } from '../bundler';
 import { Module } from '../module/Module';
+import { ModuleNotFoundError } from '../../errors/ModuleNotFound';
 import { filterBuildDeps } from './build-dep';
 import { depMapsEqual, locksetClosureValid, LocksetSection } from './lockset';
 import { ICDNModule, ICDNModuleFile, IResolvedDependency, fetchManifest, fetchModule } from './module-cdn';
@@ -239,7 +241,22 @@ export class ModuleRegistry {
     this.bundler.modules.set(path, module);
     return file.d.map((dep) => {
       return async () => {
-        await module.addDependency(dep);
+        // R3-411 — a precompiled package's dependency is resolved WITHOUT the
+        // authority to fail the app: an unresolvable require (`node:child_process`
+        // behind an `isNode` guard in a file the app never imports) maps to the
+        // UNSUPPORTED-BUILTIN stub instead of throwing. The failure surfaces
+        // exactly when the guarded path actually executes — the stub's exports
+        // throw on call — which is the item's "fails only if that file is
+        // imported" bar. Anything that is NOT a resolution miss still throws.
+        try {
+          await module.addDependency(dep);
+        } catch (err) {
+          if (!(err instanceof ModuleNotFoundError)) throw err;
+          module.dependencyMap.set(dep, UNSUPPORTED_BUILTIN_MODULE_PATH);
+          module.dependencies.add(UNSUPPORTED_BUILTIN_MODULE_PATH);
+          this.bundler.addInitiator(UNSUPPORTED_BUILTIN_MODULE_PATH, module.id);
+          return;
+        }
         // Transform ONLY the dependency just added (its resolved path), not the whole
         // (growing) dependency set on every add — the latter is ~O(deps²) per module
         // (177k calls vs 3k for a real closure, measured). Each dep is still transformed
