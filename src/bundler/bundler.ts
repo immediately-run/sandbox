@@ -13,13 +13,13 @@ import { MountService } from '../mounts/MountService';
 import type { SandboxMount } from '../mounts/mountState';
 import type { IDisposable } from '../utils/Disposable';
 import { APP_ROOT, MANIFEST_SIDECAR_PATH, underAppRoot } from '../fsLayout';
-import { isTransformable } from '@immediately-run/transpiler';
+import { isTransformable, rootRuntimeDependencies } from '@immediately-run/transpiler';
 import { ArtifactStore } from './artifacts/artifactStore';
 import { getEmbeddedToolchain } from './artifacts/embeddedToolchain';
 import { BundlerStatus } from '../protocol/message-types';
 import { ResolverCache, resolveAsync } from '../resolver/resolver';
 import {
-  resolveSelfHostVersion,
+  resolveSelfHostVersionDetailed,
   fetchVendoredModule,
   SelfHostResolutionError,
   type VendorTiming,
@@ -553,8 +553,16 @@ export class Bundler {
       throw new BundlerError('No parsed pkg.json found!');
     }
 
-    let dependencies = this.parsedPackageJSON.dependencies;
-    if (dependencies) {
+    // R3-289: at the root of a run there is no consumer to satisfy a peer — the
+    // platform is the environment — so the root package's non-optional
+    // `peerDependencies` are fetched like dependencies (`dependencies` winning
+    // conflicts, optional peers skipped). Without this, a dual-role package
+    // (library AND app) that declares react as a peer dies with a module-not-found
+    // naming react-error-boundary, and a peer-only SDK pin silently self-hosts the
+    // (very stale) default. The merge is the transpiler's shared
+    // `rootRuntimeDependencies` so the CLI's lockset echo matches (§4.4).
+    let dependencies = rootRuntimeDependencies(this.parsedPackageJSON);
+    if (Object.keys(dependencies).length > 0) {
       // Self-hosted (resolveFromRegistry) modules are already registered as
       // local modules by addLocalModules; strip them so the CDN /dep_tree/ query
       // never has to resolve them (immune to npm→CDN replication lag). Their own
@@ -1169,7 +1177,7 @@ export class Bundler {
    * `loadNodeModules()` (CDN), guarded by `isFirstLoad`.
    */
   private async registerDeclaredGitLibraries(): Promise<void> {
-    const names = gitDependencyNames(this.parsedPackageJSON?.dependencies);
+    const names = gitDependencyNames(rootRuntimeDependencies(this.parsedPackageJSON));
     if (names.size === 0) return;
     for (const name of names) {
       // No "already registered?" probe any more. It used to stat
@@ -1312,13 +1320,28 @@ export class Bundler {
     for (const [moduleName, base] of Object.entries(SELF_HOST_BASES)) {
       // Fails closed (SelfHostResolutionError) on a below-floor or
       // non-concrete pin — surfaced as a boot error, never a silent
-      // substitute (SDK_PACKAGING_SPEC §5.1).
-      const version = resolveSelfHostVersion(
+      // substitute (SDK_PACKAGING_SPEC §5.1). A declaration in either
+      // `dependencies` or root `peerDependencies` binds (R3-289).
+      const resolvedVersion = resolveSelfHostVersionDetailed(
         raw,
         moduleName,
         DEFAULT_SDK_VERSION,
         SELF_HOST_FLOORS[moduleName] ?? '0.0.0',
       );
+      const version = resolvedVersion.version;
+      if (resolvedVersion.source === 'default') {
+        // R3-289: the silent 0.16.0 landmine, made loud. An app that declares no
+        // SDK at all still works ("a plain dependency that just works"), but the
+        // author should SEE that the platform chose for them — the default is
+        // dozens of releases behind the current SDK and whatever breaks there
+        // surfaces far from the cause.
+        logger.warn(
+          `No ${moduleName} declaration found in this app's package.json (neither ` +
+            `"dependencies" nor "peerDependencies") — serving the platform default ` +
+            `${DEFAULT_SDK_VERSION}, which is far from the newest release. Pin the SDK ` +
+            `(e.g. "${moduleName}": "^0.57.0") to control the version you run on.`,
+        );
+      }
       const baseUrl = `${base.replace(/\/$/, '')}/v/${version}`;
       logger.debug(`Resolving ${moduleName}@${version} from self-host ${baseUrl}`);
       // SDK_PACKAGING_SPEC §5.2: a MISSING manifest entry for the resolved
@@ -1372,7 +1395,9 @@ export class Bundler {
    */
   private registryResolvedNames(): Set<string> {
     const names = new Set(Object.keys(SELF_HOST_BASES));
-    for (const name of gitDependencyNames(this.parsedPackageJSON?.dependencies)) {
+    // R3-289: read through the root-peer merge so a git-form PEER mounts (and is
+    // stripped from the CDN query) exactly like a git-form dependency.
+    for (const name of gitDependencyNames(rootRuntimeDependencies(this.parsedPackageJSON))) {
       names.add(name);
     }
     return names;

@@ -70,21 +70,59 @@ export function compareSemver(a: string, b: string): number {
  *   versions only, and silently substituting `defaultVersion` would alias the
  *   author's declared intent (§5.1(c): the default applies ONLY when the app
  *   declares no dependency at all).
- * - No declaration → `defaultVersion` ("a plain dependency that just works").
+ * - A declaration in EITHER `dependencies` or `peerDependencies` binds (R3-289:
+ *   the root of a run has no consumer, so a root peer is a runtime need);
+ *   `dependencies` wins when both declare it.
+ * - No declaration → `defaultVersion` ("a plain dependency that just works") —
+ *   and the caller WARNS when it takes that branch (a silent stale default is
+ *   the R3-289 landmine; see `resolveSelfHostVersionDetailed`).
  * - Unparseable package.json → `defaultVersion` (intent unknowable here; a
  *   truly broken package.json fails the boot later in processPackageJSON).
  */
-export function resolveSelfHostVersion(raw: string, moduleName: string, defaultVersion: string, floor: string): string {
+/**
+ * Where a self-host module's version came from (R3-289): a `dependencies` pin,
+ * an equally-binding root `peerDependencies` pin (the root of a run has no
+ * consumer — a peer IS a runtime need there), or the platform default (no
+ * declaration at all).
+ */
+export type SelfHostVersionSource = 'dependency' | 'peer' | 'default';
+
+export interface SelfHostVersionResolution {
+  version: string;
+  source: SelfHostVersionSource;
+}
+
+/**
+ * The detailed form of {@link resolveSelfHostVersion}: same fail-closed
+ * semantics, but reports WHICH declaration produced the version so the caller
+ * can warn when it fell back to the default (a silent 0.16.0 is a landmine —
+ * the app runs an SDK dozens of releases stale with nothing naming it).
+ */
+export function resolveSelfHostVersionDetailed(
+  raw: string,
+  moduleName: string,
+  defaultVersion: string,
+  floor: string,
+): SelfHostVersionResolution {
   let parsed: IPackageJSON | undefined;
   try {
     parsed = JSON.parse(raw) as IPackageJSON;
   } catch {
-    return defaultVersion;
+    return { version: defaultVersion, source: 'default' };
   }
-  const declared = parsed?.dependencies?.[moduleName];
-  if (declared === undefined) {
-    return defaultVersion;
+  // R3-289: at the root of a run a peer declaration binds exactly like a
+  // dependency — the platform is the environment, and there is no consumer to
+  // answer the peer. `dependencies` still wins when both declare it.
+  const declaredIn =
+    parsed?.dependencies?.[moduleName] !== undefined
+      ? ('dependency' as const)
+      : parsed?.peerDependencies?.[moduleName] !== undefined
+      ? ('peer' as const)
+      : null;
+  if (declaredIn === null) {
+    return { version: defaultVersion, source: 'default' };
   }
+  const declared = (declaredIn === 'dependency' ? parsed?.dependencies : parsed?.peerDependencies)?.[moduleName];
   const version = concreteVersion(declared);
   if (version === undefined) {
     throw new SelfHostResolutionError(
@@ -102,7 +140,12 @@ export function resolveSelfHostVersion(raw: string, moduleName: string, defaultV
         `(SDK_PACKAGING_SPEC §5.1: resolution fails closed at resolve time.)`,
     );
   }
-  return version;
+  return { version, source: declaredIn };
+}
+
+/** The plain form: the version string alone (see {@link resolveSelfHostVersionDetailed}). */
+export function resolveSelfHostVersion(raw: string, moduleName: string, defaultVersion: string, floor: string): string {
+  return resolveSelfHostVersionDetailed(raw, moduleName, defaultVersion, floor).version;
 }
 
 /** One file resolved for a self-hosted module, ready to write + register. */
