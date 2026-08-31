@@ -14,6 +14,7 @@ import { CompilationError } from './errors/CompilationError';
 import { errorMessage } from './errors/util';
 import { withReadOnlyMounts } from './FileSystem/readOnlyMounts';
 import { withRaceTolerance } from './FileSystem/raceTolerance';
+import { mountWatchRelay, withMountWatchRelay } from './FileSystem/mountWatchEvents';
 import { FormFactorService } from './formFactor/FormFactorService';
 import { REQUEST_FORM_FACTOR_MESSAGE } from './formFactor/formFactorState';
 import { APP_ROOT, underAppRoot } from './fsLayout';
@@ -264,20 +265,25 @@ class SandpackInstance {
     // their contents belong to the bundler. Wrap the bound fs so any app-code write
     // under those prefixes fails `EROFS` (incl. new-file creation); `/app` writes
     // still cross the Port to the parent.
+    // R3-409 (OUTERMOST): `fs.promises.watch` also carries the mount relay —
+    // remote (server-side) changes on a space mount arrive as watch events,
+    // merged with core's local ones (`mountWatchEvents.ts`).
     //
-    // R3-408 (innermost): the fs apps seed through is race-tolerant — a StrictMode
+    // R3-408 (inner): the fs apps seed through is race-tolerant — a StrictMode
     // double-boot must not see EEXIST/ENOENT for concurrent recursive mkdirs,
     // concurrent creates of the same new file, or creates racing their parent's
-    // mkdir. Innermost on purpose: the EROFS guard rejects before anything is
-    // retried, so a read-only violation never loops through a retry.
-    (globalThis as any).__sandpackSharedFs = withReadOnlyMounts(
-      withRaceTolerance(
-        bindContext({
-          root: '/',
-          pwd: APP_ROOT,
-        }).fs,
+    // mkdir. The EROFS guard rejects before anything is retried, so a
+    // read-only violation never loops through a retry.
+    (globalThis as any).__sandpackSharedFs = withMountWatchRelay(
+      withReadOnlyMounts(
+        withRaceTolerance(
+          bindContext({
+            root: '/',
+            pwd: APP_ROOT,
+          }).fs,
+        ),
+        ['/node_modules', '/transpiled'],
       ),
-      ['/node_modules', '/transpiled'],
     );
 
     // Zenfs is ready — safe to create the bundler (CachedFS starts a
@@ -410,6 +416,19 @@ class SandpackInstance {
         this.announceHandshake();
         break;
       case FS_CHANGE:
+        // R3-409 — the mount-anchored leg: a SPACE mount's server-side changes
+        // (another tab's or member's writes, relayed by the host's export with
+        // the frame's scope applied). Turn them into ZenFS watch events on the
+        // shared fs's context — zenfs's Port backend can't forward them itself,
+        // and without this leg `fs.promises.watch` on a space stayed silent for
+        // every remote writer while reads stayed fresh. NOT a recompile trigger:
+        // the bundler owns `/app` only, and space bytes live outside it.
+        if (message.mount && typeof message.mount.path === 'string' && Array.isArray(message.mount.changes)) {
+          this.readyPromise
+            .then(() => mountWatchRelay.emit(message.mount.path, message.mount.changes))
+            .catch(logger.error);
+          break;
+        }
         // The parent observed writes to the shared filesystem and relayed the
         // changed paths (zenfs's Port backend can't forward watch events, so we
         // can't see them ourselves). The parent reports them repo-relative
