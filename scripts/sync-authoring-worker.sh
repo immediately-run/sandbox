@@ -18,6 +18,25 @@ if [ ! -f "$SRC/authoring-worker.js" ]; then
   exit 1
 fi
 
+# ── the split gate (R3-330) ──────────────────────────────────────────────────
+# The build MUST arrive split: a stable-named entry plus per-engine hashed
+# chunks. A single-file dist means someone re-added a static engine import to
+# the entry (or Parcel stopped splitting) — syncing that would silently put the
+# ~10 MB monolith back under /authoring-worker/, where `format` pays for the
+# TypeScript compiler again. Fail the sync instead.
+entry_bytes=$(stat -c%s "$SRC/authoring-worker.js")
+chunks=$(ls "$SRC" | grep -cE '^[a-z-]+\.[0-9a-f]+\.js$' || true)
+refs=$(grep -oE '(format|typecheck|lint|worker-lib-host|worker-lint-host)\.[0-9a-f]+\.js' "$SRC/authoring-worker.js" | sort -u | wc -l | tr -d ' ')
+if [ "$entry_bytes" -gt 100000 ]; then
+  echo "error: entry is $entry_bytes bytes — the dispatcher should be a few KB." >&2
+  echo "       A fat entry means the engines are statically imported again (R3-330)." >&2
+  exit 1
+fi
+if [ "$chunks" -lt 4 ] || [ "$refs" -lt 5 ]; then
+  echo "error: expected a split build (>=4 hashed chunks, entry referencing the 5 engine modules); found $chunks chunks, $refs referenced. (R3-330)" >&2
+  exit 1
+fi
+
 rm -rf "$DEST"
 mkdir -p "$DEST"
 cp "$SRC"/*.js "$DEST"/
@@ -40,5 +59,5 @@ $(ls "$DEST"/*.js | xargs -n1 basename | sed 's/^/    "/;s/$/"/' | paste -sd, - 
   ]
 }
 EOF
-echo "Synced $(ls "$DEST"/*.js | wc -l | tr -d ' ') authoring worker file(s) to $DEST"
+echo "Synced $(ls "$DEST"/*.js | wc -l | tr -d ' ') authoring worker file(s) (entry + $chunks chunks) to $DEST"
 echo "Provenance: sandbox@${REPO_COMMIT:0:10}$([ "$REPO_DIRTY" != "0" ] && echo ' (dirty authoring sources!)')"
