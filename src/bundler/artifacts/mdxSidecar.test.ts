@@ -57,8 +57,13 @@ describe('G-MDX-3b — sidecar seeding of the MDX metadata store', () => {
 
     // Clean covered file: seeded from JSON, /app-translated (metadataKey.test contract).
     expect(meta.get('/app/content/post.mdx')).toEqual({ title: 'Hello', tags: ['a'] });
-    // Dirty file: LIVE-read edited value wins over the stale sidecar entry.
-    expect(meta.get('/app/content/dirty.mdx')).toEqual({ title: 'Edited' });
+    // Dirty file: LIVE-read edited value wins over the stale sidecar entry — and the
+    // live read attaches the additive `headings` index field (GROVE_AGENT_SPEC §4),
+    // which a sidecar-seeded row (frontmatter only, no body at seed time) lacks.
+    expect(meta.get('/app/content/dirty.mdx')).toEqual({
+      title: 'Edited',
+      headings: [{ id: 'edited', text: 'edited', depth: 1 }],
+    });
     // Confinement drops: srcSha drift + non-manifest entry never seed.
     expect(meta.has('/app/content/drift.mdx')).toBe(false);
     expect(meta.has('/app/content/ghost.mdx')).toBe(false);
@@ -106,8 +111,12 @@ describe('G-MDX-3b — sidecar seeding of the MDX metadata store', () => {
 
     const distrust = h.sentMessages.find((m) => m.type === 'artifact-distrust');
     expect(distrust?.data).toMatchObject({ reason: 'writable-layer-mdx-metadata' });
-    // Fell through to the live walk → the HONEST value, not the forged sidecar one.
-    expect(lastMetadataOf(h).get('/app/content/post.mdx')).toEqual({ title: 'Real' });
+    // Fell through to the live walk → the HONEST value, not the forged sidecar one
+    // (plus the live walk's additive `headings` field, which seeds never carry).
+    expect(lastMetadataOf(h).get('/app/content/post.mdx')).toEqual({
+      title: 'Real',
+      headings: [{ id: 'real', text: 'real', depth: 1 }],
+    });
   });
 
   it('no sidecar → the live walk still populates the store (fallback unchanged)', async () => {

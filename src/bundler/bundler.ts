@@ -52,6 +52,7 @@ import { SELF_HOST_BASES } from './moduleOrigins';
 import { retryFetch, registerImmutableUrlPrefix } from '../utils/fetch';
 import { basename, dirname } from '../utils/path';
 import { FrontmatterParseResult, parseFrontmatter } from '@immediately-run/transpiler';
+import { withHeadings } from './headings';
 import {
   bindContext,
   globToRegex,
@@ -154,6 +155,9 @@ const extractMetadata = (file: ISandboxFile): FrontmatterParseResult | null => {
     try {
       const parseResult = parseFrontmatter(file.code);
       if (Object.keys(parseResult.data).length > 0) {
+        // The empty-frontmatter drop is part of the envelope contract — an entry
+        // with no frontmatter stays unindexed, so it contributes no headings row
+        // either (its section list is reachable by body read, the additive degrade).
         return parseResult;
       }
     } catch (e) {
@@ -1547,7 +1551,10 @@ export class Bundler {
 
   private refreshMetadata(path: string, source: string): void {
     const parsed = extractMetadata({ path, code: source });
-    const next = parsed ? parsed.data : undefined;
+    // The additive headings index extension (GROVE_AGENT_SPEC §4): a parsed row
+    // carries its entry's heading list, ids from the render canon. The author's
+    // own `headings` frontmatter key (if any) wins — `withHeadings` is a no-op then.
+    const next = parsed ? withHeadings(parsed.data, parsed.content) : undefined;
     // Metadata is keyed by the file's ABSOLUTE module/fs path (e.g.
     // `/app/content/x.mdx`) — the same identifier `module.dynamicImport`, `fs`,
     // and the SDK `<Include>` use. Keeping the metadata key in the file space
