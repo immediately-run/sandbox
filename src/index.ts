@@ -49,6 +49,7 @@ import {
 import { IFrameParentMessageBus } from './protocol/iframe';
 import { HOST_MOUNT_ROOTS, REPO_MOUNT_ROOTS, admitMountAdd, isAllowedMountPath } from './protocol/mountAdmission';
 import { applyMountAdd } from './protocol/mountSequence';
+import { FsChangeGate } from './protocol/fsChange';
 // The versions this frame announces on the handshake (T45). Both are plain
 // compile-time constants OWNED BY THIS REPO — R3-274d retired the build step that
 // read the SDK's number out of a sibling checkout. See protocol/version.ts.
@@ -104,6 +105,9 @@ class SandpackInstance {
   private disposableStore = new DisposableStore();
   private bundler!: Bundler;
   private compileDebouncer = new Debouncer(50);
+  /** Refuses a working-tree `fs-change` batch this frame has already applied, so a
+   *  re-announcement recompiles nothing. Owns its own memory — see `FsChangeGate`. */
+  private fsChangeGate = new FsChangeGate();
   // The repo's Port-backed fs (mounted at /app); kept so it can also be
   // dual-mounted at its canonical /mnt/{hash} address (§11.2, handleRepoMount).
   private repoPortFs?: Awaited<ReturnType<typeof resolveMountConfig>>;
@@ -438,13 +442,27 @@ class SandpackInstance {
         // (before the bundler exists) are applied once it's ready rather than
         // throwing.
         //
-        // `epoch` is on the wire and declared ({@link FsChangeMessage}) but not read
-        // here: this frame recompiles on every batch, so it has no use for the
-        // ordering token the SDK's consumers need. Declaring it anyway is the point
-        // of R3-274e — the message has one shape whether or not a given side
-        // consumes all of it.
+        // `epoch` IS read here now (it used not to be — see `FsChangeGate` for the
+        // incident that changed that, and for why a dropped batch is durable
+        // staleness rather than a deferred compile). A batch this frame has already
+        // applied is refused, so a host that re-announces one cannot drive an endless
+        // recompile through us.
+        //
+        // The decision AND its memory live in the gate, deliberately: an adversarial
+        // review of the first version of this change gutted these lines (verdict
+        // computed, discarded) and the whole suite stayed green, because only the pure
+        // function was tested and `handleParentMessage` is unreachable from a test
+        // (`window['sandpack'] = new SandpackInstance()` at module scope). Keeping the
+        // state in the gate makes the admission a unit under test; what is left here
+        // is a call whose removal is visible.
+        //
+        // Scope: this suppresses the BUNDLER RECOMPILE only. `handleParentMessage` is
+        // one subscriber on a multi-subscriber bus, and the SDK's transport holds its
+        // own — so `onFsChange` in app code still sees every batch, duplicates
+        // included, and the editor-as-app's origin exclusion is untouched.
         this.readyPromise
           .then(() => {
+            if (!this.fsChangeGate.admit(message)) return;
             const paths = (message.paths ?? []).map((p: string) => underAppRoot(p));
             this.bundler.markFilesChanged(paths);
             this.compileDebouncer.debounce(() => this.runCompile());
