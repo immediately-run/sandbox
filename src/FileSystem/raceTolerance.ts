@@ -70,7 +70,7 @@ async function mkdirEexistFallback(
 }
 
 /** Wrap one `fs.promises`-shaped surface with the R3-408 semantics. */
-export function wrapPromisesRaceTolerance(promises: Record<string, unknown>): Record<string, unknown> {
+function wrapPromisesRaceTolerance(promises: Record<string, unknown>): Record<string, unknown> {
   return new Proxy(promises, {
     get(target, prop, receiver) {
       const value = Reflect.get(target, prop, receiver);
