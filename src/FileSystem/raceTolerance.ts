@@ -105,6 +105,47 @@ export function wrapPromisesRaceTolerance(promises: Record<string, unknown>): Re
   });
 }
 
+type NodeCallback = (err: unknown, res?: unknown) => void;
+
+/**
+ * Drive one node-style callback call with room for a SINGLE recovery attempt.
+ *
+ * Both callback-style branches below need the same shape, and it is the shape
+ * that keeps the contract: the caller's callback is swapped out BEFORE the first
+ * call, so no intermediate attempt can ever reach it — only a final result does.
+ *
+ * `recover` is consulted for the FIRST attempt's error only. Returning true means
+ * it has taken ownership of finishing the call (by calling `retryOnce`, or by
+ * invoking `cb` itself); returning false reports the error unchanged. So a
+ * persistent error surfaces from the second attempt exactly as it arrived, and
+ * there is never a third.
+ *
+ * Returns false when the last argument is not a callback — this was not the
+ * callback style at all, and the caller falls through to its own handling.
+ */
+function callWithSingleRetry(
+  fn: (...a: unknown[]) => unknown,
+  target: unknown,
+  args: unknown[],
+  recover: (err: unknown, retryOnce: () => void, cb: NodeCallback) => boolean,
+): boolean {
+  const last = args[args.length - 1];
+  if (typeof last !== 'function') return false;
+  const cb = last as NodeCallback;
+  const callArgs = args.slice(0, -1);
+  const attempt = (isRetry: boolean): void => {
+    fn.apply(target, [
+      ...callArgs,
+      ((err: unknown, res?: unknown) => {
+        if (err && !isRetry && recover(err, () => attempt(true), cb)) return;
+        cb(err, res);
+      }) as never,
+    ]);
+  };
+  attempt(false);
+  return true;
+}
+
 const RETRY_METHODS = new Set(['writeFile', 'appendFile', 'open']);
 
 /**
@@ -158,30 +199,17 @@ export function withRaceTolerance<T extends object>(boundFs: T): T {
               throw e;
             }
           }
-          // Callback style: swap the callback BEFORE the first call, so no
-          // attempt ever reaches the caller's callback except a final one.
-          const last = args[args.length - 1];
-          if (typeof last === 'function') {
-            const cb = last as (e: unknown, r?: unknown) => void;
-            const callArgs = args.slice(0, -1);
-            const attempt = (isRetry: boolean): void => {
-              fn.apply(target, [
-                ...callArgs,
-                ((err: unknown, res?: unknown) => {
-                  if (err && !isRetry && options?.recursive && isErrno(err, EEXIST_ONLY)) {
-                    eexistFallback(err).then(
-                      () => cb(null),
-                      (e: unknown) => cb(e),
-                    );
-                    return;
-                  }
-                  cb(err, res);
-                }) as never,
-              ]);
-            };
-            attempt(false);
-            return undefined;
-          }
+          // Callback style: the EEXIST recovery is a stat, not a second mkdir,
+          // so it answers the callback itself instead of retrying.
+          const isCallbackStyle = callWithSingleRetry(fn, target, args, (err, _retryOnce, cb) => {
+            if (!options?.recursive || !isErrno(err, EEXIST_ONLY)) return false;
+            eexistFallback(err).then(
+              () => cb(null),
+              (e: unknown) => cb(e),
+            );
+            return true;
+          });
+          if (isCallbackStyle) return undefined;
           const result = fn.apply(target, args);
           if (result instanceof Promise) {
             return result.catch((e: unknown) => {
@@ -203,28 +231,13 @@ export function withRaceTolerance<T extends object>(boundFs: T): T {
               return fn.apply(target, args);
             }
           }
-          // Callback style: swap the callback BEFORE the first call; the
-          // wrapped callback retries once, and only a final result ever
-          // reaches the caller's callback.
-          const last = args[args.length - 1];
-          if (typeof last === 'function') {
-            const cb = last as (e: unknown, r?: unknown) => void;
-            const callArgs = args.slice(0, -1);
-            const attempt = (isRetry: boolean): void => {
-              fn.apply(target, [
-                ...callArgs,
-                ((err: unknown, res?: unknown) => {
-                  if (err && !isRetry && isErrno(err, RETRYABLE)) {
-                    attempt(true);
-                    return;
-                  }
-                  cb(err, res);
-                }) as never,
-              ]);
-            };
-            attempt(false);
-            return undefined;
-          }
+          // Callback style: one identical retry of the same call.
+          const isCallbackStyle = callWithSingleRetry(fn, target, args, (err, retryOnce) => {
+            if (!isErrno(err, RETRYABLE)) return false;
+            retryOnce();
+            return true;
+          });
+          if (isCallbackStyle) return undefined;
           const result = fn.apply(target, args);
           if (result instanceof Promise) {
             return result.catch((e: unknown) => {

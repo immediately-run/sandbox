@@ -204,6 +204,85 @@ describe('withRaceTolerance — callback + sync surfaces', () => {
     expect(n).toBe(2);
   });
 
+  it('callback-style writeFile stops at ONE retry: a persistent error reaches the callback', async () => {
+    let n = 0;
+    const target = {
+      promises: scriptedSurface({}),
+      writeFile: (_p: unknown, _d: unknown, cb: (e: unknown) => void) => {
+        n++;
+        cb(errno('EEXIST'));
+      },
+    };
+    const wrapped = withRaceTolerance(target as object) as {
+      writeFile: (p: unknown, d: unknown, cb: (e: unknown, r?: unknown) => void) => void;
+    };
+    const seen: unknown[] = [];
+    await new Promise<void>((resolve) => {
+      wrapped.writeFile('/deck.json', 'seed', (e) => {
+        seen.push(e);
+        resolve();
+      });
+    });
+    // Two attempts, and the caller's callback ran exactly once — the first
+    // attempt's error must never reach it.
+    expect(n).toBe(2);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toMatchObject({ code: 'EEXIST' });
+  });
+
+  it('callback-style mkdir(recursive) EEXIST resolves via stat, without a second mkdir', async () => {
+    let mkdirs = 0;
+    const target = {
+      promises: scriptedSurface({ stat: () => Promise.resolve({ isDirectory: () => true }) }),
+      mkdir: (_p: unknown, _o: unknown, cb: (e: unknown) => void) => {
+        mkdirs++;
+        cb(errno('EEXIST'));
+      },
+    };
+    const wrapped = withRaceTolerance(target as object) as {
+      mkdir: (p: unknown, o: unknown, cb: (e: unknown, r?: unknown) => void) => void;
+    };
+    const cbResult = await new Promise<unknown>((resolve) => {
+      wrapped.mkdir('/data/habits', { recursive: true }, (e) => resolve(e));
+    });
+    // The recovery is a stat, not a retry: mkdir is called once, not twice.
+    expect(cbResult).toBeNull();
+    expect(mkdirs).toBe(1);
+  });
+
+  it('callback-style mkdir(recursive) EEXIST where the path is a FILE reports the original error', async () => {
+    const target = {
+      promises: scriptedSurface({ stat: () => Promise.resolve({ isDirectory: () => false }) }),
+      mkdir: (_p: unknown, _o: unknown, cb: (e: unknown) => void) => cb(errno('EEXIST')),
+    };
+    const wrapped = withRaceTolerance(target as object) as {
+      mkdir: (p: unknown, o: unknown, cb: (e: unknown, r?: unknown) => void) => void;
+    };
+    const cbResult = await new Promise<unknown>((resolve) => {
+      wrapped.mkdir('/data/habits', { recursive: true }, (e) => resolve(e));
+    });
+    expect(cbResult).toMatchObject({ code: 'EEXIST' });
+  });
+
+  it('callback-style mkdir NON-recursive keeps its EEXIST (no idempotency without the flag)', async () => {
+    let mkdirs = 0;
+    const target = {
+      promises: scriptedSurface({ stat: () => Promise.resolve({ isDirectory: () => true }) }),
+      mkdir: (_p: unknown, cb: (e: unknown) => void) => {
+        mkdirs++;
+        cb(errno('EEXIST'));
+      },
+    };
+    const wrapped = withRaceTolerance(target as object) as {
+      mkdir: (p: unknown, cb: (e: unknown, r?: unknown) => void) => void;
+    };
+    const cbResult = await new Promise<unknown>((resolve) => {
+      wrapped.mkdir('/data', (e) => resolve(e));
+    });
+    expect(cbResult).toMatchObject({ code: 'EEXIST' });
+    expect(mkdirs).toBe(1);
+  });
+
   it('mkdirSync(recursive) EEXIST on a directory resolves; mkdirSync non-recursive passes through', () => {
     const target = {
       promises: scriptedSurface({}),
