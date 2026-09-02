@@ -1,6 +1,6 @@
 import type { BoundContext } from '@zenfs/core';
 
-import { CachedFS, CachedFSChangeEvent } from './CachedFS';
+import { CachedFS, CachedFSChangeEvent, withLeadingSlash } from './CachedFS';
 
 // CachedFS only ever touches `boundContext.fs.promises.{readFile,stat,watch}`, so a
 // fake context lets us count backend reads and drive watcher events deterministically
@@ -195,6 +195,21 @@ describe('CachedFS (G0-2 — read memoization + change invalidation)', () => {
     expect(fs.drainPendingChanges()).toEqual([]);
   });
 
+  it('a watcher RENAME keeps its event type through the shared invalidation step', async () => {
+    const watch = controllableWatch();
+    const { context } = makeContext({ watch: () => watch.iterable });
+    const fs = new CachedFS(context);
+    const events: CachedFSChangeEvent[] = [];
+    fs.onFileChanged((e) => events.push(e));
+
+    watch.push({ filename: 'a.js', eventType: 'rename' });
+    await flush();
+
+    // `markChanged` reports 'change'; only the watcher can report 'rename', so the
+    // shared step must carry the caller's type rather than hard-coding one.
+    expect(events).toEqual([{ path: '/a.js', eventType: 'rename' }]);
+  });
+
   it('isFileAsync memoizes stat and treats a cached read as a known file', async () => {
     const stat = jest.fn(async () => ({ isFile: () => true }));
     const { context, readFile } = makeContext({ stat });
@@ -282,5 +297,21 @@ describe('CachedFS — batch hydration (R3-49b)', () => {
     fs.markChanged(['/app/pkg.msgpack']);
     expect(await fs.readBytesAsync('/app/pkg.msgpack')).toEqual(new Uint8Array([9]));
     expect(readFile).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('withLeadingSlash', () => {
+  it('adds the slash a watcher filename arrives without', () => {
+    expect(withLeadingSlash('a.js')).toBe('/a.js');
+    expect(withLeadingSlash('src/App.tsx')).toBe('/src/App.tsx');
+  });
+
+  it('leaves an already-absolute path alone (no double slash)', () => {
+    expect(withLeadingSlash('/a.js')).toBe('/a.js');
+    expect(withLeadingSlash('//a.js')).toBe('//a.js');
+  });
+
+  it('turns the empty path into the root, not the empty string', () => {
+    expect(withLeadingSlash('')).toBe('/');
   });
 });
