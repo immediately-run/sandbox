@@ -15,6 +15,13 @@
  * without a live bundler/babel worker.
  */
 import { underAppRoot } from '../fsLayout';
+import {
+  identifierEnd,
+  isIdentStart,
+  nextSignificantIndex,
+  skipCommentFrom,
+  skipStringFrom,
+} from '../utils/sourceScan';
 
 /**
  * Local-entry filenames, by Vite/CRA convention, whose side-effect imports the
@@ -22,9 +29,6 @@ import { underAppRoot } from '../fsLayout';
  * Ordered most-specific first; repo-relative (resolved under `APP_ROOT`).
  */
 export const LOCAL_ENTRY_CANDIDATES = ['src/main', 'main'];
-
-const isIdentStart = (c: string): boolean => (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c === '_' || c === '$';
-const isIdentPart = (c: string): boolean => isIdentStart(c) || (c >= '0' && c <= '9');
 
 /**
  * Extract the module specifiers of **side-effect-only** import statements from
@@ -46,72 +50,35 @@ export function extractSideEffectImports(source: string): string[] {
   // `import` keyword apart from an `.import` member access.
   let prevSignificant = '';
 
-  const skipStringFrom = (start: number, quote: string): number => {
-    let j = start + 1;
-    while (j < n) {
-      const ch = source[j];
-      if (ch === '\\') {
-        j += 2;
-        continue;
-      }
-      if (ch === quote) return j + 1;
-      j++;
-    }
-    return n;
-  };
-
   while (i < n) {
     const c = source[i];
 
-    // Line comment
-    if (c === '/' && source[i + 1] === '/') {
-      i += 2;
-      while (i < n && source[i] !== '\n') i++;
+    // Line or block comment.
+    const pastComment = skipCommentFrom(source, i);
+    if (pastComment >= 0) {
+      i = pastComment;
       continue;
     }
-    // Block comment
-    if (c === '/' && source[i + 1] === '*') {
-      i += 2;
-      while (i < n && !(source[i] === '*' && source[i + 1] === '/')) i++;
-      i += 2;
-      continue;
-    }
-    // String / template literal — note: this is a heuristic for template
-    // literals (it doesn't descend into `${...}`), which is fine here because we
-    // only care about top-level import statements, never expressions.
+    // String / template literal — skipped whole (no `${...}` descent), which is
+    // fine here because we only care about top-level import statements, never
+    // expressions.
     if (c === '"' || c === "'" || c === '`') {
-      i = skipStringFrom(i, c);
+      i = skipStringFrom(source, i, c);
       prevSignificant = c;
       continue;
     }
     // Identifier / keyword
     if (isIdentStart(c)) {
-      let j = i + 1;
-      while (j < n && isIdentPart(source[j])) j++;
+      const j = identifierEnd(source, i);
       const word = source.slice(i, j);
 
       if (word === 'import' && prevSignificant !== '.') {
         // Skip whitespace and comments after the keyword to find the next token.
-        let k = j;
-        while (k < n) {
-          const ck = source[k];
-          if (ck === ' ' || ck === '\t' || ck === '\r' || ck === '\n') {
-            k++;
-          } else if (ck === '/' && source[k + 1] === '/') {
-            k += 2;
-            while (k < n && source[k] !== '\n') k++;
-          } else if (ck === '/' && source[k + 1] === '*') {
-            k += 2;
-            while (k < n && !(source[k] === '*' && source[k + 1] === '/')) k++;
-            k += 2;
-          } else {
-            break;
-          }
-        }
+        const k = nextSignificantIndex(source, j);
         const next = source[k];
         if (next === '"' || next === "'") {
           // `import <string>` — a side-effect import. Read the literal.
-          const end = skipStringFrom(k, next);
+          const end = skipStringFrom(source, k, next);
           specifiers.push(source.slice(k + 1, end - 1));
           prevSignificant = next;
           i = end;
