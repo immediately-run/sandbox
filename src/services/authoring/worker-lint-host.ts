@@ -14,9 +14,9 @@
 import * as tsParser from '@typescript-eslint/parser';
 import { Linter } from 'eslint-linter-browserify';
 
-import type { LintDeps, LinterLike } from './lint';
+import type { LintDeps } from './lint';
 
 export const workerLintDeps: LintDeps = {
-  createLinter: () => new Linter() as unknown as LinterLike,
+  createLinter: () => new Linter(),
   tsParser,
 };

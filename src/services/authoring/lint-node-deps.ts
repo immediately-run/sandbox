@@ -10,9 +10,9 @@
 import * as tsParser from '@typescript-eslint/parser';
 import { Linter } from 'eslint';
 
-import type { LintDeps, LinterLike } from './lint';
+import type { LintDeps } from './lint';
 
 export const nodeLintDeps: LintDeps = {
-  createLinter: () => new Linter() as unknown as LinterLike,
+  createLinter: () => new Linter(),
   tsParser,
 };
