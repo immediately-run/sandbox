@@ -27,6 +27,35 @@ export class HotContext {
     return this.hmrConfig;
   }
 
+  /**
+   * Mark every module named by `path` with `type`, then run `then` on it.
+   *
+   * `accept(paths, cb)` and `decline(paths)` differ only in that follow-up, and
+   * both keep the resolution semantics this holds: each name is resolved
+   * independently against this module's own file, resolution is asynchronous
+   * and NOT awaited by the caller (the `module.hot.*` call an app makes is
+   * synchronous, so the marks land on a later tick), and a name that resolves
+   * to no known module is silently skipped — an app may name a path the graph
+   * has not reached yet.
+   */
+  private markNamedModules(
+    path: string | string[],
+    type: 'accept' | 'decline',
+    then: (module: Module, hmrConfig: HMR) => void,
+  ): void {
+    const paths = typeof path === 'string' ? [path] : path;
+
+    paths.forEach(async (p) => {
+      const resolvedPath = await this.module.bundler.resolveAsync(p, this.module.filepath);
+      const module = this.module.bundler.getModule(resolvedPath);
+      if (module) {
+        const hmrConfig = module.hot.ensureHMRConfig();
+        hmrConfig.setType(type);
+        then(module, hmrConfig);
+      }
+    });
+  }
+
   accept(path: string | string[], cb: () => any) {
     if (typeof path === 'undefined' || (typeof path !== 'string' && !Array.isArray(path))) {
       // Self mark hot
@@ -34,17 +63,7 @@ export class HotContext {
       hmrConfig.setType('accept');
       hmrConfig.setSelfAccepted(true);
     } else {
-      const paths = typeof path === 'string' ? [path] : path;
-
-      paths.forEach(async (p) => {
-        const resolvedPath = await this.module.bundler.resolveAsync(p, this.module.filepath);
-        const module = this.module.bundler.getModule(resolvedPath);
-        if (module) {
-          const hmrConfig = module.hot.ensureHMRConfig();
-          hmrConfig.setType('accept');
-          hmrConfig.setAcceptCallback(cb);
-        }
-      });
+      this.markNamedModules(path, 'accept', (_module, hmrConfig) => hmrConfig.setAcceptCallback(cb));
     }
   }
 
@@ -54,17 +73,7 @@ export class HotContext {
       hmrConfig.setType('decline');
       this.module.resetCompilation();
     } else {
-      const paths = typeof path === 'string' ? [path] : path;
-
-      paths.forEach(async (p) => {
-        const resolvedPath = await this.module.bundler.resolveAsync(p, this.module.filepath);
-        const module = this.module.bundler.getModule(resolvedPath);
-        if (module) {
-          const hmrConfig = module.hot.ensureHMRConfig();
-          hmrConfig.setType('decline');
-          module.resetCompilation();
-        }
-      });
+      this.markNamedModules(path, 'decline', (module) => module.resetCompilation());
     }
   }
 
