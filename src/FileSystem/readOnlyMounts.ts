@@ -1,5 +1,7 @@
 import { withErrno } from 'kerium';
 
+import { wrapBoundFs } from './boundFsProxy';
+
 /**
  * R3-48 G0-3 — app-facing EROFS write-guard (PRETRANSPILED_ARTIFACTS_SPEC §5.7 /
  * §9 "mount hardening, Gate 0").
@@ -81,17 +83,12 @@ function wrapPromises(promises: Record<string, unknown>, prefixes: string[]): Re
  * `boundFs` is the `bindContext({...}).fs` object handed to app code.
  */
 export function withReadOnlyMounts<T extends object>(boundFs: T, readOnlyPrefixes: string[]): T {
-  let promisesProxy: Record<string, unknown> | undefined;
-  return new Proxy(boundFs, {
-    get(target, prop, receiver) {
-      const value = Reflect.get(target, prop, receiver);
-      if (prop === 'promises' && value && typeof value === 'object') {
-        promisesProxy ??= wrapPromises(value as Record<string, unknown>, readOnlyPrefixes);
-        return promisesProxy;
-      }
-      if (typeof prop !== 'string' || typeof value !== 'function') return value;
+  return wrapBoundFs(
+    boundFs,
+    (promises) => wrapPromises(promises, readOnlyPrefixes),
+    (prop, fn, target) => {
       const guard = guardFor(prop);
-      if (!guard) return (value as (...a: unknown[]) => unknown).bind(target);
+      if (!guard) return fn.bind(target);
       const isSync = prop.endsWith('Sync');
       return (...args: unknown[]) => {
         if (violates(args, guard, readOnlyPrefixes)) {
@@ -102,8 +99,8 @@ export function withReadOnlyMounts<T extends object>(boundFs: T, readOnlyPrefixe
           if (typeof last === 'function') return (last as (e: unknown) => void)(error);
           throw error;
         }
-        return (value as (...a: unknown[]) => unknown).apply(target, args);
+        return fn.apply(target, args);
       };
     },
-  });
+  );
 }

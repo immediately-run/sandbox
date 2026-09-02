@@ -38,6 +38,8 @@
  * other than EEXIST/ENOENT are never retried.
  */
 
+import { wrapBoundFs } from './boundFsProxy';
+
 const RETRYABLE = new Set(['EEXIST', 'ENOENT']);
 const EEXIST_ONLY = new Set(['EEXIST']);
 
@@ -155,102 +157,87 @@ const RETRY_METHODS = new Set(['writeFile', 'appendFile', 'open']);
  * this layer.
  */
 export function withRaceTolerance<T extends object>(boundFs: T): T {
-  let promisesProxy: Record<string, unknown> | undefined;
-  return new Proxy(boundFs, {
-    get(target, prop, receiver) {
-      const value = Reflect.get(target, prop, receiver);
-      if (prop === 'promises' && value && typeof value === 'object') {
-        promisesProxy ??= wrapPromisesRaceTolerance(value as Record<string, unknown>);
-        return promisesProxy;
-      }
-      if (typeof prop !== 'string' || typeof value !== 'function') return value;
-      const fn = value as (...a: unknown[]) => unknown;
-      const isSync = prop.endsWith('Sync');
-      const base = isSync ? prop.slice(0, -4) : prop;
+  return wrapBoundFs(boundFs, wrapPromisesRaceTolerance, (prop, fn, target, receiver, promisesForTarget) => {
+    const isSync = prop.endsWith('Sync');
+    const base = isSync ? prop.slice(0, -4) : prop;
 
-      const promisesOf = (): Record<string, unknown> =>
-        promisesProxy ?? (Reflect.get(target, 'promises', receiver) as Record<string, unknown>);
+    const promisesOf = (): Record<string, unknown> => promisesForTarget(target, receiver);
 
-      if (base === 'mkdir') {
-        // Callback / promise-less top-level AND the sync variant. The
-        // recursive flag rides args[1] in every spelling.
-        return (...args: unknown[]) => {
-          const options = args[1] as { recursive?: boolean } | undefined;
-          const eexistFallback = (original: unknown): Promise<unknown> =>
-            mkdirEexistFallback(
-              promisesOf() as unknown as { stat: (p: unknown) => Promise<unknown> },
-              args[0],
-              original,
-            );
-          if (isSync) {
+    if (base === 'mkdir') {
+      // Callback / promise-less top-level AND the sync variant. The
+      // recursive flag rides args[1] in every spelling.
+      return (...args: unknown[]) => {
+        const options = args[1] as { recursive?: boolean } | undefined;
+        const eexistFallback = (original: unknown): Promise<unknown> =>
+          mkdirEexistFallback(promisesOf() as unknown as { stat: (p: unknown) => Promise<unknown> }, args[0], original);
+        if (isSync) {
+          try {
+            return fn.apply(target, args);
+          } catch (e) {
+            if (!options?.recursive || !isErrno(e, EEXIST_ONLY)) throw e;
+            const statSync = Reflect.get(target, 'statSync', receiver) as ((p: unknown) => unknown) | undefined;
+            if (!statSync) throw e;
+            let stats: unknown = null;
             try {
-              return fn.apply(target, args);
-            } catch (e) {
-              if (!options?.recursive || !isErrno(e, EEXIST_ONLY)) throw e;
-              const statSync = Reflect.get(target, 'statSync', receiver) as ((p: unknown) => unknown) | undefined;
-              if (!statSync) throw e;
-              let stats: unknown = null;
-              try {
-                stats = statSync(args[0]);
-              } catch {
-                throw e;
-              }
-              if (statsIsDirectory(stats)) return undefined;
+              stats = statSync(args[0]);
+            } catch {
               throw e;
             }
+            if (statsIsDirectory(stats)) return undefined;
+            throw e;
           }
-          // Callback style: the EEXIST recovery is a stat, not a second mkdir,
-          // so it answers the callback itself instead of retrying.
-          const isCallbackStyle = callWithSingleRetry(fn, target, args, (err, _retryOnce, cb) => {
-            if (!options?.recursive || !isErrno(err, EEXIST_ONLY)) return false;
-            eexistFallback(err).then(
-              () => cb(null),
-              (e: unknown) => cb(e),
-            );
-            return true;
+        }
+        // Callback style: the EEXIST recovery is a stat, not a second mkdir,
+        // so it answers the callback itself instead of retrying.
+        const isCallbackStyle = callWithSingleRetry(fn, target, args, (err, _retryOnce, cb) => {
+          if (!options?.recursive || !isErrno(err, EEXIST_ONLY)) return false;
+          eexistFallback(err).then(
+            () => cb(null),
+            (e: unknown) => cb(e),
+          );
+          return true;
+        });
+        if (isCallbackStyle) return undefined;
+        const result = fn.apply(target, args);
+        if (result instanceof Promise) {
+          return result.catch((e: unknown) => {
+            if (!options?.recursive || !isErrno(e, EEXIST_ONLY)) throw e;
+            return eexistFallback(e);
           });
-          if (isCallbackStyle) return undefined;
-          const result = fn.apply(target, args);
-          if (result instanceof Promise) {
-            return result.catch((e: unknown) => {
-              if (!options?.recursive || !isErrno(e, EEXIST_ONLY)) throw e;
-              return eexistFallback(e);
-            });
-          }
-          return result;
-        };
-      }
+        }
+        return result;
+      };
+    }
 
-      if (RETRY_METHODS.has(base)) {
-        const retry = (...args: unknown[]): unknown => {
-          if (isSync) {
-            try {
-              return fn.apply(target, args);
-            } catch (e) {
-              if (!isErrno(e, RETRYABLE)) throw e;
-              return fn.apply(target, args);
-            }
+    if (RETRY_METHODS.has(base)) {
+      const retry = (...args: unknown[]): unknown => {
+        if (isSync) {
+          try {
+            return fn.apply(target, args);
+          } catch (e) {
+            if (!isErrno(e, RETRYABLE)) throw e;
+            return fn.apply(target, args);
           }
-          // Callback style: one identical retry of the same call.
-          const isCallbackStyle = callWithSingleRetry(fn, target, args, (err, retryOnce) => {
-            if (!isErrno(err, RETRYABLE)) return false;
-            retryOnce();
-            return true;
+        }
+        // Callback style: one identical retry of the same call.
+        const isCallbackStyle = callWithSingleRetry(fn, target, args, (err, retryOnce) => {
+          if (!isErrno(err, RETRYABLE)) return false;
+          retryOnce();
+          return true;
+        });
+        if (isCallbackStyle) return undefined;
+        const result = fn.apply(target, args);
+        if (result instanceof Promise) {
+          return result.catch((e: unknown) => {
+            if (!isErrno(e, RETRYABLE)) throw e;
+            return fn.apply(target, args);
           });
-          if (isCallbackStyle) return undefined;
-          const result = fn.apply(target, args);
-          if (result instanceof Promise) {
-            return result.catch((e: unknown) => {
-              if (!isErrno(e, RETRYABLE)) throw e;
-              return fn.apply(target, args);
-            });
-          }
-          return result;
-        };
-        return retry;
-      }
+        }
+        return result;
+      };
+      return retry;
+    }
 
-      return fn.bind(target);
-    },
+    return fn.bind(target);
   });
 }
