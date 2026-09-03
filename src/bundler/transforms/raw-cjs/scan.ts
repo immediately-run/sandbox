@@ -27,15 +27,21 @@
  * module as CJS → served raw → `Unexpected token 'export'` at eval (R3-233).
  */
 
+import {
+  identifierEnd,
+  isIdentPart,
+  isIdentStart,
+  nextSignificantIndex,
+  skipCommentFrom,
+  skipStringFrom,
+} from '../../../utils/sourceScan';
+
 export interface CjsScan {
   /** `require(<literal>)` specifiers, de-duplicated, first-seen order. */
   requires: string[];
   /** True if the file uses ESM `import`/`export` *statements*. */
   isEsm: boolean;
 }
-
-const isIdentStart = (c: string): boolean => (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c === '_' || c === '$';
-const isIdentPart = (c: string): boolean => isIdentStart(c) || (c >= '0' && c <= '9');
 
 // A `/` begins a regex literal (not a division operator) when the previous
 // significant token cannot end an expression. Division follows a value —
@@ -76,20 +82,6 @@ export function scanCjsModule(source: string): CjsScan {
   // the regex-vs-division heuristic can recognise `return /re/` etc. (see below).
   let prevWord = '';
 
-  const skipStringFrom = (start: number, quote: string): number => {
-    let j = start + 1;
-    while (j < n) {
-      const ch = source[j];
-      if (ch === '\\') {
-        j += 2;
-        continue;
-      }
-      if (ch === quote) return j + 1;
-      j++;
-    }
-    return n;
-  };
-
   // Skip a regex literal starting at the opening `/`. Handles `\` escapes and
   // `[...]` character classes (a `/` inside a class does NOT close the regex).
   // A regex cannot span a raw newline; if we reach one unterminated, it was NOT a
@@ -118,41 +110,13 @@ export function scanCjsModule(source: string): CjsScan {
     return j;
   };
 
-  // From `at`, skip whitespace + comments and return the next significant index.
-  const nextSignificant = (at: number): number => {
-    let k = at;
-    while (k < n) {
-      const ck = source[k];
-      if (ck === ' ' || ck === '\t' || ck === '\r' || ck === '\n') {
-        k++;
-      } else if (ck === '/' && source[k + 1] === '/') {
-        k += 2;
-        while (k < n && source[k] !== '\n') k++;
-      } else if (ck === '/' && source[k + 1] === '*') {
-        k += 2;
-        while (k < n && !(source[k] === '*' && source[k + 1] === '/')) k++;
-        k += 2;
-      } else {
-        break;
-      }
-    }
-    return k;
-  };
-
   while (i < n) {
     const c = source[i];
 
-    // Line comment
-    if (c === '/' && source[i + 1] === '/') {
-      i += 2;
-      while (i < n && source[i] !== '\n') i++;
-      continue;
-    }
-    // Block comment
-    if (c === '/' && source[i + 1] === '*') {
-      i += 2;
-      while (i < n && !(source[i] === '*' && source[i + 1] === '/')) i++;
-      i += 2;
+    // Line or block comment.
+    const pastComment = skipCommentFrom(source, i);
+    if (pastComment >= 0) {
+      i = pastComment;
       continue;
     }
     // Regex literal — a `/` that isn't `//`/`/*` (handled above) and sits where an
@@ -174,20 +138,19 @@ export function scanCjsModule(source: string): CjsScan {
     // String / template literal — skip wholesale (no `${...}` descent: we only
     // care about top-level statements, never interpolated expressions).
     if (c === '"' || c === "'" || c === '`') {
-      i = skipStringFrom(i, c);
+      i = skipStringFrom(source, i, c);
       prevSignificant = c;
       prevWord = '';
       continue;
     }
     // Identifier / keyword
     if (isIdentStart(c)) {
-      let j = i + 1;
-      while (j < n && isIdentPart(source[j])) j++;
+      const j = identifierEnd(source, i);
       const word = source.slice(i, j);
       const memberAccess = prevSignificant === '.';
 
       if (!memberAccess && (word === 'import' || word === 'export')) {
-        const k = nextSignificant(j);
+        const k = nextSignificantIndex(source, j);
         const after = source[k];
         // `import(` (dynamic) and `import.meta` are expressions, not ESM
         // statements. Anything else after the keyword (a binding, `{`, `*`, `'`,
@@ -196,12 +159,12 @@ export function scanCjsModule(source: string): CjsScan {
           isEsm = true;
         }
       } else if (!memberAccess && word === 'require') {
-        const k = nextSignificant(j);
+        const k = nextSignificantIndex(source, j);
         if (source[k] === '(') {
-          const m = nextSignificant(k + 1);
+          const m = nextSignificantIndex(source, k + 1);
           const q = source[m];
           if (q === '"' || q === "'") {
-            const end = skipStringFrom(m, q);
+            const end = skipStringFrom(source, m, q);
             const specifier = source.slice(m + 1, end - 1);
             if (!seen.has(specifier)) {
               seen.add(specifier);

@@ -83,19 +83,7 @@ export class CachedFS {
       for await (const event of watcher) {
         const filename = event.filename;
         if (!filename) continue;
-        const path = filename.toString();
-        const normalized = path.startsWith('/') ? path : `/${path}`;
-
-        if (normalized.includes('node_modules')) continue;
-
-        this.fileCache.delete(normalized);
-        this.bytesCache.delete(normalized);
-        this.isFileCache.delete(normalized);
-        this.pendingChanges.add(normalized);
-        this.onFileChangedEmitter.fire({
-          path: normalized,
-          eventType: event.eventType as 'rename' | 'change',
-        });
+        this.invalidate(filename.toString(), event.eventType as 'rename' | 'change');
       }
     } catch (err) {
       logger.error('CachedFS: watcher iteration failed', err);
@@ -110,15 +98,28 @@ export class CachedFS {
    */
   markChanged(paths: string[]): void {
     for (const path of paths) {
-      const normalized = path.startsWith('/') ? path : `/${path}`;
-      if (normalized.includes('node_modules')) continue;
-
-      this.fileCache.delete(normalized);
-      this.bytesCache.delete(normalized);
-      this.isFileCache.delete(normalized);
-      this.pendingChanges.add(normalized);
-      this.onFileChangedEmitter.fire({ path: normalized, eventType: 'change' });
+      this.invalidate(path, 'change');
     }
+  }
+
+  /**
+   * The single invalidation step behind both change sources — the local watcher
+   * and the parent-relayed `markChanged`. Drops the path from every read memo,
+   * queues it for the next compile, and announces it.
+   *
+   * `/node_modules` is skipped: it is served by its own mount rather than the
+   * Port, the bundler owns its contents, and its entries are what batch hydration
+   * exists to keep in memory.
+   */
+  private invalidate(path: string, eventType: 'rename' | 'change'): void {
+    const normalized = withLeadingSlash(path);
+    if (normalized.includes('node_modules')) return;
+
+    this.fileCache.delete(normalized);
+    this.bytesCache.delete(normalized);
+    this.isFileCache.delete(normalized);
+    this.pendingChanges.add(normalized);
+    this.onFileChangedEmitter.fire({ path: normalized, eventType });
   }
 
   /** Drains and returns the set of paths that changed since the last call. */
@@ -170,7 +171,7 @@ export class CachedFS {
    */
   hydrate(snapshot: FsSnapshot): number {
     for (const { path, content } of snapshot) {
-      const normalized = path.startsWith('/') ? path : `/${path}`;
+      const normalized = withLeadingSlash(path);
       if (typeof content === 'string') {
         this.fileCache.set(normalized, content);
       } else {
@@ -259,6 +260,12 @@ export class CachedFS {
       return false;
     }
   }
+}
+
+/** Every cache key is an absolute path; watcher filenames and host-relayed paths
+ *  may arrive without the leading slash, so one place adds it. */
+export function withLeadingSlash(path: string): string {
+  return path.startsWith('/') ? path : `/${path}`;
 }
 
 /** True for a genuine filesystem "not found" (vs a transient/unexpected error). */

@@ -1,5 +1,6 @@
 import { FetchError } from '../errors/FetchError';
 import { sleep } from './sleep';
+import { sha384Bytes } from './sri';
 
 interface RetryOptions {
   maxRetries?: number;
@@ -19,22 +20,13 @@ interface RetryOptions {
 
 export type RequestInitWithRetry = RequestInit & RetryOptions;
 
-/** SHA-384 of bytes, `sha384-<base64>` (SRI style). */
-const sha384 = async (body: ArrayBuffer): Promise<string> => {
-  const digest = await crypto.subtle.digest('SHA-384', body);
-  let bin = '';
-  const view = new Uint8Array(digest);
-  for (let i = 0; i < view.length; i++) bin += String.fromCharCode(view[i]);
-  return `sha384-${btoa(bin)}`;
-};
-
 /** Whether a response's body matches `sri` (true when no `sri` to check). A
  *  hashing failure (no crypto) counts as a non-match so we never serve/persist
  *  bytes we couldn't validate. */
 const responseMatchesSri = async (res: Response, sri: string | undefined): Promise<boolean> => {
   if (!sri) return true;
   try {
-    return (await sha384(await res.clone().arrayBuffer())) === sri;
+    return (await sha384Bytes(await res.clone().arrayBuffer())) === sri;
   } catch {
     return false;
   }

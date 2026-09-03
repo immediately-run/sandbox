@@ -15,21 +15,15 @@
  * guarantee is inactive) rather than giving false assurance.
  */
 
+import { sha384Bytes } from '../utils/sri';
+
 /** Per-version, per-file expected hashes for one module: `{ rel: 'sha384-<b64>' }`. */
 export type FileHashes = Record<string, string>;
 /** Host-pinned SDK integrity, keyed by module then concrete version. */
 export type SdkIntegrity = Record<string, Record<string, FileHashes>>;
 
 /** SHA-384 of a UTF-8 string, formatted `sha384-<base64>` (SRI style). */
-export const sha384 = async (content: string): Promise<string> => {
-  const bytes = new TextEncoder().encode(content);
-  const digest = await crypto.subtle.digest('SHA-384', bytes);
-  // base64 of the raw digest bytes.
-  let bin = '';
-  const view = new Uint8Array(digest);
-  for (let i = 0; i < view.length; i++) bin += String.fromCharCode(view[i]);
-  return `sha384-${btoa(bin)}`;
-};
+export const sha384 = async (content: string): Promise<string> => sha384Bytes(new TextEncoder().encode(content));
 
 export interface IntegrityVerifyResult {
   ok: boolean;
