@@ -107,7 +107,7 @@
   "devDependencies": {
     "@immediately-run/prettier-config": "0.1.0",
     "@immediately-run/sdk": "^0.46.0",
-    "@immediately-run/verify-checks": "github:immediately-run/verify-checks#ccf7b32",
+    "@immediately-run/verify-checks": "github:immediately-run/verify-checks#ccf7b32af6eec3030ccf4113dcdc0feb9be30c5b",
     "@octokit/rest": "^18.12.0",
     "@swc-node/jest": "^1.4.3",
     "@types/jest": "^27.4.1",
