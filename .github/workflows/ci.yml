@@ -8,6 +8,11 @@ jobs:
     steps:
       - name: Setup | Checkout
         uses: actions/checkout@v4
+        with:
+          # check:untested diffs this branch against its merge-base with
+          # origin/main, so the base ref must exist; a default shallow checkout
+          # fetches only the merge ref.
+          fetch-depth: 0
 
       - name: Setup | Install Node.js
         uses: actions/setup-node@v4
