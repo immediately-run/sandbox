@@ -100,3 +100,108 @@ describe('ModuleRegistry esm.sh fallback (transpile-through)', () => {
     );
   });
 });
+
+// --- R3-600: the unrequested-prerelease guard -----------------------------------
+// The recorded 2026-09-11 primary-CDN answers, verbatim: a caret range answered
+// with a canary while stable 19.3.0 was on npm. The registry re-resolves
+// top-level offenders pinned to their range's floor (one retry), warns naming
+// the package, refuses a surviving prerelease, and never applies a lockset that
+// carries one.
+describe('ModuleRegistry unrequested-prerelease guard (R3-600)', () => {
+  const registry = () => new ModuleRegistry({} as Bundler, null);
+  const CANARY = '19.3.0-canary-ff7445e6-20260831';
+
+  beforeEach(() => {
+    mockedFetchManifest.mockReset();
+    mockedFetchModule.mockReset();
+    mockedFetchModule.mockResolvedValue({ f: {}, m: [] });
+  });
+
+  it('a canary answer is re-resolved pinned at the floor, with a warning naming the package', async () => {
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    mockedFetchManifest
+      .mockResolvedValueOnce([{ n: 'react', v: CANARY, d: 0 }])
+      .mockResolvedValueOnce([{ n: 'react', v: '19.2.5', d: 0 }]);
+    const r = registry();
+
+    await r.fetchManifest({ react: '^19.2.5' });
+
+    expect(mockedFetchManifest).toHaveBeenNthCalledWith(1, { react: '^19.2.5' });
+    expect(mockedFetchManifest).toHaveBeenNthCalledWith(2, { react: '19.2.5' });
+    expect(r.manifest).toEqual([{ n: 'react', v: '19.2.5', d: 0 }]);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining(
+        `The package CDN resolved "react@^19.2.5" to the prerelease ${CANARY}; re-resolving pinned at 19.2.5`,
+      ),
+    );
+    warn.mockRestore();
+  });
+
+  it('a prerelease that survives the retry fails the boot naming it', async () => {
+    mockedFetchManifest.mockResolvedValue([{ n: 'react', v: CANARY, d: 0 }]);
+    const r = registry();
+    await expect(r.fetchManifest({ react: '^19.2.5' })).rejects.toThrow(
+      new RegExp(`prereleases no requested range asked for \\("react"→.*${CANARY.slice(0, 8)}`),
+    );
+  });
+
+  it('the recorded two-dep answer: react/react-dom re-pin, the transitive scheduler is named on survival', async () => {
+    // The recorded 2026-09-11 shape: both top-level deps answered canary AND the
+    // scheduler with them. The retry re-pins react/react-dom; the scheduler is
+    // transitive — nothing this run asked for — so it is never re-pinned, and a
+    // canary that survives names it in the refusal.
+    const schedulerCanary = '0.28.0-canary-ff7445e6-20260831';
+    const canaryAnswer = [
+      { n: 'react', v: CANARY, d: 0 },
+      { n: 'react-dom', v: CANARY, d: 0 },
+      { n: 'scheduler', v: schedulerCanary, d: 1 },
+    ];
+    mockedFetchManifest.mockResolvedValue(canaryAnswer);
+    const r = registry();
+    await expect(r.fetchManifest({ react: '^19.2.5', 'react-dom': '^19.2.5' })).rejects.toThrow(
+      /"scheduler"→0\.28\.0-canary/,
+    );
+    // Only the two requested deps are re-pinned — the transitive scheduler is
+    // never added to the retry map (the item's explicit do-not; the assertion
+    // below is what enforces it).
+    expect(mockedFetchManifest).toHaveBeenNthCalledWith(2, {
+      react: '19.2.5',
+      'react-dom': '19.2.5',
+    });
+  });
+
+  it('an irreducible range answered with a canary fails loud (no re-pin exists)', async () => {
+    mockedFetchManifest.mockResolvedValue([{ n: 'react', v: CANARY, d: 0 }]);
+    const r = registry();
+    await expect(r.fetchManifest({ react: '*' })).rejects.toThrow(/"react".*has no concrete version to re-pin it to/);
+  });
+
+  it('a sidecar lockset carrying the canary is not applied — the live path runs instead', async () => {
+    mockedFetchManifest
+      .mockResolvedValueOnce([{ n: 'react', v: CANARY, d: 0 }])
+      .mockResolvedValueOnce([{ n: 'react', v: '19.2.5', d: 0 }]);
+    const r = registry();
+    const deps = aLocksetEchoMatching();
+    await r.fetchManifest(deps, false, {
+      cdnVersion: 5,
+      dependencies: deps,
+      resolved: [{ n: 'react', v: CANARY, d: 0 }],
+    });
+
+    expect(r.manifest).toEqual([{ n: 'react', v: '19.2.5', d: 0 }]);
+    expect(mockedFetchManifest).toHaveBeenCalledTimes(2); // the lockset was NOT used
+  });
+
+  it('a clean answer makes no second round-trip (the guard costs nothing healthy)', async () => {
+    mockedFetchManifest.mockResolvedValue([{ n: 'react', v: '19.2.5', d: 0 }]);
+    const r = registry();
+    await r.fetchManifest({ react: '19.2.5' });
+    expect(mockedFetchManifest).toHaveBeenCalledTimes(1);
+  });
+});
+
+/** A hand-typed echo that matches the test's input DepMap — the lockset-echo
+ *  comparison needs an exact map, not the filtered derivation. */
+function aLocksetEchoMatching(): Record<string, string> {
+  return { react: '^19.2.5' };
+}
