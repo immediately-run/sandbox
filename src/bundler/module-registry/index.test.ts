@@ -145,12 +145,36 @@ describe('ModuleRegistry unrequested-prerelease guard (R3-600)', () => {
     );
   });
 
+  it('the recorded two-dep answer: react/react-dom re-pin, the transitive scheduler is named on survival', async () => {
+    // The recorded 2026-09-11 shape: both top-level deps answered canary AND the
+    // scheduler with them. The retry re-pins react/react-dom; the scheduler is
+    // transitive — nothing this run asked for — so it is never re-pinned, and a
+    // canary that survives names it in the refusal.
+    const schedulerCanary = '0.28.0-canary-ff7445e6-20260831';
+    const canaryAnswer = [
+      { n: 'react', v: CANARY, d: 0 },
+      { n: 'react-dom', v: CANARY, d: 0 },
+      { n: 'scheduler', v: schedulerCanary, d: 1 },
+    ];
+    mockedFetchManifest.mockResolvedValue(canaryAnswer);
+    const r = registry();
+    await expect(r.fetchManifest({ react: '^19.2.5', 'react-dom': '^19.2.5' })).rejects.toThrow(
+      /"scheduler"→0\.28\.0-canary/,
+    );
+  });
+
+  it('an irreducible range answered with a canary fails loud (no re-pin exists)', async () => {
+    mockedFetchManifest.mockResolvedValue([{ n: 'react', v: CANARY, d: 0 }]);
+    const r = registry();
+    await expect(r.fetchManifest({ react: '*' })).rejects.toThrow(/"react".*has no concrete version to re-pin it to/);
+  });
+
   it('a sidecar lockset carrying the canary is not applied — the live path runs instead', async () => {
     mockedFetchManifest
       .mockResolvedValueOnce([{ n: 'react', v: CANARY, d: 0 }])
       .mockResolvedValueOnce([{ n: 'react', v: '19.2.5', d: 0 }]);
     const r = registry();
-    const deps = filterBuildDepsForLockset();
+    const deps = aLocksetEchoMatching();
     await r.fetchManifest(deps, false, {
       cdnVersion: 5,
       dependencies: deps,
@@ -169,7 +193,8 @@ describe('ModuleRegistry unrequested-prerelease guard (R3-600)', () => {
   });
 });
 
-/** The exact input DepMap shape a matching lockset echo needs (sorted). */
-function filterBuildDepsForLockset(): Record<string, string> {
+/** A hand-typed echo that matches the test's input DepMap — the lockset-echo
+ *  comparison needs an exact map, not the filtered derivation. */
+function aLocksetEchoMatching(): Record<string, string> {
   return { react: '^19.2.5' };
 }
