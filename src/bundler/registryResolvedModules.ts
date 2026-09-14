@@ -1,24 +1,11 @@
+import { concreteVersion } from '@immediately-run/transpiler';
 import { IPackageJSON } from '../types';
 
-/**
- * Reduce a package.json dependency range to the concrete version dir we publish
- * under `/v/<version>/` on the self-host. Strips a leading range operator
- * (`^`, `~`, `>=`, …) and takes the first `x.y.z[-pre][+build]` token. Returns
- * `undefined` for anything that is not a single pinned-ish version (e.g. a tag,
- * a URL, `*`, or a multi-range), in which case the caller falls back to the
- * sandbox's default version — we can only serve an exact published version.
- *
- * `^0.2.7` → `0.2.7` (the floor; for full determinism apps should pin exact).
- */
-export function concreteVersion(range: string | undefined): string | undefined {
-  if (typeof range !== 'string') return undefined;
-  const trimmed = range
-    .trim()
-    .replace(/^[\^~]|^>=|^<=|^>|^<|^=|^v/g, '')
-    .trim();
-  const m = trimmed.match(/^(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)/);
-  return m ? m[1] : undefined;
-}
+// `concreteVersion` (a dependency range → its concrete floor) lives in
+// @immediately-run/transpiler's depmap beside the prerelease guard that re-pins
+// with it (R3-600; PRETRANSPILED_ARTIFACTS_SPEC §4.4: one home). Re-exported
+// here so this module's existing consumers keep their import.
+export { concreteVersion };
 
 /**
  * A self-host resolution failure that must surface to the user as a boot error

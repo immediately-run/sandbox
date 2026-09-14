@@ -1,4 +1,9 @@
-import { assertDependenciesResolved, transformFile } from '@immediately-run/transpiler';
+import {
+  assertDependenciesResolved,
+  concreteVersion,
+  findUnrequestedPrereleases,
+  transformFile,
+} from '@immediately-run/transpiler';
 
 import { UNSUPPORTED_BUILTIN_MODULE_PATH } from '../shims';
 import * as logger from '../../utils/logger';
@@ -108,9 +113,17 @@ export class ModuleRegistry {
         // if its resolved set isn't closed over the declared deps; never trust
         // it partially. Falls through to live /dep_tree resolution.
         if (locksetClosureValid(lockset)) {
-          logger.debug('Using sidecar lockset, skipping dep_tree resolution', lockset.resolved);
-          this.manifest = lockset.resolved;
-          resolvedFromLockset = true;
+          // A lockset carrying a prerelease nobody asked for is rejected whole
+          // too (R3-600): it was built against the same prerelease-happy CDN
+          // the live path now guards, so applying it would freeze the canary
+          // into the boot. Live resolution re-pins and retries instead.
+          if (findUnrequestedPrereleases(sortedDeps, lockset.resolved).length === 0) {
+            logger.debug('Using sidecar lockset, skipping dep_tree resolution', lockset.resolved);
+            this.manifest = lockset.resolved;
+            resolvedFromLockset = true;
+          } else {
+            logger.warn('Sidecar lockset carries a prerelease no requested range asked for; resolving live');
+          }
         } else {
           logger.warn(
             'Sidecar lockset failed closure validation (resolved not closed over declared deps); resolving live',
@@ -126,7 +139,7 @@ export class ModuleRegistry {
 
     if (!resolvedFromLockset) {
       logger.debug('Fetching manifest', sortedDeps);
-      this.manifest = await fetchManifest(sortedDeps);
+      this.manifest = await this.resolveManifestGuarded(sortedDeps);
       logger.debug('fetched manifest', this.manifest);
     }
 
@@ -140,6 +153,54 @@ export class ModuleRegistry {
     // a cryptic undefined import — on either path.
     this.registerEsmFallbacks(sortedDeps);
     assertDependenciesResolved(sortedDeps, this.manifest);
+  }
+
+  /**
+   * Resolve through the primary CDN with the unrequested-prerelease guard
+   * (R3-600): the CDN has answered caret ranges with canaries (`react
+   * ^19.2.5` → `19.3.0-canary-…` while stable 19.3.0 was on npm), and under
+   * npm's semver a caret NEVER matches a prerelease. On offending entries,
+   * top-level dependencies are re-resolved pinned to their range's floor
+   * (`^19.2.5` → `19.2.5`) — ONE retry, with a console warning naming the
+   * package, its range, the refused version and the pinned one. A range that
+   * cannot reduce to a floor (`*`, `latest`, a multi-range) is not re-pinned:
+   * that dependency fails loud. A prerelease that survives the retry fails the
+   * boot on the same surface `assertDependenciesResolved` uses.
+   */
+  private async resolveManifestGuarded(deps: DepMap): Promise<IResolvedDependency[]> {
+    let manifest = await fetchManifest(deps);
+    const offending = findUnrequestedPrereleases(deps, manifest);
+    if (offending.length === 0) return manifest;
+
+    const retry: DepMap = { ...deps };
+    for (const entry of offending) {
+      const range = entry.range ?? deps[entry.n];
+      if (range === undefined) continue; // transitive: nothing this run asked for — see below
+      const floor = concreteVersion(range);
+      if (floor === undefined) {
+        throw new Error(
+          `The package CDN resolved "${entry.n}" to the prerelease ${entry.v}, and the requested ` +
+            `range "${range}" has no concrete version to re-pin it to. Pin an exact version ` +
+            `in package.json.`,
+        );
+      }
+      logger.warn(
+        `The package CDN resolved "${entry.n}@${range}" to the prerelease ${entry.v}; ` +
+          `re-resolving pinned at ${floor}`,
+      );
+      retry[entry.n] = floor;
+    }
+    manifest = await fetchManifest(retry);
+    const remaining = findUnrequestedPrereleases(retry, manifest);
+    if (remaining.length > 0) {
+      const list = remaining.map((e) => `"${e.n}"→${e.v}`).join(', ');
+      throw new Error(
+        `The package CDN resolved prereleases no requested range asked for (${list}), and they ` +
+          `survived a re-resolution pinned to the requested floors. Refusing to boot a prerelease ` +
+          `nobody asked for — pin an exact version in package.json, or refresh the CDN's mirror.`,
+      );
+    }
+    return manifest;
   }
 
   // For every requested top-level dep the primary CDN silently dropped, register
