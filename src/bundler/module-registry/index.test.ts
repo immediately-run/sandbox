@@ -161,6 +161,12 @@ describe('ModuleRegistry unrequested-prerelease guard (R3-600)', () => {
     await expect(r.fetchManifest({ react: '^19.2.5', 'react-dom': '^19.2.5' })).rejects.toThrow(
       /"scheduler"→0\.28\.0-canary/,
     );
+    // Only the two REQUESTED deps are re-pinned — the transitive scheduler is
+    // never added to the retry map (the item's explicit do-not).
+    expect(mockedFetchManifest).toHaveBeenNthCalledWith(2, {
+      react: '19.2.5',
+      'react-dom': '19.2.5',
+    });
   });
 
   it('an irreducible range answered with a canary fails loud (no re-pin exists)', async () => {
