@@ -773,6 +773,16 @@ export class Bundler {
     writableLayer: ReadonlySet<string>;
   }): Promise<{ seeded: number; securityReject?: 'writable-layer-artifact' }> {
     const result = await this.artifactStore.seed(ctx);
+    // An artifact entry a root declared for a path a NESTED root owns is not written, so the
+    // inner root's bytes are never served under the outer root's name. Say so: a repo whose
+    // roots overlap is otherwise told only that fewer files were seeded than its index lists.
+    const notOwned = this.artifactStore.takeNotOwnedSeeds();
+    if (notOwned.length) {
+      logger.warn(
+        `Artifact seeding: ${notOwned.length} entr${notOwned.length === 1 ? 'y' : 'ies'} name a path a ` +
+          `nested artifact root owns (${notOwned.join(', ')}); the innermost root's own index governs them.`,
+      );
+    }
     await this.adoptSeededModules();
     // The frontmatter sidecars of the roots that registered since boot, in the one place
     // that already means "every declared root has registered" (MDX_FROM_MOUNT_SPEC §3).
@@ -790,7 +800,7 @@ export class Bundler {
     dirtySet: ReadonlySet<string>;
     writableLayer: ReadonlySet<string>;
   }): Promise<void> {
-    const seed = await this.artifactStore.seedNewMetadataRoots(ctx, this.lastMetadata);
+    const seed = await this.artifactStore.seedNewMetadataRoots(ctx);
     for (const [modulePath, frontmatter] of seed.entries) this.seedMetadataEntry(modulePath, frontmatter);
     reportSeedDiagnostics(seed);
   }
@@ -1734,7 +1744,10 @@ export class Bundler {
       this.fs.drainPendingChanges();
       // Fire the app-root mount lifecycle (§11.3) — runs the MDX-metadata scan
       // (and any future post-mount actions). Replaces the former direct
-      // preloadMDXMetadata() call; behaviour is unchanged (MDX is app-root-scoped).
+      // preloadMDXMetadata() call. It covers the APP ROOT only, and not because MDX is
+      // app-root-scoped — it is not, since R3-168 — but because this is the earliest point
+      // in `compile()` and no other root has registered yet. Their sidecars are read in
+      // `seedArtifacts`, after `registerDeclaredGitLibraries`.
       await this.runPostMount({ path: APP_ROOT, isAppRoot: true });
       bootLap('runPostMount');
     }

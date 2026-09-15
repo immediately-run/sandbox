@@ -22,8 +22,11 @@ import { EMBEDDED_TOOLCHAIN_HASH } from './embeddedToolchainHash';
 //     `/transpiled${stripAppRoot(path)}.js`, which agree only under `/app`. Closed:
 //     `transpiledPathFor` keys on the FULL absolute module path on both sides.
 //  2. **`/transpiled` collided across roots** under repo-relative keying. Closed by the
-//     same change — the spike proposed a per-root namespace, and absolute-path keying
-//     subsumes it, since two roots cannot produce one absolute path.
+//     same change: absolute-path keying gives `/app` and `/mnt/{hash}` distinct entries,
+//     which is the cross-root collision the spike found. It does NOT by itself separate
+//     NESTED roots, whose joins can coincide; production settles those by letting only the
+//     owning root (`rootFor`, the innermost — the same rule `consult` attributes by) seed a
+//     path, so neither half of the store depends on registration order.
 //  3. **The metadata "path-rebasing wrinkle"** (spec §3, §7): seeding joined sidecar keys
 //     to `/app` rather than to the active root. Closed by `ArtifactStore.seedMdxMetadata`,
 //     which seeds every root; `mdxSidecarMountRoot.test.ts` is its real test.

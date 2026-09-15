@@ -234,6 +234,21 @@ describe("a content mount's frontmatter sidecar seeds the metadata store", () =>
 // app-root mount hook) nothing else has registered yet, because `registerDeclaredGitLibraries`
 // runs later. `seedArtifacts` is where every declared root HAS registered, so the sidecars of
 // the roots added since boot are read there.
+/** One mount carrying two bundles, the inner one nested in the outer's subtree. Both sidecars
+ *  describe `<MOUNT>/sub/entries/one.mdx` — the only way two roots can name one file. */
+const NESTED_ROOTS: Record<string, string> = {
+  [CONTRIBUTE_MANIFEST_PATH]: manifest([{ path: 'sub/entries/one.mdx', sha: 'sha-outer' }]),
+  [MDX_METADATA_SIDECAR_PATH]: JSON.stringify({
+    schemaVersion: 1,
+    files: { '/sub/entries/one.mdx': { srcSha: 'sha-outer', frontmatter: { title: 'Outer' } } },
+  }),
+  [`sub/${CONTRIBUTE_MANIFEST_PATH}`]: manifest([{ path: 'entries/one.mdx', sha: 'sha-inner' }]),
+  [`sub/${MDX_METADATA_SIDECAR_PATH}`]: JSON.stringify({
+    schemaVersion: 1,
+    files: { '/entries/one.mdx': { srcSha: 'sha-inner', frontmatter: { title: 'Inner' } } },
+  }),
+};
+
 describe('a root registered after boot is metadata-seeded when its artifacts are', () => {
   let h: BundlerHarness;
   let unmount: (() => void) | null = null;
@@ -282,37 +297,48 @@ describe('a root registered after boot is metadata-seeded when its artifacts are
     }
   });
 
-  it('reports a key two NESTED roots both claim rather than letting one overwrite the other', async () => {
+  it('gives a key two NESTED roots claim to the INNERMOST, whatever order they registered in', async () => {
     const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       h = await createBundlerHarness(APP_FIXTURE);
       await h.bundler.preloadMDXMetadata();
 
-      // `addRoot` permits nesting (`rootFor` resolves a module to the innermost), and a
-      // nested pair is the one way two roots can join to the same absolute key.
-      unmount = await mountInMemoryFs(MOUNT, {
-        [CONTRIBUTE_MANIFEST_PATH]: manifest([{ path: 'sub/entries/one.mdx', sha: 'sha-outer' }]),
-        [MDX_METADATA_SIDECAR_PATH]: JSON.stringify({
-          schemaVersion: 1,
-          files: { '/sub/entries/one.mdx': { srcSha: 'sha-outer', frontmatter: { title: 'Outer' } } },
-        }),
-        [`sub/${CONTRIBUTE_MANIFEST_PATH}`]: manifest([{ path: 'entries/one.mdx', sha: 'sha-inner' }]),
-        [`sub/${MDX_METADATA_SIDECAR_PATH}`]: JSON.stringify({
-          schemaVersion: 1,
-          files: { '/entries/one.mdx': { srcSha: 'sha-inner', frontmatter: { title: 'Inner' } } },
-        }),
-      });
+      // `addRoot` permits nesting, and a nested pair is the one way two roots can join to
+      // the same absolute key. `rootFor` — the innermost — is the rule `consult` attributes
+      // a module's BYTES by, so the frontmatter has to follow it or one file's compiled
+      // output and its metadata would name different roots.
+      unmount = await mountInMemoryFs(MOUNT, NESTED_ROOTS);
+      // Registered OUTER first — the order that, under a first-writer-wins rule, would have
+      // handed the key to the outer root.
       h.bundler.artifactStore.addRoot(MOUNT);
       h.bundler.artifactStore.addRoot(`${MOUNT}/sub`);
       await h.bundler.seedArtifacts(EMPTY_CTX);
 
       const key = `${MOUNT}/sub/entries/one.mdx`;
-      // One of the two kept it — deterministically the first root registered — and the
-      // loser is on the record instead of silently vanishing.
-      expect(lastMetadataOf(h).get(key)).toEqual({ title: 'Outer' });
+      // The INNER root owns it, though the outer registered first, and the outer's losing
+      // entry is on the record instead of silently vanishing.
+      expect(lastMetadataOf(h).get(key)).toEqual({ title: 'Inner' });
       const said = warn.mock.calls.map((c) => c.join(' ')).filter((l) => l.includes('more than one artifact root'));
       expect(said).toHaveLength(1);
       expect(said[0]).toContain(key);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('…and reaches the same answer when the INNER root registers first', async () => {
+    // The whole point of arbitrating by `rootFor` rather than by first-writer-wins: the
+    // outcome is a property of the paths, not of the order two mounts happened to arrive in.
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      h = await createBundlerHarness(APP_FIXTURE);
+      await h.bundler.preloadMDXMetadata();
+      unmount = await mountInMemoryFs(MOUNT, NESTED_ROOTS);
+      h.bundler.artifactStore.addRoot(`${MOUNT}/sub`);
+      h.bundler.artifactStore.addRoot(MOUNT);
+      await h.bundler.seedArtifacts(EMPTY_CTX);
+
+      expect(lastMetadataOf(h).get(`${MOUNT}/sub/entries/one.mdx`)).toEqual({ title: 'Inner' });
     } finally {
       warn.mockRestore();
     }

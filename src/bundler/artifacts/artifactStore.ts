@@ -186,6 +186,13 @@ export class ArtifactStore {
   // tree is live-walked), while a root registered later is metadata-seeded alongside its
   // artifacts. Sharing one set would make whichever ran first silence the other.
   private seededMetadataRoots = new Set<string>();
+  // Which root claimed each frontmatter key, across passes — so the later pass can tell a key
+  // it is re-deriving from one another root already owns. Kept HERE rather than read off the
+  // bundler's metadata store, which also holds keys from live reads that no root claimed.
+  private metadataClaims = new Map<string, string>();
+  // Artifact entries a root declared for a path a NESTED root owns, dropped rather than written
+  // (see `seedRoot`). Reported so a repo whose two roots overlap can find out.
+  private notOwnedSeeds: string[] = [];
 
   constructor(private readonly fs: ArtifactFs, private readonly embedded: EmbeddedToolchainIdentity) {}
 
@@ -302,6 +309,7 @@ export class ArtifactStore {
     // the user edited in their own repo.
     const dirtySet = isAppRoot ? ctx.dirtySet : EMPTY_DIRTY_SET;
     let seeded = 0;
+    const notOwned: string[] = [];
     for (const [rawKey, entry] of Object.entries(index.files)) {
       const v = validateSeedEntry(rawKey, entry, { manifestShas, dirtySet });
       if (!v.ok) continue;
@@ -313,10 +321,23 @@ export class ArtifactStore {
         continue;
       }
       const modulePath = `${root}${v.path}`;
+      // Only the root that OWNS this path may seed it. Roots may nest (`addRoot` permits it),
+      // and `/mnt/w` + `/sub/x.ts` and `/mnt/w/sub` + `/x.ts` are the same module — so without
+      // this the two write the same `/transpiled` entry and the later root silently serves the
+      // earlier one's bytes. `rootFor` is already the rule `consult` attributes by, so using it
+      // here is what makes the two agree, and makes the outcome independent of registration
+      // order. With no nesting it is always true and nothing changes.
+      if (this.rootFor(modulePath) !== root) {
+        notOwned.push(modulePath);
+        continue;
+      }
       await this.fs.writeFile(transpiledPathFor(modulePath), content);
       this.deps.set(modulePath, v.deps);
       this.seededPaths.add(modulePath);
       seeded++;
+    }
+    if (notOwned.length) {
+      this.notOwnedSeeds.push(...notOwned);
     }
     return { seeded };
   }
@@ -399,19 +420,17 @@ export class ArtifactStore {
    * (MDX_FROM_MOUNT_SPEC §3). The sidecar's keys are repo-relative internally, so seeding
    * from a mount is a rebase: join to the ACTIVE root rather than to `/app`.
    *
-   * Aggregated the way `seed()` aggregates `seedRoot()`, and re-callable for the same reason:
-   * a root registered after boot (a git library, a dispatched content mount) is seeded by a
-   * later call, and `seededMetadataRoots` keeps the earlier ones from being read twice.
-   * `entries` is the union across roots. But `present` / `securityReject` / `unusable` are
-   * the APP root's verdict ALONE, because all three answer one question for the caller —
-   * *must I live-walk the app tree?* — which only the app root's sidecar can answer, and only
-   * on the call that actually read it. A mount's absent or damaged sidecar is contained to
-   * that mount (surfaced in `unusableRoots`), never charged to `/app`.
+   * Aggregated the way `seed()` aggregates `seedRoot()`. `entries` is the union across roots,
+   * but `present` / `securityReject` / `unusable` are the APP root's verdict ALONE, because
+   * all three answer one question for the caller — *must I live-walk the app tree?* — which
+   * only the app root's sidecar can answer. A mount's absent or damaged sidecar is contained
+   * to that mount (surfaced in `unusableRoots`), never charged to `/app`.
    *
-   * Root-joined keys make two roots collide only when one root NESTS inside another, which
-   * `addRoot` permits (`rootFor` resolves a module to the innermost). A collision there is a
-   * real ambiguity about which sidecar describes the file, so the first writer wins and the
-   * loser is reported in `collisions` rather than silently overwritten.
+   * **Call this once**, at boot. It is the pass that carries the app root's verdict, and a
+   * second call could not: `/app` has already been read, so `present` would come back `false`
+   * meaning "not asked again", which the caller cannot tell from "there was no sidecar" and
+   * would answer by walking the whole tree. Roots registered later are
+   * {@link seedNewMetadataRoots}', which carries no verdict because it needs none.
    */
   async seedMdxMetadata(ctx: SeedContext): Promise<MdxMetadataSeedResult> {
     if (this.distrusted) return { entries: new Map(), present: false, ...emptySeedDiagnostics() };
@@ -420,27 +439,24 @@ export class ArtifactStore {
     // verdict is the returned one, so making that structural removes the "what if `/app`
     // is not in `roots`" branch a lookup would need.
     const app = await this.seedMdxMetadataRootOnce(APP_ROOT, ctx);
-    const rest = await this.seedNewMetadataRoots(ctx, app.entries);
-    for (const [modulePath, frontmatter] of app.entries) rest.entries.set(modulePath, frontmatter);
+    const claimed = this.claimEntries(APP_ROOT, app.entries);
+    const rest = await this.seedNewMetadataRoots(ctx);
+    for (const [modulePath, frontmatter] of claimed.entries) rest.entries.set(modulePath, frontmatter);
     return {
       ...rest,
       present: app.present,
       ...(app.securityReject ? { securityReject: app.securityReject } : {}),
       ...(app.unusable ? { unusable: app.unusable } : {}),
       droppedEntries: [...app.droppedEntries, ...rest.droppedEntries],
+      collisions: [...claimed.collisions, ...rest.collisions],
     };
   }
 
   /**
    * The additive half: every root registered since the last seed, and nothing about `/app`.
-   *
-   * Separate from {@link seedMdxMetadata} rather than a second call of it because `present`
-   * is the caller's "must I live-walk the app tree?" answer, and on a later call `/app` has
-   * already been read — so a `present: false` there would mean "not asked again", which reads
-   * identically to "there was no sidecar" and would walk the whole tree a second time. A
-   * result that cannot carry the answer should not carry the field.
+   * Re-callable — `seededMetadataRoots` means each root is read once, however often this runs.
    */
-  async seedNewMetadataRoots(ctx: SeedContext, taken?: ReadonlyMap<string, unknown>): Promise<MdxMetadataAdditive> {
+  async seedNewMetadataRoots(ctx: SeedContext): Promise<MdxMetadataAdditive> {
     if (this.distrusted) return { entries: new Map(), ...emptySeedDiagnostics() };
     const entries = new Map<string, Record<string, any>>();
     const droppedEntries: MdxMetadataDrop[] = [];
@@ -450,17 +466,41 @@ export class ArtifactStore {
     for (const root of this.roots) {
       if (root === APP_ROOT) continue;
       const result = await this.seedMdxMetadataRootOnce(root, ctx);
-      for (const [modulePath, frontmatter] of result.entries) {
-        if (entries.has(modulePath) || taken?.has(modulePath)) {
-          collisions.push(modulePath);
-          continue;
-        }
-        entries.set(modulePath, frontmatter);
-      }
+      const claimed = this.claimEntries(root, result.entries);
+      for (const [modulePath, frontmatter] of claimed.entries) entries.set(modulePath, frontmatter);
+      collisions.push(...claimed.collisions);
       droppedEntries.push(...result.droppedEntries);
       if (result.unusable) unusableRoots.push({ root, reason: result.unusable });
     }
     return { entries, droppedEntries, unusableRoots, collisions };
+  }
+
+  /**
+   * Record which root a frontmatter key came from, keeping only the entries `root` OWNS.
+   *
+   * Two roots produce one key only when one NESTS inside the other, which `addRoot` permits.
+   * `rootFor` — the innermost — is already the rule `consult` attributes a module's BYTES by,
+   * so it decides the frontmatter too: otherwise one file's compiled output and its metadata
+   * would be attributed to different roots, and the answer would depend on registration order.
+   * The entry that loses is returned in `collisions`, never dropped silently.
+   */
+  private claimEntries(
+    root: string,
+    entries: ReadonlyMap<string, Record<string, any>>,
+  ): { entries: Map<string, Record<string, any>>; collisions: string[] } {
+    const kept = new Map<string, Record<string, any>>();
+    const collisions: string[] = [];
+    for (const [modulePath, frontmatter] of entries) {
+      const owner = this.rootFor(modulePath);
+      const claimedBy = this.metadataClaims.get(modulePath);
+      if (owner !== root || (claimedBy !== undefined && claimedBy !== root)) {
+        collisions.push(modulePath);
+        continue;
+      }
+      this.metadataClaims.set(modulePath, root);
+      kept.set(modulePath, frontmatter);
+    }
+    return { entries: kept, collisions };
   }
 
   /** `seedMdxMetadataRoot`, but at most once per root for the life of the store — so a
@@ -548,6 +588,14 @@ export class ArtifactStore {
    */
   markDistrusted(): void {
     this.distrusted = true;
+  }
+
+  /** Artifact entries dropped because a nested root owns the path (`seedRoot`). Drained by
+   *  the caller so it is reported once, not on every later read. */
+  takeNotOwnedSeeds(): string[] {
+    const out = this.notOwnedSeeds;
+    this.notOwnedSeeds = [];
+    return out;
   }
 
   /** Every module path seeded from an index this session. The bundler needs this to ADOPT
