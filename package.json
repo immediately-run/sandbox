@@ -1,7 +1,7 @@
 {
   "name": "@immediately-run/sandbox",
   "version": "2.0.0",
-  "description": "The immediately.run in-iframe bundler — a fork of CodeSandbox's sandpack-bundler (Apache-2.0, see LICENSE), diverged substantially for the immediately.run sandbox.",
+  "description": "The immediately.run in-iframe bundler \u2014 a fork of CodeSandbox's sandpack-bundler (Apache-2.0, see LICENSE), diverged substantially for the immediately.run sandbox.",
   "engines": {
     "node": "24"
   },
@@ -107,7 +107,7 @@
   "devDependencies": {
     "@immediately-run/prettier-config": "0.1.0",
     "@immediately-run/sdk": "^0.46.0",
-    "@immediately-run/verify-checks": "0.2.0",
+    "@immediately-run/verify-checks": "0.3.0",
     "@octokit/rest": "^18.12.0",
     "@swc-node/jest": "^1.4.3",
     "@types/jest": "^27.4.1",
