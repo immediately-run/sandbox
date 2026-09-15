@@ -106,10 +106,12 @@ export interface MdxMetadataAdditive {
   /** Non-app roots whose sidecar existed but could not be interpreted. */
   unusableRoots: { root: string; reason: MdxMetadataRejection }[];
   /**
-   * Keys two roots both claimed. Root-joined keys are distinct whenever the roots are, so
-   * this is reachable only through NESTED roots, which `addRoot` permits (`rootFor` resolves
-   * a module to the innermost). Which sidecar describes such a file is genuinely ambiguous,
-   * so the first writer wins and the loser is reported rather than overwriting it silently.
+   * Keys a NON-OWNING root declared frontmatter for. Root-joined keys are distinct whenever
+   * the roots are, so this is reachable only through nested roots, which `addRoot` permits.
+   * The owning root — `rootFor`, the innermost, the same rule `consult` attributes a module's
+   * bytes by — keeps the key whatever order the roots registered in; every other root's entry
+   * for it lands here rather than overwriting or being dropped silently. A key appears with no
+   * winner when only a non-owning root described the file at all.
    */
   collisions: string[];
 }
@@ -483,6 +485,12 @@ export class ArtifactStore {
    * so it decides the frontmatter too: otherwise one file's compiled output and its metadata
    * would be attributed to different roots, and the answer would depend on registration order.
    * The entry that loses is returned in `collisions`, never dropped silently.
+   *
+   * Ownership is re-arbitrated on EVERY pass, not settled by whoever claimed first. A root
+   * can stop being a key's owner between passes — register `/mnt/w`, seed it, then register
+   * `/mnt/w/sub` — and `seed()` moves the BYTES to the new owner when that happens, so a
+   * claim that outranked ownership would leave the two halves split, which is the exact thing
+   * this rule exists to prevent.
    */
   private claimEntries(
     root: string,
@@ -491,12 +499,14 @@ export class ArtifactStore {
     const kept = new Map<string, Record<string, any>>();
     const collisions: string[] = [];
     for (const [modulePath, frontmatter] of entries) {
-      const owner = this.rootFor(modulePath);
-      const claimedBy = this.metadataClaims.get(modulePath);
-      if (owner !== root || (claimedBy !== undefined && claimedBy !== root)) {
+      if (this.rootFor(modulePath) !== root) {
         collisions.push(modulePath);
         continue;
       }
+      // The owner takes the key over from an earlier, now-non-owning claimant; that root's
+      // entry is the one displaced, so it is what `collisions` names.
+      const displaced = this.metadataClaims.get(modulePath);
+      if (displaced !== undefined && displaced !== root) collisions.push(modulePath);
       this.metadataClaims.set(modulePath, root);
       kept.set(modulePath, frontmatter);
     }

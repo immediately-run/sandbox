@@ -318,7 +318,41 @@ describe('a root registered after boot is metadata-seeded when its artifacts are
       // The INNER root owns it, though the outer registered first, and the outer's losing
       // entry is on the record instead of silently vanishing.
       expect(lastMetadataOf(h).get(key)).toEqual({ title: 'Inner' });
-      const said = warn.mock.calls.map((c) => c.join(' ')).filter((l) => l.includes('more than one artifact root'));
+      const said = warn.mock.calls.map((c) => c.join(' ')).filter((l) => l.includes('does not own'));
+      expect(said).toHaveLength(1);
+      expect(said[0]).toContain(key);
+      // The message names the rule the code actually applies. It said "the first root to
+      // claim each one kept it" while the first root was the loser in this very test.
+      expect(said[0]).toContain("the innermost enclosing root's sidecar governs each one");
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('hands a key to a root that becomes its owner LATER, rather than leaving a stale claim', async () => {
+    // A root can stop being a key's owner between passes: register the outer, seed it, then
+    // register the inner. `seed()` moves the BYTES to the new owner when that happens, so a
+    // first-claim-wins rule for the frontmatter would split the two halves — a file served
+    // from the inner root described by the outer root's sidecar.
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      h = await createBundlerHarness(APP_FIXTURE);
+      await h.bundler.preloadMDXMetadata();
+      unmount = await mountInMemoryFs(MOUNT, NESTED_ROOTS);
+
+      // Pass 1: only the outer root exists, so it legitimately owns the key.
+      h.bundler.artifactStore.addRoot(MOUNT);
+      await h.bundler.seedArtifacts(EMPTY_CTX);
+      const key = `${MOUNT}/sub/entries/one.mdx`;
+      expect(lastMetadataOf(h).get(key)).toEqual({ title: 'Outer' });
+
+      // Pass 2: the inner root registers and becomes the owner.
+      h.bundler.artifactStore.addRoot(`${MOUNT}/sub`);
+      await h.bundler.seedArtifacts(EMPTY_CTX);
+
+      expect(lastMetadataOf(h).get(key)).toEqual({ title: 'Inner' });
+      // …and the displaced outer root is named, not silently replaced.
+      const said = warn.mock.calls.map((c) => c.join(' ')).filter((l) => l.includes('does not own'));
       expect(said).toHaveLength(1);
       expect(said[0]).toContain(key);
     } finally {

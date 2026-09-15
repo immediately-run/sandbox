@@ -113,12 +113,13 @@ function reportSeedDiagnostics(seed: MdxMetadataAdditive): void {
   for (const { root, reason } of seed.unusableRoots) {
     logger.warn(`MDX metadata sidecar unusable (${reason}) for root ${root} — its entries are not seeded.`);
   }
-  // Two roots claiming one key means one NESTS inside the other, so which sidecar describes
-  // the file is genuinely ambiguous. The first writer kept it; say which lost.
+  // Two roots claiming one key means one NESTS inside the other. The OWNING root — the
+  // innermost, the same one `consult` serves the bytes from — keeps it whatever order they
+  // registered in; name the entries that lost, which are the non-owning root's.
   if (seed.collisions.length) {
     logger.warn(
-      `MDX metadata sidecar: ${seed.collisions.length} key(s) claimed by more than one artifact root ` +
-        `(${seed.collisions.join(', ')}); the first root to claim each one kept it.`,
+      `MDX metadata sidecar: ${seed.collisions.length} key(s) also declared by a root that does not own ` +
+        `them (${seed.collisions.join(', ')}); the innermost enclosing root's sidecar governs each one.`,
     );
   }
 }
