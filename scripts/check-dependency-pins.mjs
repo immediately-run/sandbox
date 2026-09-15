@@ -39,8 +39,64 @@
 // cross-repo dependency to coordinate — the tax `cross_repo_migration.mdx` weighs, and
 // the reason `dualRead.mjs` is copied rather than imported.
 //
+// ─────────────────────────────────────────────────────────────────────────────
+// CHECK 2: a LOCKSTEP pin — one that must be the SAME version in more than one repo —
+// is on the target every one of those repos converges on.
+//
+// THE FAILURE THIS EXISTS FOR. `@immediately-run/transpiler` is pinned in TWO repos and
+// must be the same version in both: site-main vendors the package's prebuilt `worker/`
+// bytes into `public/babel-worker/` (the same-origin Babel worker), and sandbox links it
+// for the iframe's live-transpile. R3-149 co-located the worker with its logic so these
+// are one version BY CONSTRUCTION, and the deploy asserts it (SIMPLIFIED_DEPLOYMENT_SPEC
+// §14.3 pt-4).
+//
+// On 2026-09-14 R3-600 published transpiler 0.9.0 and bumped `sandbox` and `cli`. Its
+// roadmap `repos:` list did not name site-main, so the worker stayed on 0.8.1. Nothing
+// said so until the next production deploy:
+//
+//     Babel-worker transpiler (0.8.1) != sandbox iframe transpiler (0.9.0).
+//
+// The deploy gate worked — it just spoke a day late, after four dispatched runs that
+// deployed NOTHING (each recorded `deployed: false` for every component). This check
+// moves the same assertion to PR time, in both pinning repos.
+//
+// EACH REPO CONVERGES ON npm's `latest` — IT NEVER READS ITS PARTNER. The obvious design
+// is "fetch the partner's package.json and compare". It does not work here, and the
+// reason is worth writing down so nobody rebuilds it:
+//
+//   - `site-main` is a PRIVATE repo. raw.githubusercontent.com answers 404 for it
+//     unauthenticated, and a run's `secrets.GITHUB_TOKEN` is scoped to its OWN repo, so
+//     sandbox's CI cannot read site-main's pin at all. Only an org-wide App token could,
+//     which means a cross-repo secret in a PUBLIC repo's PR CI — more attack surface than
+//     the bug is worth.
+//   - It also DEADLOCKS. A package version cannot be dual-read: `cross_repo_migration.mdx`
+//     calls a must-land-together set the failure mode and reserves a true lockstep "only
+//     for when dual-read is genuinely impossible" — this is that case, so the two PRs
+//     cannot merge atomically. Compare-to-partner blocks whoever bumps FIRST, on a partner
+//     that cannot move until they land.
+//
+// So the rule is not "agree with your partner" but "agree with the PUBLISHED TRUTH both of
+// you already depend on": a lockstep pin must equal the package's `latest` dist-tag. Both
+// repos converge on one external value, independently, in any order, with no cross-repo
+// read, no auth, no private-repo problem, and no deadlock. Agreement is then transitive —
+// if both equal `latest`, both equal each other.
+//
+// A DELIBERATE HOLD IS EXPRESSIBLE. Set `hold` on the LOCKSTEP entry to an exact version —
+// in BOTH repos, which is a reviewed act in each — to stay on an older transpiler on
+// purpose. `hold` is then the target instead of `latest`.
+//
+// THE COST, STATED: publishing a new transpiler turns both repos' PRs red until each bumps.
+// That is the intended pressure (an unadopted publish IS the R3-600 bug), and the failure
+// names the one command that fixes it. `hold` is the escape when adoption must wait.
+//
+// IT COSTS NO EXTRA CI, AND NO EXTRA NETWORK. `latest` arrives in the SAME `npm view` call
+// the registry half above already makes — `versions` and `dist-tags` in one request. No
+// cross-repo dispatch, no scheduled poll, no new job, and nothing that fires on a `docs`
+// commit (`docs` deliberately runs CI on PR / 4-hourly poll / dispatch only — never on
+// push to `main`, which is where the roadmap ledger lands ~75 commits/day).
+//
 // Run: `node scripts/check-dependency-pins.mjs`
-//      `node scripts/check-dependency-pins.mjs --registry`    (force the network half)
+//      `node scripts/check-dependency-pins.mjs --registry`    (force the network halves)
 //      `node scripts/check-dependency-pins.mjs --self-test`   (prove it can fail)
 
 import { readFileSync, existsSync, lstatSync } from 'node:fs';
@@ -63,6 +119,35 @@ const REPO_OF = {
   '@immediately-run/prettier-config': 'immediately-run/prettier-config',
   '@immediately-run/sandpack-client': 'immediately-run/immediately-run-sandpack',
   '@immediately-run/sandpack-react': 'immediately-run/immediately-run-sandpack',
+};
+
+/**
+ * Packages that must carry the SAME version in more than one repo, and why. Keep the
+ * `why` short enough to print: it is what a reader who has never heard of R3-149 sees.
+ */
+const LOCKSTEP = {
+  '@immediately-run/transpiler': {
+    repos: ['immediately-run/immediately-run-site-main', 'immediately-run/sandbox'],
+    // An exact version to stay on deliberately, instead of tracking `latest`. Setting it
+    // in ONE repo only re-creates the skew this check exists to catch — change it in BOTH,
+    // in the same pair of PRs, or not at all.
+    hold: null,
+    why:
+      "site-main vendors this package's prebuilt worker/ bytes as the same-origin Babel worker; " +
+      'sandbox links it for the iframe live-transpile. They must be one version (R3-149; ' +
+      'SIMPLIFIED_DEPLOYMENT_SPEC §14.3 pt-4), and the deploy fails on skew.',
+  },
+};
+
+/**
+ * Which repo this checkout IS, keyed by its `package.json` name — so the one copied file
+ * stays byte-identical in every repo that carries it. A name that is absent here simply
+ * has no lockstep partners, which is the correct answer for a third repo copying this
+ * script.
+ */
+const SELF_REPO_BY_PKG_NAME = {
+  '@immediately-run/main': 'immediately-run/immediately-run-site-main',
+  '@immediately-run/sandbox': 'immediately-run/sandbox',
 };
 
 /** An exact version — anything else (`^1.2.3`, `file:`, `link:`, `*`) is a range. */
@@ -171,18 +256,101 @@ export function checkPins({ pkg, lock, published = {}, linked = [], registryChec
   return { errors, notes, pins, checked };
 }
 
+/**
+ * CHECK 2 (pure). Assert every LOCKSTEP pin this repo carries equals the target both
+ * partner repos converge on: the entry's `hold`, or the package's `latest` dist-tag.
+ * Reuses the registry half's `published` map, so it costs no extra call:
+ *   `{ ok: true, versions: string[], latest: string | null }`
+ * A missing entry means the registry half was not run (local, offline mode).
+ */
+export function checkLockstep({ selfRepo, pkg, lock, published = {} }) {
+  const errors = [];
+  const notes = [];
+  let checked = 0;
+  if (!selfRepo) {
+    notes.push(`this checkout's package name (${pkg?.name ?? 'unknown'}) declares no lockstep pins — skipped.`);
+    return { errors, notes, checked };
+  }
+
+  for (const [name, { repos, hold, why }] of Object.entries(LOCKSTEP)) {
+    if (!repos.includes(selfRepo)) continue;
+    const pin = collectPins(pkg).find((p) => p.name === name);
+    if (!pin) continue; // this repo is listed but no longer pins it — CHECK 1's business
+    const partners = repos.filter((r) => r !== selfRepo).join(', ');
+
+    // A LOCKSTEP PIN MUST BE EXACT. A range is not a version: `^0.8.1` in two repos can
+    // resolve to different bytes on two different `npm install` days, which is the very
+    // skew this exists to prevent. Exactness also makes CHECK 1's manifest↔lock agreement
+    // mean the declared spec IS what installs.
+    if (!isExact(pin.spec)) {
+      errors.push(
+        `${name} is a lockstep pin with ${partners}, so it must be an EXACT version —\n` +
+          `   \`${pin.spec}\` is a range, which can resolve differently in each repo.\n` +
+          `   Pin the exact version in ${pin.field} and run \`npm install\`.`,
+      );
+      continue;
+    }
+    const locked = lockVersion(lock, name);
+    if (locked !== null && locked !== pin.spec) continue; // CHECK 1 already failed on this
+
+    const reg = published[name];
+    if (!reg) continue; // registry half not run — reported by the caller
+    if (!reg.ok) continue; // CHECK 1 already errored on the registry outcome
+
+    // The target both repos converge on, with no cross-repo read. See the header.
+    const target = hold ?? reg.latest;
+    if (target === null || target === undefined) {
+      // UNDETERMINED IS NOT AGREEMENT — the same rule the registry half runs on.
+      errors.push(
+        `${name}: the registry answered, but carries NO \`latest\` dist-tag, so the lockstep\n` +
+          `   target is unknown. This is not a pass — set \`hold\` on the LOCKSTEP entry (in every\n` +
+          `   repo in ${repos.join(', ')}) or fix the package's dist-tags.`,
+      );
+      continue;
+    }
+    checked++;
+    if (pin.spec === target) continue;
+
+    const source = hold ? 'the declared `hold` on the LOCKSTEP entry' : `${name}'s \`latest\` dist-tag`;
+    errors.push(
+      `${name}: this repo pins \`${pin.spec}\`, but the lockstep target is \`${target}\` (${source}).\n` +
+        `   Every repo that carries it (${repos.join(', ')}) converges on that same target, so a\n` +
+        `   pin that differs here is a SKEW against ${partners} —\n` +
+        `   the production deploy fails on it before it ships anything.\n` +
+        `   Fix: \`npm install ${name}@${target}\` and commit package.json + package-lock.json.\n` +
+        (hold
+          ? `   To move OFF the hold, change \`hold\` in EVERY repo that carries it (${repos.join(', ')}).\n`
+          : `   Staying behind on purpose? Set \`hold: '${pin.spec}'\` on the LOCKSTEP entry in EVERY\n` +
+            `   repo that carries it (${repos.join(', ')}) — one repo alone re-creates the skew.\n`) +
+        `   Why they must match: ${why}`,
+    );
+  }
+  return { errors, notes, checked };
+}
+
 // ── I/O ──────────────────────────────────────────────────────────────────────
 
-/** Ask npm for a package's published versions. Distinguishes the three outcomes. */
+/**
+ * Ask npm for a package's published versions AND its `latest` dist-tag. Distinguishes the
+ * three outcomes. Both fields come from ONE request, so CHECK 2 adds no network cost:
+ * `npm view <pkg> versions dist-tags --json` → `{ versions: [...], "dist-tags": {...} }`.
+ */
 function fetchVersions(name) {
   try {
-    const out = execFileSync('npm', ['view', name, 'versions', '--json'], {
+    const out = execFileSync('npm', ['view', name, 'versions', 'dist-tags', '--json'], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: 20_000,
     });
     const parsed = JSON.parse(out);
-    return { ok: true, versions: Array.isArray(parsed) ? parsed : [parsed] };
+    // With two fields npm returns an object; with one matching version it can still
+    // collapse `versions` to a bare string, so normalise both shapes.
+    const raw = parsed?.versions ?? parsed;
+    return {
+      ok: true,
+      versions: Array.isArray(raw) ? raw : [raw],
+      latest: parsed?.['dist-tags']?.latest ?? null,
+    };
   } catch (err) {
     const text = `${err.stdout ?? ''}${err.stderr ?? ''}${err.message ?? ''}`;
     if (/E404|is not in this registry|404 Not Found/i.test(text)) return { ok: false, kind: 'not-found' };
@@ -207,6 +375,7 @@ function linkedPackages(pins) {
 // ── self-test: prove the gate can actually fail ──────────────────────────────
 if (process.argv.includes('--self-test')) {
   let failures = 0;
+  let ran = 0;
   const expect = (label, got, matcher) => {
     const joined = got.errors.join('\n');
     if (!matcher.test(joined)) {
@@ -215,6 +384,7 @@ if (process.argv.includes('--self-test')) {
     } else {
       console.log(`  ok  ${label}`);
     }
+    ran++;
   };
   const lockOf = (name, version) => ({ packages: { [`node_modules/${name}`]: { version } } });
   const PROTO = '@immediately-run/sandbox-protocol';
@@ -276,6 +446,7 @@ if (process.argv.includes('--self-test')) {
     } else {
       console.log(`  ok  ${label}`);
     }
+    ran++;
   };
   passes(
     'a published, lock-agreeing exact pin passes',
@@ -307,11 +478,76 @@ if (process.argv.includes('--self-test')) {
     checkPins({ pkg: { dependencies: { react: '^19.0.0' } }, lock: {} }),
   );
 
+  // ── CHECK 2: the lockstep pin ───────────────────────────────────────────────
+  const TP = '@immediately-run/transpiler';
+  const SITE = 'immediately-run/immediately-run-site-main';
+  const SBX = 'immediately-run/sandbox';
+  /** This repo pinning `mine`, with npm's `latest` on `latest`. */
+  const lockstepOf = (selfRepo, mine, latest) =>
+    checkLockstep({
+      selfRepo,
+      pkg: { name: 'x', dependencies: { [TP]: mine } },
+      lock: lockOf(TP, mine),
+      published: { [TP]: { ok: true, versions: ['0.8.1', '0.9.0'], latest } },
+    });
+
+  // 5. THE R3-600 REPLAY — the failure that cost four dead deploy runs. transpiler 0.9.0
+  //    was published and adopted in sandbox; site-main sat on 0.8.1 and nothing said so.
+  const laggard = lockstepOf(SITE, '0.8.1', '0.9.0');
+  expect('R3-600 replay: a pin behind the lockstep target fails', laggard, /lockstep target is `0\.9\.0`/);
+  expect('…and names the one command that fixes it', laggard, /npm install @immediately-run\/transpiler@0\.9\.0/);
+  expect('…and says why the repos must match', laggard, /same-origin Babel worker/);
+  expect('…and names the deliberate-hold escape', laggard, /hold: '0\.8\.1'/);
+
+  //    THE SAME RULE FIRES IN BOTH REPOS — the point of converging on an external value.
+  //    Had sandbox been the laggard, its own CI would have said the identical thing.
+  expect('the identical rule fires from the sandbox side', lockstepOf(SBX, '0.8.1', '0.9.0'), /SKEW/);
+
+  // 6. the adopted state is silent, in both repos
+  passes('a pin on the lockstep target passes (site-main)', lockstepOf(SITE, '0.9.0', '0.9.0'));
+  passes('a pin on the lockstep target passes (sandbox)', lockstepOf(SBX, '0.9.0', '0.9.0'));
+
+  // 7. a RANGE cannot be a lockstep pin — `^0.9.0` in two repos is two resolutions
+  expect('a range lockstep pin fails', lockstepOf(SITE, '^0.9.0', '0.9.0'), /must be an EXACT version/);
+
+  // 8. NO `latest` DIST-TAG IS UNDETERMINED, NOT AGREEMENT — same rule as the registry half
+  expect(
+    'a package with no latest dist-tag fails rather than passing',
+    lockstepOf(SITE, '0.9.0', null),
+    /NO `latest` dist-tag/,
+  );
+
+  // 9. a declared `hold` overrides `latest` — and is judged against the hold, both ways
+  const held = { ...LOCKSTEP[TP], hold: '0.8.1' };
+  const withHold = (mine) => {
+    const saved = LOCKSTEP[TP];
+    LOCKSTEP[TP] = held;
+    try {
+      return lockstepOf(SITE, mine, '0.9.0');
+    } finally {
+      LOCKSTEP[TP] = saved;
+    }
+  };
+  passes('a declared hold pins the target below latest', withHold('0.8.1'));
+  expect('…and a pin that ignores the hold still fails', withHold('0.9.0'), /the declared `hold`/);
+
+  // 10. a repo that carries this script but declares no lockstep pins is not an error
+  passes(
+    'a repo with no lockstep pins is skipped, not failed',
+    checkLockstep({ selfRepo: null, pkg: { name: '@immediately-run/other' }, lock: {} }),
+  );
+
+  // 11. the registry half not having run is a SKIP, never a silent pass
+  passes(
+    'the lockstep half is inert when the registry half did not run',
+    checkLockstep({ selfRepo: SITE, pkg: { name: 'x', dependencies: { [TP]: '0.1.0' } }, lock: lockOf(TP, '0.1.0') }),
+  );
+
   if (failures) {
     console.error(`\n${failures} self-test case(s) failed.`);
     process.exit(1);
   }
-  console.log('11/11 self-test cases.');
+  console.log(`${ran}/${ran} self-test cases.`);
   process.exit(0);
 }
 
@@ -328,13 +564,27 @@ if (useRegistry) {
 }
 
 const { errors, notes, checked } = checkPins({ pkg, lock, published, linked, registryChecked: useRegistry });
-for (const n of notes) console.log(`note: ${n}`);
-if (errors.length) {
+
+// CHECK 2 reads the SAME `published` map the registry half just built — it needs the
+// `latest` dist-tag and nothing else, so it costs no extra call and rides the same gate:
+// on in CI, opt-in locally, so a dev mid-bump is never blocked by a version that is not
+// published yet on purpose. A linked package is skipped there, so it is skipped here too.
+const selfRepo = SELF_REPO_BY_PKG_NAME[pkg.name] ?? null;
+const lockstep = checkLockstep({ selfRepo, pkg, lock, published });
+if (!useRegistry) {
+  notes.push("Lockstep half SKIPPED (not CI, no --registry): npm's latest dist-tag not read. CI runs it.");
+}
+
+for (const n of [...notes, ...lockstep.notes]) console.log(`note: ${n}`);
+
+const allErrors = [...errors, ...lockstep.errors];
+if (allErrors.length) {
   console.error('\ndependency-pin check FAILED:\n');
-  for (const e of errors) console.error(` - ${e}\n`);
+  for (const e of allErrors) console.error(` - ${e}\n`);
   console.error(
-    `${errors.length} problem(s). A pin to an unpublished version turns every subsequent \`npm ci\` on\n` +
-      `main red, which is what it did on 2026-08-24 (R3-327).`,
+    `${allErrors.length} problem(s). A pin to an unpublished version turns every subsequent \`npm ci\` on\n` +
+      `main red, which is what it did on 2026-08-24 (R3-327); a lockstep pin out of step with its partner\n` +
+      `fails the production deploy before it ships anything, which is what it did on 2026-09-14 (R3-600).`,
   );
   process.exit(1);
 }
@@ -343,5 +593,6 @@ console.log(
     ? 'OK: no @immediately-run/* pins to check in this repo.'
     : `OK: ${checked} @immediately-run/* pin(s) ${
         useRegistry ? 'published and ' : ''
-      }in agreement with package-lock.json.`,
+      }in agreement with package-lock.json.` +
+        (lockstep.checked ? ` ${lockstep.checked} lockstep pin(s) on the shared target.` : ''),
 );
