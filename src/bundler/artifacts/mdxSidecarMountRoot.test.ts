@@ -1,6 +1,13 @@
 import { CONTRIBUTE_MANIFEST_PATH, MDX_METADATA_SIDECAR_PATH } from '@immediately-run/platform-constants';
 
-import { createBundlerHarness, mountInMemoryFs, type BundlerHarness } from '../testHarness/bundlerHarness';
+import {
+  contributeManifest as manifest,
+  createBundlerHarness,
+  lastMetadataOf,
+  mountInMemoryFs,
+  setDirty,
+  type BundlerHarness,
+} from '../testHarness/bundlerHarness';
 
 // R3-168 / MDX_FROM_MOUNT_SPEC §3 — the frontmatter sidecar of a SIBLING content mount
 // seeds the metadata store, not just `/app`'s.
@@ -19,15 +26,6 @@ import { createBundlerHarness, mountInMemoryFs, type BundlerHarness } from '../t
 const MDX_METADATA_REPO_PATH = `/${MDX_METADATA_SIDECAR_PATH}`;
 const MOUNT = '/mnt/wiki';
 
-const manifest = (entries: Array<{ path: string; sha: string }>) =>
-  JSON.stringify({ schemaVersion: 1, entries: entries.map((e) => ({ ...e, type: 'blob' })) });
-
-const lastMetadataOf = (h: BundlerHarness): Map<string, Record<string, unknown>> =>
-  (h.bundler as unknown as { lastMetadata: Map<string, Record<string, unknown>> }).lastMetadata;
-const setDirty = (h: BundlerHarness, paths: string[]): void => {
-  (h.bundler as unknown as { dirtyPaths: Set<string> }).dirtyPaths = new Set(paths);
-};
-
 /** An app repo with its own sidecar covering `content/app-post.mdx`. */
 const APP_FIXTURE: Record<string, string> = {
   'package.json': JSON.stringify({ name: 's', main: 'src/index.ts' }),
@@ -41,16 +39,25 @@ const APP_FIXTURE: Record<string, string> = {
 };
 
 /** A content repo as its cache zip delivers it. `over` bends one input at a time. */
-const contentRepo = (over: { sidecar?: string; srcSha?: string; manifest?: boolean } = {}): Record<string, string> => ({
+const contentRepo = (
+  over: { sidecar?: string; srcSha?: string; manifest?: boolean; malformedEntry?: boolean } = {},
+): Record<string, string> => ({
   ...(over.manifest === false
     ? {}
-    : { [CONTRIBUTE_MANIFEST_PATH]: manifest([{ path: 'entries/one.mdx', sha: 'sha-one' }]) }),
+    : {
+        [CONTRIBUTE_MANIFEST_PATH]: manifest([
+          { path: 'entries/one.mdx', sha: 'sha-one' },
+          { path: 'entries/bad.mdx', sha: 'sha-bad' },
+        ]),
+      }),
   [MDX_METADATA_SIDECAR_PATH]:
     over.sidecar ??
     JSON.stringify({
       schemaVersion: 1,
       files: {
         '/entries/one.mdx': { srcSha: over.srcSha ?? 'sha-one', frontmatter: { title: 'From mount', tags: ['w'] } },
+        // A row the shared validator rejects: `frontmatter` must be an object.
+        ...(over.malformedEntry ? { '/entries/bad.mdx': { srcSha: 'sha-bad', frontmatter: 'not an object' } } : {}),
       },
     }),
   'entries/one.mdx': '---\ntitle: On disk\n---\n\n# on disk\n',
@@ -176,5 +183,138 @@ describe("a content mount's frontmatter sidecar seeds the metadata store", () =>
     expect(meta.get(`${MOUNT}/entries/one.mdx`)).toMatchObject({ title: 'From mount' });
     // …and the `/app` live walk still ran.
     expect(meta.get('/app/content/app-post.mdx')).toMatchObject({ title: 'Live app' });
+  });
+
+  it('names the ROOT of a dropped entry, so a repo-relative key is still attributable', async () => {
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await withContentMount(contentRepo({ malformedEntry: true }));
+
+      await h.bundler.preloadMDXMetadata();
+
+      // The good row still seeds — one bad entry costs only itself.
+      expect(lastMetadataOf(h).get(`${MOUNT}/entries/one.mdx`)).toMatchObject({ title: 'From mount' });
+      expect(lastMetadataOf(h).has(`${MOUNT}/entries/bad.mdx`)).toBe(false);
+      // …and the drop names which root carried it. `/entries/bad.mdx` alone would be
+      // ambiguous the moment a second root can seed, which is the whole reason drops
+      // carry a root at all.
+      const said = warn.mock.calls.map((c) => c.join(' ')).filter((l) => l.includes('dropped'));
+      expect(said).toHaveLength(1);
+      expect(said[0]).toContain(`${MOUNT} /entries/bad.mdx: entry-frontmatter`);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('does not prefix an /app drop with a root, so the app-only log is unchanged', async () => {
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      h = await createBundlerHarness({
+        ...APP_FIXTURE,
+        [CONTRIBUTE_MANIFEST_PATH]: manifest([{ path: 'content/app-bad.mdx', sha: 'sha-bad' }]),
+        [MDX_METADATA_SIDECAR_PATH]: JSON.stringify({
+          schemaVersion: 1,
+          files: { '/content/app-bad.mdx': { srcSha: 'sha-bad', frontmatter: 'not an object' } },
+        }),
+      });
+
+      await h.bundler.preloadMDXMetadata();
+
+      const said = warn.mock.calls.map((c) => c.join(' ')).filter((l) => l.includes('dropped'));
+      expect(said[0]).toContain('/content/app-bad.mdx: entry-frontmatter');
+      expect(said[0]).not.toContain('/app /content/app-bad.mdx');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
+// The reachability half. The rebase above is only worth having if something in the real boot
+// sequence runs it for a non-`/app` root — and at the point `preloadMDXMetadata` fires (the
+// app-root mount hook) nothing else has registered yet, because `registerDeclaredGitLibraries`
+// runs later. `seedArtifacts` is where every declared root HAS registered, so the sidecars of
+// the roots added since boot are read there.
+describe('a root registered after boot is metadata-seeded when its artifacts are', () => {
+  let h: BundlerHarness;
+  let unmount: (() => void) | null = null;
+  const EMPTY_CTX = { dirtySet: new Set<string>(), writableLayer: new Set<string>() };
+
+  afterEach(async () => {
+    unmount?.();
+    unmount = null;
+    if (h) await h.teardown();
+  });
+
+  it('seeds a root that did not exist when preloadMDXMetadata ran', async () => {
+    h = await createBundlerHarness(APP_FIXTURE);
+    // Boot order: the metadata preload happens BEFORE any library/content root registers.
+    await h.bundler.preloadMDXMetadata();
+    expect(lastMetadataOf(h).has(`${MOUNT}/entries/one.mdx`)).toBe(false);
+
+    unmount = await mountInMemoryFs(MOUNT, contentRepo());
+    h.bundler.artifactStore.addRoot(MOUNT);
+    await h.bundler.seedArtifacts(EMPTY_CTX);
+
+    expect(lastMetadataOf(h).get(`${MOUNT}/entries/one.mdx`)).toMatchObject({ title: 'From mount' });
+    // …and the app root's own entries are untouched by the later pass.
+    expect(lastMetadataOf(h).get('/app/content/app-post.mdx')).toEqual({ title: 'From app' });
+  });
+
+  it('reads each root once, so the later pass does not re-log the app root`s drops', async () => {
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      h = await createBundlerHarness({
+        ...APP_FIXTURE,
+        [CONTRIBUTE_MANIFEST_PATH]: manifest([{ path: 'content/app-bad.mdx', sha: 'sha-bad' }]),
+        [MDX_METADATA_SIDECAR_PATH]: JSON.stringify({
+          schemaVersion: 1,
+          files: { '/content/app-bad.mdx': { srcSha: 'sha-bad', frontmatter: 'not an object' } },
+        }),
+      });
+      await h.bundler.preloadMDXMetadata();
+      await h.bundler.seedArtifacts(EMPTY_CTX);
+
+      // Once, from the boot pass. A second read would double every drop line and re-fire
+      // every seeded entry through the metadata emitter.
+      expect(warn.mock.calls.map((c) => c.join(' ')).filter((l) => l.includes('dropped'))).toHaveLength(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('reports a key two NESTED roots both claim rather than letting one overwrite the other', async () => {
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      h = await createBundlerHarness(APP_FIXTURE);
+      await h.bundler.preloadMDXMetadata();
+
+      // `addRoot` permits nesting (`rootFor` resolves a module to the innermost), and a
+      // nested pair is the one way two roots can join to the same absolute key.
+      unmount = await mountInMemoryFs(MOUNT, {
+        [CONTRIBUTE_MANIFEST_PATH]: manifest([{ path: 'sub/entries/one.mdx', sha: 'sha-outer' }]),
+        [MDX_METADATA_SIDECAR_PATH]: JSON.stringify({
+          schemaVersion: 1,
+          files: { '/sub/entries/one.mdx': { srcSha: 'sha-outer', frontmatter: { title: 'Outer' } } },
+        }),
+        [`sub/${CONTRIBUTE_MANIFEST_PATH}`]: manifest([{ path: 'entries/one.mdx', sha: 'sha-inner' }]),
+        [`sub/${MDX_METADATA_SIDECAR_PATH}`]: JSON.stringify({
+          schemaVersion: 1,
+          files: { '/entries/one.mdx': { srcSha: 'sha-inner', frontmatter: { title: 'Inner' } } },
+        }),
+      });
+      h.bundler.artifactStore.addRoot(MOUNT);
+      h.bundler.artifactStore.addRoot(`${MOUNT}/sub`);
+      await h.bundler.seedArtifacts(EMPTY_CTX);
+
+      const key = `${MOUNT}/sub/entries/one.mdx`;
+      // One of the two kept it — deterministically the first root registered — and the
+      // loser is on the record instead of silently vanishing.
+      expect(lastMetadataOf(h).get(key)).toEqual({ title: 'Outer' });
+      const said = warn.mock.calls.map((c) => c.join(' ')).filter((l) => l.includes('more than one artifact root'));
+      expect(said).toHaveLength(1);
+      expect(said[0]).toContain(key);
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

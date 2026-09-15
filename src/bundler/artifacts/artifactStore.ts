@@ -92,10 +92,30 @@ interface MdxMetadataDrop {
   reason: MdxMetadataRejection;
 }
 
-/** The confined result of reading the frontmatter sidecar (§1.3). */
-export interface MdxMetadataSeedResult {
+/**
+ * What a seed produced across roots, with no verdict about `/app`. Every field but `entries`
+ * is a reason something is MISSING from them — each contained to one root, and none of them
+ * silent, because "the cache seeded nothing" and "there was nothing to seed" look the same
+ * from the store.
+ */
+export interface MdxMetadataAdditive {
   /** Absolute root-joined path → frontmatter, for entries that pass confinement. */
   entries: Map<string, Record<string, any>>;
+  /** Malformed ENTRIES the validator dropped from otherwise-usable sidecars. */
+  droppedEntries: MdxMetadataDrop[];
+  /** Non-app roots whose sidecar existed but could not be interpreted. */
+  unusableRoots: { root: string; reason: MdxMetadataRejection }[];
+  /**
+   * Keys two roots both claimed. Root-joined keys are distinct whenever the roots are, so
+   * this is reachable only through NESTED roots, which `addRoot` permits (`rootFor` resolves
+   * a module to the innermost). Which sidecar describes such a file is genuinely ambiguous,
+   * so the first writer wins and the loser is reported rather than overwriting it silently.
+   */
+  collisions: string[];
+}
+
+/** The confined result of reading the frontmatter sidecar (§1.3). */
+export interface MdxMetadataSeedResult extends MdxMetadataAdditive {
   /** True if the APP root's sidecar file existed (whether or not any entry was honored). */
   present: boolean;
   /** Set if the sidecar itself sat in the writable (COW) layer → rejected (§3). */
@@ -111,23 +131,14 @@ export interface MdxMetadataSeedResult {
    * as it does on `securityReject`.
    */
   unusable?: MdxMetadataRejection;
-  /**
-   * Malformed ENTRIES the validator dropped from an otherwise-usable sidecar, across
-   * every root. Dropping them is right — one bad row must not cost a repo its whole
-   * cached metadata — but a SILENT drop is how "the cache seeded nothing" becomes
-   * indistinguishable from "there was nothing to seed", so the count travels with the
-   * result and gets logged.
-   */
-  droppedEntries?: MdxMetadataDrop[];
-  /**
-   * Non-app roots whose sidecar existed but could not be interpreted. Contained the way
-   * `seedRoot` contains a library's bad artifact section — a mount's damaged sidecar
-   * costs that mount its cached metadata and nothing else — but not silent, for the same
-   * reason `droppedEntries` is not: the app root's own verdict rides on `unusable`, and
-   * folding a mount's into it would cost `/app` a cache it has no defect in.
-   */
-  unusableRoots?: { root: string; reason: MdxMetadataRejection }[];
 }
+
+/** The additive diagnostics, all empty — the shape a distrusted or no-op seed returns. */
+const emptySeedDiagnostics = (): Omit<MdxMetadataAdditive, 'entries'> => ({
+  droppedEntries: [],
+  unusableRoots: [],
+  collisions: [],
+});
 
 /** One root's sidecar verdict, before `seedMdxMetadata` aggregates them. */
 interface MdxMetadataRootResult {
@@ -170,6 +181,11 @@ export class ArtifactStore {
   // Roots already seeded, so a second `seed()` (a post-boot library registration) only
   // does the new ones.
   private seededRoots = new Set<string>();
+  // The same guard for the frontmatter sidecar. It is a SEPARATE set because the two seeds
+  // run at different moments: the app root's metadata is read at boot (it decides whether the
+  // tree is live-walked), while a root registered later is metadata-seeded alongside its
+  // artifacts. Sharing one set would make whichever ran first silence the other.
+  private seededMetadataRoots = new Set<string>();
 
   constructor(private readonly fs: ArtifactFs, private readonly embedded: EmbeddedToolchainIdentity) {}
 
@@ -383,41 +399,78 @@ export class ArtifactStore {
    * (MDX_FROM_MOUNT_SPEC §3). The sidecar's keys are repo-relative internally, so seeding
    * from a mount is a rebase: join to the ACTIVE root rather than to `/app`.
    *
-   * Aggregated exactly the way `seed()` aggregates `seedRoot()`. `entries` is the union
-   * across roots — the keys are root-joined absolute paths, so two roots cannot collide,
-   * the same property that lets `transpiledPathFor` key on the full module path. But
-   * `present` / `securityReject` / `unusable` are the APP root's verdict ALONE, because
-   * all three answer one question for the caller — *must I live-walk the app tree?* —
-   * which only the app root's sidecar can answer. A mount's absent or damaged sidecar is
-   * contained to that mount (surfaced in `unusableRoots`), never charged to `/app`.
+   * Aggregated the way `seed()` aggregates `seedRoot()`, and re-callable for the same reason:
+   * a root registered after boot (a git library, a dispatched content mount) is seeded by a
+   * later call, and `seededMetadataRoots` keeps the earlier ones from being read twice.
+   * `entries` is the union across roots. But `present` / `securityReject` / `unusable` are
+   * the APP root's verdict ALONE, because all three answer one question for the caller —
+   * *must I live-walk the app tree?* — which only the app root's sidecar can answer, and only
+   * on the call that actually read it. A mount's absent or damaged sidecar is contained to
+   * that mount (surfaced in `unusableRoots`), never charged to `/app`.
+   *
+   * Root-joined keys make two roots collide only when one root NESTS inside another, which
+   * `addRoot` permits (`rootFor` resolves a module to the innermost). A collision there is a
+   * real ambiguity about which sidecar describes the file, so the first writer wins and the
+   * loser is reported in `collisions` rather than silently overwritten.
    */
   async seedMdxMetadata(ctx: SeedContext): Promise<MdxMetadataSeedResult> {
-    if (this.distrusted) return { entries: new Map(), present: false };
+    if (this.distrusted) return { entries: new Map(), present: false, ...emptySeedDiagnostics() };
 
     // The app root is read first and named explicitly rather than found in the loop: its
     // verdict is the returned one, so making that structural removes the "what if `/app`
     // is not in `roots`" branch a lookup would need.
-    const app = await this.seedMdxMetadataRoot(APP_ROOT, ctx);
-    const entries = new Map(app.entries);
-    const droppedEntries = [...app.droppedEntries];
-    const unusableRoots: { root: string; reason: MdxMetadataRejection }[] = [];
-
-    for (const root of this.roots) {
-      if (root === APP_ROOT) continue;
-      const result = await this.seedMdxMetadataRoot(root, ctx);
-      for (const [modulePath, frontmatter] of result.entries) entries.set(modulePath, frontmatter);
-      droppedEntries.push(...result.droppedEntries);
-      if (result.unusable) unusableRoots.push({ root, reason: result.unusable });
-    }
-
+    const app = await this.seedMdxMetadataRootOnce(APP_ROOT, ctx);
+    const rest = await this.seedNewMetadataRoots(ctx, app.entries);
+    for (const [modulePath, frontmatter] of app.entries) rest.entries.set(modulePath, frontmatter);
     return {
-      entries,
+      ...rest,
       present: app.present,
       ...(app.securityReject ? { securityReject: app.securityReject } : {}),
       ...(app.unusable ? { unusable: app.unusable } : {}),
-      ...(droppedEntries.length ? { droppedEntries } : {}),
-      ...(unusableRoots.length ? { unusableRoots } : {}),
+      droppedEntries: [...app.droppedEntries, ...rest.droppedEntries],
     };
+  }
+
+  /**
+   * The additive half: every root registered since the last seed, and nothing about `/app`.
+   *
+   * Separate from {@link seedMdxMetadata} rather than a second call of it because `present`
+   * is the caller's "must I live-walk the app tree?" answer, and on a later call `/app` has
+   * already been read — so a `present: false` there would mean "not asked again", which reads
+   * identically to "there was no sidecar" and would walk the whole tree a second time. A
+   * result that cannot carry the answer should not carry the field.
+   */
+  async seedNewMetadataRoots(ctx: SeedContext, taken?: ReadonlyMap<string, unknown>): Promise<MdxMetadataAdditive> {
+    if (this.distrusted) return { entries: new Map(), ...emptySeedDiagnostics() };
+    const entries = new Map<string, Record<string, any>>();
+    const droppedEntries: MdxMetadataDrop[] = [];
+    const unusableRoots: { root: string; reason: MdxMetadataRejection }[] = [];
+    const collisions: string[] = [];
+
+    for (const root of this.roots) {
+      if (root === APP_ROOT) continue;
+      const result = await this.seedMdxMetadataRootOnce(root, ctx);
+      for (const [modulePath, frontmatter] of result.entries) {
+        if (entries.has(modulePath) || taken?.has(modulePath)) {
+          collisions.push(modulePath);
+          continue;
+        }
+        entries.set(modulePath, frontmatter);
+      }
+      droppedEntries.push(...result.droppedEntries);
+      if (result.unusable) unusableRoots.push({ root, reason: result.unusable });
+    }
+    return { entries, droppedEntries, unusableRoots, collisions };
+  }
+
+  /** `seedMdxMetadataRoot`, but at most once per root for the life of the store — so a
+   *  second seed does only the roots that registered since the first. */
+  private async seedMdxMetadataRootOnce(root: string, ctx: SeedContext): Promise<MdxMetadataRootResult> {
+    if (this.seededMetadataRoots.has(root)) {
+      return { entries: new Map(), present: false, droppedEntries: [] };
+    }
+    this.seededMetadataRoots.add(root);
+    return this.seedMdxMetadataRoot(root, ctx);
   }
 
   /**

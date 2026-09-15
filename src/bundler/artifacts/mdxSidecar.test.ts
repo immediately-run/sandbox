@@ -1,6 +1,12 @@
-import { ARTIFACTS_DIR } from '@immediately-run/platform-constants';
+import { MDX_METADATA_SIDECAR_PATH } from '@immediately-run/platform-constants';
 
-import { createBundlerHarness, type BundlerHarness } from '../testHarness/bundlerHarness';
+import {
+  contributeManifest as manifest,
+  createBundlerHarness,
+  lastMetadataOf,
+  setDirty,
+  type BundlerHarness,
+} from '../testHarness/bundlerHarness';
 
 // G-MDX-3b: seed the MDX-frontmatter store from the cache-zip sidecar
 // (MDX_CONTENT_COLLECTIONS_SPEC §1.3/§1.4) instead of walking the tree, with
@@ -9,16 +15,7 @@ import { createBundlerHarness, type BundlerHarness } from '../testHarness/bundle
 // run the ESM-only `@mdx-js/mdx` dynamic import) — seeding reads JSON + parses
 // frontmatter (`yaml`, no dynamic import), so this whole path is jest-testable.
 
-const MDX_METADATA_REPO_PATH = `/${ARTIFACTS_DIR}/mdx-metadata.json`;
-
-const lastMetadataOf = (h: BundlerHarness): Map<string, Record<string, unknown>> =>
-  (h.bundler as unknown as { lastMetadata: Map<string, Record<string, unknown>> }).lastMetadata;
-const setDirty = (h: BundlerHarness, paths: string[]): void => {
-  (h.bundler as unknown as { dirtyPaths: Set<string> }).dirtyPaths = new Set(paths);
-};
-
-const manifest = (entries: Array<{ path: string; sha: string }>) =>
-  JSON.stringify({ schemaVersion: 1, entries: entries.map((e) => ({ ...e, type: 'blob' })) });
+const MDX_METADATA_REPO_PATH = `/${MDX_METADATA_SIDECAR_PATH}`;
 
 describe('G-MDX-3b — sidecar seeding of the MDX metadata store', () => {
   let h: BundlerHarness;

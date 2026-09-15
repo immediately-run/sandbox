@@ -11,21 +11,22 @@ import { EMBEDDED_TOOLCHAIN_HASH } from './embeddedToolchainHash';
 // exercising a **root-parameterized** replica of the ArtifactStore's core seed /
 // consult / seedMdxMetadata logic against BOTH `/app` and `/mnt/spike`, reusing the
 // production `parseArtifactIndex` / `validateSeedEntry` / `normalizeRepoRelPath`
-// (already root-agnostic — they operate on repo-relative keys). It also reproduces
-// the two coupling defects the trace surfaced, and shows the fix:
+// (already root-agnostic — they operate on repo-relative keys).
 //
-//  1. **Seed/consult keying only coincides for `/app`.** Production `seed()` writes
-//     `/transpiled${v.path}.js` (v.path is repo-relative) while `consult()` reads
-//     `/transpiled${stripAppRoot(path)}.js`. For `/app` these agree (stripAppRoot
-//     strips the root → the repo-relative path); for `/mnt/{hash}` they DON'T, so a
-//     mount consult would miss. Fix: strip the ACTIVE root consistently on both.
-//  2. **`/transpiled` collides across roots.** Repo-relative keying means
-//     `/app/content/x` and `/mnt/spike/content/x` both map to
-//     `/transpiled/content/x.js`. Fix: namespace `/transpiled` per root.
+// HISTORICAL. Every defect below was open when the spike was written and all three are
+// now CLOSED in production; the file is kept because it is still the cheapest executable
+// statement of what the routing has to do, but nothing here describes current behaviour.
 //
-// The metadata "path-rebasing wrinkle" (spec §3, §7) is shown to be trivial: the
-// sidecar keys are repo-relative internally (`normalizeRepoRelPath`), so seeding
-// rebases by joining to the ACTIVE root instead of `/app` — a one-line change.
+//  1. **Seed/consult keying only coincided for `/app`.** `seed()` wrote
+//     `/transpiled${v.path}.js` (repo-relative) while `consult()` read
+//     `/transpiled${stripAppRoot(path)}.js`, which agree only under `/app`. Closed:
+//     `transpiledPathFor` keys on the FULL absolute module path on both sides.
+//  2. **`/transpiled` collided across roots** under repo-relative keying. Closed by the
+//     same change — the spike proposed a per-root namespace, and absolute-path keying
+//     subsumes it, since two roots cannot produce one absolute path.
+//  3. **The metadata "path-rebasing wrinkle"** (spec §3, §7): seeding joined sidecar keys
+//     to `/app` rather than to the active root. Closed by `ArtifactStore.seedMdxMetadata`,
+//     which seeds every root; `mdxSidecarMountRoot.test.ts` is its real test.
 
 // ---- a tiny in-memory ArtifactFs (the spike needs no ZenFS harness) ------------
 class MapFs {
@@ -50,8 +51,9 @@ class MapFs {
   }
 }
 
-// ---- root-parameterized helpers (the proposed change; today these are `/app`-only
-//      free functions in artifactStore.ts / fsLayout.ts) --------------------------
+// ---- root-parameterized helpers, as the spike proposed them. Production took the
+//      equivalent-but-simpler route of keying on the absolute module path; these are
+//      kept as written so the spike still reads as the record of what was tried. ----
 const ARTIFACTS = '.immediately.run/artifacts';
 const underRoot = (root: string, repoRel: string) => `${root}${repoRel.startsWith('/') ? '' : '/'}${repoRel}`;
 const stripRoot = (root: string, abs: string) =>
