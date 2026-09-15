@@ -1414,10 +1414,39 @@ export class Bundler {
     // walk + per-file read across the COW port. Clean covered files come from JSON;
     // modified `.mdx` (dirty set, parent-attested — no in-iframe walk) re-scan live;
     // an absent/rejected sidecar falls through to the full live walk below.
+    //
+    // The seed covers every artifact root, not just `/app` (MDX_FROM_MOUNT_SPEC §3), so a
+    // dispatched content mount's own sidecar populates the store too. The live walk below
+    // stays `/app`-scoped: it is the fallback for the app repo, and a mount that shipped
+    // no sidecar is read lazily by `refreshMetadata` rather than scanned at boot.
     const seed = await this.artifactStore.seedMdxMetadata({
       dirtySet: this.dirtyPaths,
       writableLayer: this.dirtyPaths,
     });
+    // Seed every root's entries BEFORE branching on the app root's verdict. Seeding is
+    // additive and per-root (MDX_FROM_MOUNT_SPEC §3): a content mount's sidecar is the
+    // only source for that mount's frontmatter, because the live walk below is scoped to
+    // `APP_ROOT`. Charging a mount's entries to whether `/app` shipped a usable sidecar
+    // would drop them with nothing behind them.
+    for (const [modulePath, frontmatter] of seed.entries) this.seedMetadataEntry(modulePath, frontmatter);
+    // A dropped ENTRY is correct (one bad row must not cost the repo the other 400),
+    // but a silent drop is indistinguishable from having nothing to seed (R3-275c).
+    if (seed.droppedEntries?.length) {
+      logger.warn(
+        `MDX metadata sidecar: dropped ${seed.droppedEntries.length} malformed entr` +
+          `${seed.droppedEntries.length === 1 ? 'y' : 'ies'} ` +
+          `(${seed.droppedEntries
+            .map((r) => `${r.root === APP_ROOT ? '' : `${r.root} `}${r.path}: ${r.reason}`)
+            .join(', ')}); ` +
+          'those files live-scan lazily.',
+      );
+    }
+    // A mount's unusable sidecar costs that mount its cached metadata and nothing else —
+    // but it is still a reason its entries are missing, so it is named rather than
+    // folded into the app root's verdict below.
+    for (const { root, reason } of seed.unusableRoots ?? []) {
+      logger.warn(`MDX metadata sidecar unusable (${reason}) for mount ${root} — its entries are not seeded.`);
+    }
     if (seed.securityReject) {
       logger.warn(
         `MDX metadata sidecar rejected (${seed.securityReject}) — live-scanning frontmatter (UI_AS_APPS §8.14).`,
@@ -1442,17 +1471,6 @@ export class Bundler {
       logger.warn(`MDX metadata sidecar unusable (${seed.unusable}) — live-scanning frontmatter instead.`);
       // fall through to the live walk
     } else if (seed.present) {
-      for (const [appPath, frontmatter] of seed.entries) this.seedMetadataEntry(appPath, frontmatter);
-      // A dropped ENTRY is correct (one bad row must not cost the repo the other 400),
-      // but a silent drop is indistinguishable from having nothing to seed (R3-275c).
-      if (seed.droppedEntries?.length) {
-        logger.warn(
-          `MDX metadata sidecar: dropped ${seed.droppedEntries.length} malformed entr` +
-            `${seed.droppedEntries.length === 1 ? 'y' : 'ies'} ` +
-            `(${seed.droppedEntries.map((r) => `${r.path}: ${r.reason}`).join(', ')}); ` +
-            'those files live-scan lazily.',
-        );
-      }
       // Modified `.mdx` re-scan live (cache==live under edits); the rest is covered.
       await Promise.all(
         [...this.dirtyPaths]

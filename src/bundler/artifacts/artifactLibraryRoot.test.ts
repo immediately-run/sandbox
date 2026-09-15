@@ -1,7 +1,6 @@
 import { TRANSPILER_VERSION } from '@immediately-run/transpiler';
-import { fs, mount, umount, resolveMountConfig, InMemory } from '@zenfs/core';
 
-import { createBundlerHarness, type BundlerHarness } from '../testHarness/bundlerHarness';
+import { createBundlerHarness, mountInMemoryFs, type BundlerHarness } from '../testHarness/bundlerHarness';
 import { EMBEDDED_TOOLCHAIN_HASH } from './embeddedToolchainHash';
 
 // LIBRARY_MOUNTS_SPEC §7/L4 + PRETRANSPILED_ARTIFACTS_SPEC §5.1 — a git-mounted library's
@@ -65,24 +64,6 @@ const libraryRepo = (
   '.immediately.run/artifacts/transpiled/src/greet.ts.js': LIB_ARTIFACT,
 });
 
-async function mountLibraryFs(mountPath: string, files: Record<string, string>): Promise<() => void> {
-  const backing = await resolveMountConfig({ backend: InMemory });
-  await fs.promises.mkdir(mountPath, { recursive: true }).catch(() => undefined);
-  mount(mountPath, backing);
-  for (const [rel, content] of Object.entries(files)) {
-    const abs = `${mountPath}/${rel}`;
-    await fs.promises.mkdir(abs.slice(0, abs.lastIndexOf('/')), { recursive: true }).catch(() => undefined);
-    await fs.promises.writeFile(abs, content);
-  }
-  return () => {
-    try {
-      umount(mountPath);
-    } catch {
-      /* not mounted */
-    }
-  };
-}
-
 describe("a git-mounted library's own artifacts are seeded and consumed", () => {
   let h: BundlerHarness;
   let unmount: (() => void) | null = null;
@@ -97,7 +78,7 @@ describe("a git-mounted library's own artifacts are seeded and consumed", () => 
   });
 
   const register = async (files: Record<string, string>) => {
-    unmount = await mountLibraryFs('/mnt/testlib', files);
+    unmount = await mountInMemoryFs('/mnt/testlib', files);
     await h.bundler.registerGitLibraryMount('@scope/lib', '/mnt/testlib');
   };
 

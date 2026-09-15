@@ -1,4 +1,4 @@
-import { APP_ROOT, MANIFEST_SIDECAR_PATH, underAppRoot } from '../../fsLayout';
+import { APP_ROOT, MANIFEST_SIDECAR_PATH } from '../../fsLayout';
 import {
   MDX_METADATA_SIDECAR_PATH,
   type MdxMetadataRejection,
@@ -81,11 +81,22 @@ export interface SpotVerifyResult {
   reason?: 'transpile-mismatch' | 'frontmatter-mismatch';
 }
 
+/**
+ * A sidecar entry the shared validator dropped, tagged with the root whose sidecar
+ * carried it. The raw key is repo-relative, so once more than one root can seed
+ * (a content mount alongside `/app`) the key alone no longer names a file.
+ */
+interface MdxMetadataDrop {
+  root: string;
+  path: string;
+  reason: MdxMetadataRejection;
+}
+
 /** The confined result of reading the frontmatter sidecar (§1.3). */
 export interface MdxMetadataSeedResult {
-  /** Absolute `/app/...` path → frontmatter, for entries that pass confinement. */
+  /** Absolute root-joined path → frontmatter, for entries that pass confinement. */
   entries: Map<string, Record<string, any>>;
-  /** True if the sidecar file existed (whether or not any entry was honored). */
+  /** True if the APP root's sidecar file existed (whether or not any entry was honored). */
   present: boolean;
   /** Set if the sidecar itself sat in the writable (COW) layer → rejected (§3). */
   securityReject?: 'writable-layer-mdx-metadata';
@@ -101,12 +112,30 @@ export interface MdxMetadataSeedResult {
    */
   unusable?: MdxMetadataRejection;
   /**
-   * Malformed ENTRIES the validator dropped from an otherwise-usable sidecar. Dropping
-   * them is right — one bad row must not cost a repo its whole cached metadata — but a
-   * SILENT drop is how "the cache seeded nothing" becomes indistinguishable from "there
-   * was nothing to seed", so the count travels with the result and gets logged.
+   * Malformed ENTRIES the validator dropped from an otherwise-usable sidecar, across
+   * every root. Dropping them is right — one bad row must not cost a repo its whole
+   * cached metadata — but a SILENT drop is how "the cache seeded nothing" becomes
+   * indistinguishable from "there was nothing to seed", so the count travels with the
+   * result and gets logged.
    */
-  droppedEntries?: { path: string; reason: MdxMetadataRejection }[];
+  droppedEntries?: MdxMetadataDrop[];
+  /**
+   * Non-app roots whose sidecar existed but could not be interpreted. Contained the way
+   * `seedRoot` contains a library's bad artifact section — a mount's damaged sidecar
+   * costs that mount its cached metadata and nothing else — but not silent, for the same
+   * reason `droppedEntries` is not: the app root's own verdict rides on `unusable`, and
+   * folding a mount's into it would cost `/app` a cache it has no defect in.
+   */
+  unusableRoots?: { root: string; reason: MdxMetadataRejection }[];
+}
+
+/** One root's sidecar verdict, before `seedMdxMetadata` aggregates them. */
+interface MdxMetadataRootResult {
+  entries: Map<string, Record<string, any>>;
+  present: boolean;
+  securityReject?: 'writable-layer-mdx-metadata';
+  unusable?: MdxMetadataRejection;
+  droppedEntries: MdxMetadataDrop[];
 }
 
 /**
@@ -348,29 +377,79 @@ export class ArtifactStore {
   }
 
   /**
-   * Read + confine the frontmatter sidecar (MDX_CONTENT_COLLECTIONS_SPEC §1.3) so a
-   * clean cached boot seeds the metadata store from JSON instead of walking the tree.
-   * Returns `present:false` when the sidecar is absent (or the section is distrusted)
-   * → the caller live-scans. A writable-layer sidecar is rejected eagerly (§3). Each
-   * entry is honored only if it passes the SAME confinement as `§5.1` artifact seeding:
-   * a valid repo-relative path that names a manifest `entries[]` member, is not in the
-   * dirty set, and whose `srcSha` equals the manifest sha. Keys are translated to the
-   * absolute `/app/...` metadata-store space (`metadataKey.test.ts`) before returning.
+   * Read + confine the frontmatter sidecar (MDX_CONTENT_COLLECTIONS_SPEC §1.3) of EVERY
+   * artifact root, so a clean cached boot seeds the metadata store from JSON instead of
+   * walking the tree — and so a dispatched content mount's own sidecar seeds it too
+   * (MDX_FROM_MOUNT_SPEC §3). The sidecar's keys are repo-relative internally, so seeding
+   * from a mount is a rebase: join to the ACTIVE root rather than to `/app`.
+   *
+   * Aggregated exactly the way `seed()` aggregates `seedRoot()`. `entries` is the union
+   * across roots — the keys are root-joined absolute paths, so two roots cannot collide,
+   * the same property that lets `transpiledPathFor` key on the full module path. But
+   * `present` / `securityReject` / `unusable` are the APP root's verdict ALONE, because
+   * all three answer one question for the caller — *must I live-walk the app tree?* —
+   * which only the app root's sidecar can answer. A mount's absent or damaged sidecar is
+   * contained to that mount (surfaced in `unusableRoots`), never charged to `/app`.
    */
   async seedMdxMetadata(ctx: SeedContext): Promise<MdxMetadataSeedResult> {
-    const absent: MdxMetadataSeedResult = { entries: new Map(), present: false };
-    if (this.distrusted) return absent;
+    if (this.distrusted) return { entries: new Map(), present: false };
+
+    // The app root is read first and named explicitly rather than found in the loop: its
+    // verdict is the returned one, so making that structural removes the "what if `/app`
+    // is not in `roots`" branch a lookup would need.
+    const app = await this.seedMdxMetadataRoot(APP_ROOT, ctx);
+    const entries = new Map(app.entries);
+    const droppedEntries = [...app.droppedEntries];
+    const unusableRoots: { root: string; reason: MdxMetadataRejection }[] = [];
+
+    for (const root of this.roots) {
+      if (root === APP_ROOT) continue;
+      const result = await this.seedMdxMetadataRoot(root, ctx);
+      for (const [modulePath, frontmatter] of result.entries) entries.set(modulePath, frontmatter);
+      droppedEntries.push(...result.droppedEntries);
+      if (result.unusable) unusableRoots.push({ root, reason: result.unusable });
+    }
+
+    return {
+      entries,
+      present: app.present,
+      ...(app.securityReject ? { securityReject: app.securityReject } : {}),
+      ...(app.unusable ? { unusable: app.unusable } : {}),
+      ...(droppedEntries.length ? { droppedEntries } : {}),
+      ...(unusableRoots.length ? { unusableRoots } : {}),
+    };
+  }
+
+  /**
+   * One root's frontmatter sidecar. `present:false` when the sidecar is absent → that
+   * root contributes nothing and its files are live-read. A writable-layer sidecar is
+   * rejected eagerly (§3). Each entry is honored only if it passes the SAME confinement
+   * as `§5.1` artifact seeding: a valid repo-relative path that names a manifest
+   * `entries[]` member, is not in the dirty set, and whose `srcSha` equals the manifest
+   * sha. Keys are joined to `root` for the metadata-store space (`metadataKey.test.ts`).
+   */
+  private async seedMdxMetadataRoot(root: string, ctx: SeedContext): Promise<MdxMetadataRootResult> {
+    const isAppRoot = root === APP_ROOT;
+    const absent: MdxMetadataRootResult = { entries: new Map(), present: false, droppedEntries: [] };
 
     let raw: string;
     try {
-      raw = await this.fs.readFileAsync(underAppRoot(MDX_METADATA_REPO_PATH));
+      raw = await this.fs.readFileAsync(`${root}${MDX_METADATA_REPO_PATH}`);
     } catch {
       return absent; // sidecar not shipped → live scan (§5.5)
     }
     // §3 readable-layer-only: a writable-layer (COW) sidecar could survive a clean
-    // Refresh — reject the section and let the caller distrust + live-scan.
-    if (ctx.writableLayer.has(MDX_METADATA_REPO_PATH)) {
-      return { entries: new Map(), present: true, securityReject: 'writable-layer-mdx-metadata' };
+    // Refresh — reject the section and let the caller distrust + live-scan. App root
+    // only: `ctx.writableLayer` is the APP's COW set in repo-relative keys, so testing a
+    // mount's sidecar against it compares two different key spaces — the same reason
+    // `seedRoot` scopes its readable-layer gate to `/app`.
+    if (isAppRoot && ctx.writableLayer.has(MDX_METADATA_REPO_PATH)) {
+      return {
+        entries: new Map(),
+        present: true,
+        securityReject: 'writable-layer-mdx-metadata',
+        droppedEntries: [],
+      };
     }
     // SHAPE is the shared validator's call (R3-275): unparseable JSON, a schema
     // version this reader does not know, a non-object `files`, and every malformed
@@ -381,27 +460,31 @@ export class ArtifactStore {
       // caller fall back to the live walk (R3-275c). The sidecar is an OPTIMIZATION over
       // that walk; when it is damaged the honest outcome is the slow answer, never no
       // answer.
-      return { entries: new Map(), present: true, unusable: validation.reason };
+      return { entries: new Map(), present: true, unusable: validation.reason, droppedEntries: [] };
     }
 
     // CONFINEMENT stays here: it needs the manifest, the dirty set and the writable
     // layer, none of which the package can see. The validator answers "is this the
     // format?"; this answers "may I trust this entry?".
-    const manifestShas = await this.readManifestShas(APP_ROOT);
+    const manifestShas = await this.readManifestShas(root);
+    // The dirty set is the app's COW bookkeeping, in repo-relative keys — a mount is not
+    // app-editable, and passing the app's set would silently skip a mount file that
+    // happens to share a repo-relative path with one the user edited in their own repo.
+    const dirtySet = isAppRoot ? ctx.dirtySet : EMPTY_DIRTY_SET;
     const entries = new Map<string, Record<string, any>>();
     for (const [rawKey, entry] of Object.entries(validation.sidecar.files)) {
       const path = normalizeRepoRelPath(rawKey);
       if (!path) continue; // bad/traversing key
       const manifestSha = manifestShas.get(path);
       if (manifestSha === undefined) continue; // not a committed member
-      if (ctx.dirtySet.has(path)) continue; // modified → live fallback
+      if (dirtySet.has(path)) continue; // modified → live fallback
       if (entry.srcSha !== manifestSha) continue; // source bytes drifted
-      entries.set(underAppRoot(path), entry.frontmatter as Record<string, any>);
+      entries.set(`${root}${path}`, entry.frontmatter as Record<string, any>);
     }
     return {
       entries,
       present: true,
-      ...(validation.rejected.length ? { droppedEntries: validation.rejected } : {}),
+      droppedEntries: validation.rejected.map((r) => ({ root, path: r.path, reason: r.reason })),
     };
   }
 

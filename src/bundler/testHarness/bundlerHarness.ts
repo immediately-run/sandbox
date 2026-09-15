@@ -1,4 +1,4 @@
-import { umount } from '@zenfs/core';
+import { fs, mount, umount, resolveMountConfig, InMemory } from '@zenfs/core';
 
 import { Bundler } from '../bundler';
 import type { AuthService } from '../../auth/AuthService';
@@ -109,6 +109,30 @@ export function installEvalGlobals(): () => void {
 }
 
 const stub = <T>(): T => ({} as unknown as T);
+
+/**
+ * Mount an in-memory filesystem at `mountPath` and write `files` (repo-relative keys)
+ * into it, returning the unmount. This is how a test stands up a SIBLING root beside
+ * `/app` — a git-mounted library, or a dispatched content mount — the way the host does
+ * at `/mnt/{hash}`, without a real host or a real zip.
+ */
+export async function mountInMemoryFs(mountPath: string, files: Record<string, string>): Promise<() => void> {
+  const backing = await resolveMountConfig({ backend: InMemory });
+  await fs.promises.mkdir(mountPath, { recursive: true }).catch(() => undefined);
+  mount(mountPath, backing);
+  for (const [rel, content] of Object.entries(files)) {
+    const abs = `${mountPath}/${rel}`;
+    await fs.promises.mkdir(abs.slice(0, abs.lastIndexOf('/')), { recursive: true }).catch(() => undefined);
+    await fs.promises.writeFile(abs, content);
+  }
+  return () => {
+    try {
+      umount(mountPath);
+    } catch {
+      /* not mounted */
+    }
+  };
+}
 
 export interface BundlerHarness extends BundlerFsHarness {
   bundler: Bundler;
