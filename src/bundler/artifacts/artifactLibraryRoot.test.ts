@@ -1,7 +1,6 @@
 import { TRANSPILER_VERSION } from '@immediately-run/transpiler';
-import { fs, mount, umount, resolveMountConfig, InMemory } from '@zenfs/core';
 
-import { createBundlerHarness, type BundlerHarness } from '../testHarness/bundlerHarness';
+import { createBundlerHarness, mountInMemoryFs, type BundlerHarness } from '../testHarness/bundlerHarness';
 import { EMBEDDED_TOOLCHAIN_HASH } from './embeddedToolchainHash';
 
 // LIBRARY_MOUNTS_SPEC §7/L4 + PRETRANSPILED_ARTIFACTS_SPEC §5.1 — a git-mounted library's
@@ -65,24 +64,6 @@ const libraryRepo = (
   '.immediately.run/artifacts/transpiled/src/greet.ts.js': LIB_ARTIFACT,
 });
 
-async function mountLibraryFs(mountPath: string, files: Record<string, string>): Promise<() => void> {
-  const backing = await resolveMountConfig({ backend: InMemory });
-  await fs.promises.mkdir(mountPath, { recursive: true }).catch(() => undefined);
-  mount(mountPath, backing);
-  for (const [rel, content] of Object.entries(files)) {
-    const abs = `${mountPath}/${rel}`;
-    await fs.promises.mkdir(abs.slice(0, abs.lastIndexOf('/')), { recursive: true }).catch(() => undefined);
-    await fs.promises.writeFile(abs, content);
-  }
-  return () => {
-    try {
-      umount(mountPath);
-    } catch {
-      /* not mounted */
-    }
-  };
-}
-
 describe("a git-mounted library's own artifacts are seeded and consumed", () => {
   let h: BundlerHarness;
   let unmount: (() => void) | null = null;
@@ -97,7 +78,7 @@ describe("a git-mounted library's own artifacts are seeded and consumed", () => 
   });
 
   const register = async (files: Record<string, string>) => {
-    unmount = await mountLibraryFs('/mnt/testlib', files);
+    unmount = await mountInMemoryFs('/mnt/testlib', files);
     await h.bundler.registerGitLibraryMount('@scope/lib', '/mnt/testlib');
   };
 
@@ -160,5 +141,84 @@ describe("a git-mounted library's own artifacts are seeded and consumed", () => 
   it('ignores a path in no root at all', async () => {
     await register(libraryRepo());
     expect(await h.bundler.artifactStore.consult('/mnt/elsewhere/x.ts')).toBeNull();
+  });
+});
+
+// Round 2 of the R3-168 gate: `/transpiled` keys on the full module path, which separates
+// `/app` from `/mnt/{hash}` but NOT two roots where one nests inside the other — their joins
+// can name the same module. `consult` already attributes such a module to the innermost root
+// (`rootFor`), so seeding follows the same rule rather than writing whichever index was read
+// last.
+describe('two artifact roots that NEST resolve to the innermost, not to registration order', () => {
+  let h: BundlerHarness;
+  const unmounts: Array<() => void> = [];
+
+  beforeEach(async () => {
+    h = await createBundlerHarness(APP_FIXTURE, { forCompile: true });
+  });
+  afterEach(async () => {
+    while (unmounts.length) unmounts.pop()?.();
+    await h.teardown();
+  });
+
+  const INNER_ARTIFACT = '/* inner */ exports.greet = () => "inner";\n';
+
+  /** A library whose own subtree carries a second, nested library. Both indexes name
+   *  `/node_modules/@scope/lib/nested/src/greet.ts`. */
+  const nesting = (): Record<string, string> => ({
+    'package.json': '{"name":"@scope/lib","version":"1.0.0","main":"src/greet.ts"}',
+    'nested/src/greet.ts': 'export const greet = () => "inner";\n',
+    '.immediately.run/contribute-manifest.json': JSON.stringify({
+      schemaVersion: 1,
+      entries: [{ path: 'nested/src/greet.ts', sha: 'sha-outer-view', type: 'blob' }],
+    }),
+    '.immediately.run/artifacts/index.json': JSON.stringify({
+      schemaVersion: 1,
+      toolchain: {
+        transpiler: '@immediately-run/transpiler',
+        version: TRANSPILER_VERSION,
+        toolchainHash: EMBEDDED_TOOLCHAIN_HASH,
+        preset: 'react',
+      },
+      files: { '/nested/src/greet.ts': { srcSha: 'sha-outer-view', out: 'transpiled/outer.js', deps: [] } },
+    }),
+    '.immediately.run/artifacts/transpiled/outer.js': LIB_ARTIFACT,
+    'nested/.immediately.run/contribute-manifest.json': JSON.stringify({
+      schemaVersion: 1,
+      entries: [{ path: 'src/greet.ts', sha: 'sha-inner', type: 'blob' }],
+    }),
+    'nested/.immediately.run/artifacts/index.json': JSON.stringify({
+      schemaVersion: 1,
+      toolchain: {
+        transpiler: '@immediately-run/transpiler',
+        version: TRANSPILER_VERSION,
+        toolchainHash: EMBEDDED_TOOLCHAIN_HASH,
+        preset: 'react',
+      },
+      files: { '/src/greet.ts': { srcSha: 'sha-inner', out: 'transpiled/inner.js', deps: [] } },
+    }),
+    'nested/.immediately.run/artifacts/transpiled/inner.js': INNER_ARTIFACT,
+  });
+
+  it('serves the innermost root`s bytes, and says what the outer root`s index claimed', async () => {
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      unmounts.push(await mountInMemoryFs('/mnt/nesting', nesting()));
+      await h.bundler.registerGitLibraryMount('@scope/lib', '/mnt/nesting');
+      // …and the nested subtree as a root in its own right, OUTER first.
+      h.bundler.artifactStore.addRoot('/node_modules/@scope/lib/nested');
+      await h.bundler.seedArtifacts(EMPTY_DIRTY);
+
+      const shared = '/node_modules/@scope/lib/nested/src/greet.ts';
+      // The inner root owns the path, so its artifact is what a consult serves — never the
+      // outer root's bytes under the inner root's name.
+      expect(await h.bundler.artifactStore.consult(shared)).toMatchObject({ content: INNER_ARTIFACT });
+      // …and the outer root's losing entry is reported rather than silently not written.
+      const said = warn.mock.calls.map((c) => c.join(' ')).filter((l) => l.includes('nested artifact root owns'));
+      expect(said).toHaveLength(1);
+      expect(said[0]).toContain(shared);
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

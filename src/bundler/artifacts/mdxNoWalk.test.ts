@@ -1,4 +1,9 @@
-import { createBundlerHarness, type BundlerHarness } from '../testHarness/bundlerHarness';
+import {
+  contributeManifest,
+  createBundlerHarness,
+  lastMetadataOf,
+  type BundlerHarness,
+} from '../testHarness/bundlerHarness';
 
 // G-MDX-3 perf gate §4 (no-walk, §1.3): booting a large MDX repo from the zip does
 // ZERO APP_ROOT directory-walk / source-read ops for clean files — the sidecar
@@ -26,13 +31,10 @@ const MDX_FILES = [
 const sourceFor = (rel: string) => `---\ntitle: ${rel}\n---\n\n# ${rel}\n`;
 
 const manifest = () =>
-  JSON.stringify({
-    schemaVersion: 1,
-    entries: [
-      { path: 'src/index.ts', sha: 'sha-index', type: 'blob' },
-      ...MDX_FILES.map((p) => ({ path: p, sha: `sha:${p}`, type: 'blob' })),
-    ],
-  });
+  contributeManifest([
+    { path: 'src/index.ts', sha: 'sha-index' },
+    ...MDX_FILES.map((p) => ({ path: p, sha: `sha:${p}` })),
+  ]);
 const sidecar = () =>
   JSON.stringify({
     schemaVersion: 1,
@@ -47,8 +49,6 @@ const base = (): Record<string, string> => ({
   ...Object.fromEntries(MDX_FILES.map((p) => [p, sourceFor(p)])),
 });
 
-const lastMetadataOf = (h: BundlerHarness): Map<string, unknown> =>
-  (h.bundler as unknown as { lastMetadata: Map<string, unknown> }).lastMetadata;
 const readdirOps = (h: BundlerHarness) => h.portOps.filter((op) => op.method === 'readdir');
 const mdxReads = (h: BundlerHarness) => h.portOps.filter((op) => op.method === 'read' && op.path.endsWith('.mdx'));
 

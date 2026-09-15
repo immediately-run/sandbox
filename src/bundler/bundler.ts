@@ -14,7 +14,7 @@ import type { SandboxMount } from '../mounts/mountState';
 import type { IDisposable } from '../utils/Disposable';
 import { APP_ROOT, MANIFEST_SIDECAR_PATH, underAppRoot } from '../fsLayout';
 import { isTransformable, rootRuntimeDependencies } from '@immediately-run/transpiler';
-import { ArtifactStore } from './artifacts/artifactStore';
+import { ArtifactStore, type MdxMetadataAdditive } from './artifacts/artifactStore';
 import { getEmbeddedToolchain } from './artifacts/embeddedToolchain';
 import { BundlerStatus } from '../protocol/message-types';
 import { ResolverCache, resolveAsync } from '../resolver/resolver';
@@ -89,6 +89,41 @@ export type MetadataChange = {
 // version the SDK release CI has published to `/v/<version>/`. Should always
 // track the latest published SDK at deploy time; bump it on every SDK release
 // (the host's sdk-integrity manifest auto-covers up to the newest tag).
+/**
+ * Say, once, what a frontmatter seed left out and why (R3-275c, extended to roots).
+ *
+ * Each of these is a reason an entry the caller expected is MISSING, and a silent one is
+ * indistinguishable from a repo that simply had nothing to seed — which is how a damaged
+ * sidecar reads as an empty collection with nothing anywhere saying so. One reporter for
+ * both seeds (the boot pass and the later-registered-roots pass) so the two cannot drift.
+ */
+function reportSeedDiagnostics(seed: MdxMetadataAdditive): void {
+  if (seed.droppedEntries.length) {
+    const n = seed.droppedEntries.length;
+    logger.warn(
+      `MDX metadata sidecar: dropped ${n} malformed entr${n === 1 ? 'y' : 'ies'} ` +
+        `(${seed.droppedEntries
+          .map((r) => `${r.root === APP_ROOT ? '' : `${r.root} `}${r.path}: ${r.reason}`)
+          .join(', ')}); ` +
+        'those files live-scan lazily.',
+    );
+  }
+  // A non-app root's unusable sidecar costs that root its cached metadata and nothing else,
+  // so it is named here rather than folded into the app root's own verdict.
+  for (const { root, reason } of seed.unusableRoots) {
+    logger.warn(`MDX metadata sidecar unusable (${reason}) for root ${root} — its entries are not seeded.`);
+  }
+  // Two roots claiming one key means one NESTS inside the other. The OWNING root — the
+  // innermost, the same one `consult` serves the bytes from — keeps it whatever order they
+  // registered in; name the entries that lost, which are the non-owning root's.
+  if (seed.collisions.length) {
+    logger.warn(
+      `MDX metadata sidecar: ${seed.collisions.length} key(s) also declared by a root that does not own ` +
+        `them (${seed.collisions.join(', ')}); the innermost enclosing root's sidecar governs each one.`,
+    );
+  }
+}
+
 const DEFAULT_SDK_VERSION = '0.16.0';
 
 // Oldest version each self-hosted module may pin (SDK_PACKAGING_SPEC §5.1(b)).
@@ -739,8 +774,36 @@ export class Bundler {
     writableLayer: ReadonlySet<string>;
   }): Promise<{ seeded: number; securityReject?: 'writable-layer-artifact' }> {
     const result = await this.artifactStore.seed(ctx);
+    // An artifact entry a root declared for a path a NESTED root owns is not written, so the
+    // inner root's bytes are never served under the outer root's name. Say so: a repo whose
+    // roots overlap is otherwise told only that fewer files were seeded than its index lists.
+    const notOwned = this.artifactStore.takeNotOwnedSeeds();
+    if (notOwned.length) {
+      logger.warn(
+        `Artifact seeding: ${notOwned.length} entr${notOwned.length === 1 ? 'y' : 'ies'} name a path a ` +
+          `nested artifact root owns (${notOwned.join(', ')}); the innermost root's own index governs them.`,
+      );
+    }
     await this.adoptSeededModules();
+    // The frontmatter sidecars of the roots that registered since boot, in the one place
+    // that already means "every declared root has registered" (MDX_FROM_MOUNT_SPEC §3).
+    // `preloadMDXMetadata` runs from the app-root mount hook, which `compile()` fires BEFORE
+    // `registerDeclaredGitLibraries` — so without this pass a non-`/app` root's sidecar is
+    // never read at all, and the rebase below it is a path nothing reaches.
+    await this.seedNewRootMetadata(ctx);
     return result;
+  }
+
+  /** Seed (and report on) the frontmatter sidecar of every artifact root not yet seeded.
+   *  Additive: it carries no verdict about `/app`, whose live-walk decision was already
+   *  taken at boot and must not be re-asked. */
+  private async seedNewRootMetadata(ctx: {
+    dirtySet: ReadonlySet<string>;
+    writableLayer: ReadonlySet<string>;
+  }): Promise<void> {
+    const seed = await this.artifactStore.seedNewMetadataRoots(ctx);
+    for (const [modulePath, frontmatter] of seed.entries) this.seedMetadataEntry(modulePath, frontmatter);
+    reportSeedDiagnostics(seed);
   }
 
   /**
@@ -1414,10 +1477,22 @@ export class Bundler {
     // walk + per-file read across the COW port. Clean covered files come from JSON;
     // modified `.mdx` (dirty set, parent-attested — no in-iframe walk) re-scan live;
     // an absent/rejected sidecar falls through to the full live walk below.
+    //
+    // The seed covers every artifact root, not just `/app` (MDX_FROM_MOUNT_SPEC §3), so a
+    // dispatched content mount's own sidecar populates the store too. The live walk below
+    // stays `/app`-scoped: it is the fallback for the app repo, and a mount that shipped
+    // no sidecar is read lazily by `refreshMetadata` rather than scanned at boot.
     const seed = await this.artifactStore.seedMdxMetadata({
       dirtySet: this.dirtyPaths,
       writableLayer: this.dirtyPaths,
     });
+    // Seed every root's entries BEFORE branching on the app root's verdict. Seeding is
+    // additive and per-root (MDX_FROM_MOUNT_SPEC §3): a content mount's sidecar is the
+    // only source for that mount's frontmatter, because the live walk below is scoped to
+    // `APP_ROOT`. Charging a mount's entries to whether `/app` shipped a usable sidecar
+    // would drop them with nothing behind them.
+    for (const [modulePath, frontmatter] of seed.entries) this.seedMetadataEntry(modulePath, frontmatter);
+    reportSeedDiagnostics(seed);
     if (seed.securityReject) {
       logger.warn(
         `MDX metadata sidecar rejected (${seed.securityReject}) — live-scanning frontmatter (UI_AS_APPS §8.14).`,
@@ -1442,17 +1517,6 @@ export class Bundler {
       logger.warn(`MDX metadata sidecar unusable (${seed.unusable}) — live-scanning frontmatter instead.`);
       // fall through to the live walk
     } else if (seed.present) {
-      for (const [appPath, frontmatter] of seed.entries) this.seedMetadataEntry(appPath, frontmatter);
-      // A dropped ENTRY is correct (one bad row must not cost the repo the other 400),
-      // but a silent drop is indistinguishable from having nothing to seed (R3-275c).
-      if (seed.droppedEntries?.length) {
-        logger.warn(
-          `MDX metadata sidecar: dropped ${seed.droppedEntries.length} malformed entr` +
-            `${seed.droppedEntries.length === 1 ? 'y' : 'ies'} ` +
-            `(${seed.droppedEntries.map((r) => `${r.path}: ${r.reason}`).join(', ')}); ` +
-            'those files live-scan lazily.',
-        );
-      }
       // Modified `.mdx` re-scan live (cache==live under edits); the rest is covered.
       await Promise.all(
         [...this.dirtyPaths]
@@ -1526,8 +1590,9 @@ export class Bundler {
    */
   /**
    * A synchronous view of the seeded MDX-frontmatter store for the SDK boot snapshot
-   * (MDX_CONTENT_COLLECTIONS_SPEC §1.4). Keyed by the absolute `/app/...` module path
-   * (`metadataKey.test.ts`). **Identity contract (load-bearing):** the VALUE objects
+   * (MDX_CONTENT_COLLECTIONS_SPEC §1.4). Keyed by the absolute module path — `/app/...`
+   * for the app repo (`metadataKey.test.ts`), and `<root>/...` for any other artifact
+   * root whose sidecar seeded it (a git library, a dispatched content mount). **Identity contract (load-bearing):** the VALUE objects
    * are the same references the `onMetadataChange` emitter fires (`lastMetadata` values,
    * never a clone), so the SDK's `DelayedEmitter` replay on `enable()` is a no-op via
    * `updateAlreadyApplied`'s reference short-circuit — a defensive clone would re-render
@@ -1542,12 +1607,15 @@ export class Bundler {
    * Seed one entry from the frontmatter sidecar (§1.3) — sets the store to the
    * pre-parsed `frontmatter` and fires `onMetadataChange` with the SAME ref (the
    * identity contract above), without re-reading or re-parsing source.
+   *
+   * `modulePath` is absolute and root-joined; it is not necessarily under `/app`, because
+   * any artifact root's sidecar can seed (MDX_FROM_MOUNT_SPEC §3).
    */
-  private seedMetadataEntry(appPath: string, frontmatter: Record<string, any>): void {
-    const prev = this.lastMetadata.get(appPath);
+  private seedMetadataEntry(modulePath: string, frontmatter: Record<string, any>): void {
+    const prev = this.lastMetadata.get(modulePath);
     if (prev && JSON.stringify(prev) === JSON.stringify(frontmatter)) return;
-    this.lastMetadata.set(appPath, frontmatter);
-    this.onMetadataChangeEmitter.fire({ type: 'metadata-update', update: { [appPath]: frontmatter } });
+    this.lastMetadata.set(modulePath, frontmatter);
+    this.onMetadataChangeEmitter.fire({ type: 'metadata-update', update: { [modulePath]: frontmatter } });
   }
 
   private refreshMetadata(path: string, source: string): void {
@@ -1677,7 +1745,10 @@ export class Bundler {
       this.fs.drainPendingChanges();
       // Fire the app-root mount lifecycle (§11.3) — runs the MDX-metadata scan
       // (and any future post-mount actions). Replaces the former direct
-      // preloadMDXMetadata() call; behaviour is unchanged (MDX is app-root-scoped).
+      // preloadMDXMetadata() call. It covers the APP ROOT only, and not because MDX is
+      // app-root-scoped — it is not, since R3-168 — but because this is the earliest point
+      // in `compile()` and no other root has registered yet. Their sidecars are read in
+      // `seedArtifacts`, after `registerDeclaredGitLibraries`.
       await this.runPostMount({ path: APP_ROOT, isAppRoot: true });
       bootLap('runPostMount');
     }
