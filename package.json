@@ -38,7 +38,7 @@
     "protocol:compat": "node scripts/check-sdk-compat.mjs",
     "format": "prettier --write \"src/**/*.{ts,tsx,js,jsx,json}\" \"scripts/**/*.mjs\"",
     "format:check": "prettier --check \"src/**/*.{ts,tsx,js,jsx,json}\" \"scripts/**/*.mjs\"",
-    "lint": "eslint '**/*.ts?(x)'",
+    "lint": "eslint '**/*.ts?(x)' --max-warnings 0",
     "check:pins": "node scripts/check-dependency-pins.mjs --self-test && node scripts/check-dependency-pins.mjs",
     "check:clones": "node scripts/check-clones.mjs",
     "check:unused": "node scripts/check-unused.mjs",
