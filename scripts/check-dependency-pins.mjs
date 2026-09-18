@@ -153,6 +153,15 @@ const SELF_REPO_BY_PKG_NAME = {
 /** An exact version — anything else (`^1.2.3`, `file:`, `link:`, `*`) is a range. */
 const isExact = (spec) => /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(spec);
 
+/**
+ * A spec that never refers to a published version — a local path or link.
+ * ONE spelling (R6): CHECK 1, CHECK 3 and the main() installed-map builder all
+ * skip these, and a future edit that misses one copy makes them disagree about
+ * what is checked — the drifted copy is where the bug lives.
+ */
+const isLocalSpec = (spec) =>
+  typeof spec === 'string' && (spec.startsWith('file:') || spec.startsWith('link:') || spec.startsWith('workspace:'));
+
 /** Every `@immediately-run/*` entry across the three dependency maps. */
 export function collectPins(pkg) {
   const out = [];
@@ -194,7 +203,7 @@ export function checkPins({ pkg, lock, published = {}, linked = [], registryChec
       notes.push(`${name} is npm-linked locally — skipped (link a sibling checkout, iterate freely).`);
       continue;
     }
-    if (spec.startsWith('file:') || spec.startsWith('link:') || spec.startsWith('workspace:')) {
+    if (isLocalSpec(spec)) {
       notes.push(`${name} is a ${spec.split(':')[0]}: dependency — not a published pin, skipped.`);
       continue;
     }
@@ -372,6 +381,70 @@ function linkedPackages(pins) {
     });
 }
 
+/**
+ * CHECK 3 (pure, R3-477 half 2). The INSTALLED tree must agree with the pin —
+ * the half the 2026-08-31 incident lived in: a container with pre-baked
+ * node_modules held preauth-core 0.1.14 against the 0.1.17 pin, `check:pins`
+ * stayed green (it compared the pin against package.json and the lockfile,
+ * never against what is actually installed), and `verify:capabilities` then
+ * silently regenerated the committed mirrors DOWN to the stale package's
+ * vocabulary — one `git add -A` away from committing a downgrade.
+ *
+ * `installed` maps a pin name to the version read from
+ * `node_modules/<name>/package.json`, or `null` when there is nothing to read
+ * for it. A `null` while node_modules exists at all is a RED: that is the
+ * stale/partial install. `nodeModulesPresent: false` (a fresh clone before any
+ * install) is a SKIP WITH A NOTE — the check cannot run against a tree that
+ * is not there, and blocking pre-install runs would just teach people to
+ * skip verify. Linked packages are skipped, as everywhere in this file.
+ *
+ * Runs as part of `check:pins`, which is verify's FIRST step — so it always
+ * runs before `verify:capabilities` regenerates anything, which is the whole
+ * point of the ordering.
+ */
+export function checkInstalled({ pins, linked = [], installed, nodeModulesPresent, lock }) {
+  const errors = [];
+  const notes = [];
+  if (!nodeModulesPresent) {
+    notes.push(
+      'Installed-tree half SKIPPED (no node_modules): the pin was checked against package.json and the\n' +
+        'lockfile only. Run `npm ci` and re-run verify for the full check — this is the half that would\n' +
+        'have caught the 2026-08-31 stale-container downgrade (R3-477).',
+    );
+    return { errors, notes, checked: 0 };
+  }
+  let checked = 0;
+  for (const { name, spec, field } of pins) {
+    if (linked.includes(name)) continue; // already noted by CHECK 1
+    if (isLocalSpec(spec)) continue;
+    const locked = lockVersion(lock, name);
+    const have = installed[name] ?? null;
+    checked++;
+    if (have === null) {
+      errors.push(
+        `${name} is declared in ${field} as \`${spec}\` but is NOT under node_modules — a stale or\n` +
+          `   partial install. This is the R3-477 shape: \`verify:capabilities\` reads the INSTALLED\n` +
+          `   package, and a missing or stale one silently regenerates the committed capability mirrors.\n` +
+          `   Recovery: \`rm -rf node_modules && npm ci\`.`,
+      );
+      continue;
+    }
+    // The agreement baseline: an exact pin must be installed exactly; a range
+    // pin must be installed at the version the LOCKFILE resolved (npm ci
+    // installs exactly that, so any other version is a stale tree).
+    const want = isExact(spec) ? spec : locked;
+    if (want !== null && have !== want) {
+      errors.push(
+        `${name}: the pin says \`${spec}\` (lockfile resolved \`${locked ?? '—'}\`) but node_modules holds\n` +
+          `   \`${have}\`. check:pins used to pass here — it never read the installed tree (R3-477's gap).\n` +
+          `   \`verify:capabilities\` would regenerate the committed mirrors from the STALE package.\n` +
+          `   Recovery: \`rm -rf node_modules && npm ci\` (restores \`${want}\`), then \`git restore src/generated/\`.`,
+      );
+    }
+  }
+  return { errors, notes, checked };
+}
+
 // ── self-test: prove the gate can actually fail ──────────────────────────────
 if (process.argv.includes('--self-test')) {
   let failures = 0;
@@ -543,6 +616,64 @@ if (process.argv.includes('--self-test')) {
     checkLockstep({ selfRepo: SITE, pkg: { name: 'x', dependencies: { [TP]: '0.1.0' } }, lock: lockOf(TP, '0.1.0') }),
   );
 
+  // 12–15. CHECK 3 (R3-477): the installed tree vs the pin — the exact gap the
+  //     2026-08-31 stale container lived in.
+  const pinsOf = (spec) => [{ name: PROTO, spec, field: 'dependencies' }];
+  const lockFor = lockOf(PROTO, '0.1.17');
+  expect(
+    'the 2026-08-31 incident itself: installed 0.1.14 vs pin 0.1.17 fails, naming the stale version and the recovery',
+    {
+      errors: checkInstalled({
+        pins: pinsOf('0.1.17'),
+        installed: { [PROTO]: '0.1.14' },
+        nodeModulesPresent: true,
+        lock: lockFor,
+      }).errors,
+    },
+    /holds\s*`0\.1\.14`[\s\S]*rm -rf node_modules && npm ci/,
+  );
+  passes(
+    'an agreed install passes: pin 0.1.17, lockfile 0.1.17, installed 0.1.17',
+    checkInstalled({
+      pins: pinsOf('0.1.17'),
+      installed: { [PROTO]: '0.1.17' },
+      nodeModulesPresent: true,
+      lock: lockFor,
+    }),
+  );
+  expect(
+    'a pin MISSING from node_modules while node_modules exists is a red (the stale/partial install)',
+    {
+      errors: checkInstalled({ pins: pinsOf('0.1.17'), installed: {}, nodeModulesPresent: true, lock: lockFor }).errors,
+    },
+    /NOT under node_modules/,
+  );
+  expect(
+    'a range pin is compared against the LOCKFILE resolution, not the bare range',
+    {
+      errors: checkInstalled({
+        pins: pinsOf('^0.1.17'),
+        installed: { [PROTO]: '0.1.14' },
+        nodeModulesPresent: true,
+        lock: lockFor,
+      }).errors,
+    },
+    /lockfile resolved `0\.1\.17`/,
+  );
+  passes(
+    'no node_modules at all is a SKIP, never a block',
+    checkInstalled({ pins: pinsOf('0.1.17'), installed: {}, nodeModulesPresent: false, lock: lockFor }),
+  );
+  // And the skip must SAY so (the note is the visible half of a skip).
+  const skipRun = checkInstalled({ pins: pinsOf('0.1.17'), installed: {}, nodeModulesPresent: false, lock: lockFor });
+  if (!skipRun.notes.some((n) => /Installed-tree half SKIPPED/.test(n))) {
+    console.error('SELF-TEST FAIL: the no-node_modules skip must carry its note');
+    failures++;
+  } else {
+    console.log('  ok  the no-node_modules skip carries its note');
+  }
+  ran++;
+
   if (failures) {
     console.error(`\n${failures} self-test case(s) failed.`);
     process.exit(1);
@@ -565,6 +696,24 @@ if (useRegistry) {
 
 const { errors, notes, checked } = checkPins({ pkg, lock, published, linked, registryChecked: useRegistry });
 
+// ── CHECK 3 (R3-477): the INSTALLED tree vs the pin, run BEFORE
+// verify:capabilities regenerates anything (check:pins is verify's first step).
+// `node_modules` existing at all is the gate; a per-name read failure is the
+// stale/partial-install red, not a skip.
+const nodeModulesPresent = existsSync('node_modules');
+const installed = {};
+if (nodeModulesPresent) {
+  for (const { name, spec } of pins) {
+    if (linked.includes(name) || isLocalSpec(spec)) continue;
+    try {
+      installed[name] = JSON.parse(readFileSync(join('node_modules', name, 'package.json'), 'utf8')).version;
+    } catch {
+      installed[name] = null;
+    }
+  }
+}
+const installedRun = checkInstalled({ pins, linked, installed, nodeModulesPresent, lock });
+
 // CHECK 2 reads the SAME `published` map the registry half just built — it needs the
 // `latest` dist-tag and nothing else, so it costs no extra call and rides the same gate:
 // on in CI, opt-in locally, so a dev mid-bump is never blocked by a version that is not
@@ -575,9 +724,9 @@ if (!useRegistry) {
   notes.push("Lockstep half SKIPPED (not CI, no --registry): npm's latest dist-tag not read. CI runs it.");
 }
 
-for (const n of [...notes, ...lockstep.notes]) console.log(`note: ${n}`);
+for (const n of [...notes, ...installedRun.notes, ...lockstep.notes]) console.log(`note: ${n}`);
 
-const allErrors = [...errors, ...lockstep.errors];
+const allErrors = [...errors, ...installedRun.errors, ...lockstep.errors];
 if (allErrors.length) {
   console.error('\ndependency-pin check FAILED:\n');
   for (const e of allErrors) console.error(` - ${e}\n`);
