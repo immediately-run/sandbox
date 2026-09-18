@@ -389,7 +389,8 @@ function linkedPackages(pins) {
  * never against what is actually installed), and site-main's
  * `verify:capabilities` then silently regenerated the committed mirrors DOWN
  * to the stale package's vocabulary — one `git add -A` away from committing a
- * downgrade. (This file is byte-identical across repos; the reader-facing
+ * downgrade. (This file is byte-identical across its lockstep repos
+ * (SELF_REPO_BY_PKG_NAME); the reader-facing
  * messages below name BOTH repos' installed-tree consumers so they stay true
  * wherever they print.)
  *

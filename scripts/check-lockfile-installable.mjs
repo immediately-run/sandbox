@@ -13,8 +13,8 @@
 // runs the obvious command and commits the churn. The next `npm ci` then finds
 // the entries absent, resolves them fresh against the registry, lands on
 // whatever is newest, and fails EUSAGE ("Missing: @types/node@26.4.0 from lock
-// file") — and until this check, the only protection was a comment beside CI's
-// `npm ci` step telling the reader not to follow npm's own advice.
+// file") — and until this check, the only protection in site-main was a comment
+// beside its CI's `npm ci` step telling the reader not to follow npm's own advice.
 //
 // WHY `npm ci --dry-run` IS THE ORACLE. A hand-rolled graph invariant is wrong
 // by construction: healthy npm lockfiles legitimately carry unsatisfied OPTIONAL
@@ -160,8 +160,8 @@ try {
     maxBuffer: 32 * 1024 * 1024,
     // A full resolve is bounded: CI's real `npm ci` completes in ~90 s. On
     // timeout the run is killed and classified could-not-tell (the network
-    // branch below): CI red, local warn — the same bound fetchVersions() sets
-    // for its npm call.
+    // branch below): CI red, local warn — bounded the way fetchVersions()
+    // bounds its npm call (20 s there, 120 s here).
     timeout: 120_000,
   });
 } catch (e) {
