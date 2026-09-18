@@ -386,9 +386,12 @@ function linkedPackages(pins) {
  * the half the 2026-08-31 incident lived in: a container with pre-baked
  * node_modules held preauth-core 0.1.14 against the 0.1.17 pin, `check:pins`
  * stayed green (it compared the pin against package.json and the lockfile,
- * never against what is actually installed), and `verify:capabilities` then
- * silently regenerated the committed mirrors DOWN to the stale package's
- * vocabulary — one `git add -A` away from committing a downgrade.
+ * never against what is actually installed), and site-main's
+ * `verify:capabilities` then silently regenerated the committed mirrors DOWN
+ * to the stale package's vocabulary — one `git add -A` away from committing a
+ * downgrade. (This file is byte-identical across repos; the reader-facing
+ * messages below name BOTH repos' installed-tree consumers so they stay true
+ * wherever they print.)
  *
  * `installed` maps a pin name to the version read from
  * `node_modules/<name>/package.json`, or `null` when there is nothing to read
@@ -399,8 +402,10 @@ function linkedPackages(pins) {
  * skip verify. Linked packages are skipped, as everywhere in this file.
  *
  * Runs as part of `check:pins`, which is verify's FIRST step — so it always
- * runs before `verify:capabilities` regenerates anything, which is the whole
- * point of the ordering.
+ * runs before any verify leg that reads the INSTALLED packages (site-main's
+ * `verify:capabilities` regenerating the committed mirrors; sandbox's
+ * `protocol:check` reading the protocol snapshots), which is the whole point
+ * of the ordering.
  */
 export function checkInstalled({ pins, linked = [], installed, nodeModulesPresent, lock }) {
   const errors = [];
@@ -423,8 +428,9 @@ export function checkInstalled({ pins, linked = [], installed, nodeModulesPresen
     if (have === null) {
       errors.push(
         `${name} is declared in ${field} as \`${spec}\` but is NOT under node_modules — a stale or\n` +
-          `   partial install. This is the R3-477 shape: \`verify:capabilities\` reads the INSTALLED\n` +
-          `   package, and a missing or stale one silently regenerates the committed capability mirrors.\n` +
+          `   partial install. This is the R3-477 shape: verify legs that read the INSTALLED package\n` +
+          `   (site-main's verify:capabilities, sandbox's protocol:check) would then use a missing or\n` +
+          `   stale one silently.\n` +
           `   Recovery: \`rm -rf node_modules && npm ci\`.`,
       );
       continue;
@@ -437,8 +443,10 @@ export function checkInstalled({ pins, linked = [], installed, nodeModulesPresen
       errors.push(
         `${name}: the pin says \`${spec}\` (lockfile resolved \`${locked ?? '—'}\`) but node_modules holds\n` +
           `   \`${have}\`. check:pins used to pass here — it never read the installed tree (R3-477's gap).\n` +
-          `   \`verify:capabilities\` would regenerate the committed mirrors from the STALE package.\n` +
-          `   Recovery: \`rm -rf node_modules && npm ci\` (restores \`${want}\`), then \`git restore src/generated/\`.`,
+          `   Verify legs that read the INSTALLED package (site-main's verify:capabilities, sandbox's\n` +
+          `   protocol:check) would use the STALE one silently.\n` +
+          `   Recovery: \`rm -rf node_modules && npm ci\` (restores \`${want}\`), then restore any\n` +
+          `   generated mirrors the stale run may have rewritten (site-main: \`git restore src/generated/\`).`,
       );
     }
   }
@@ -697,7 +705,7 @@ if (useRegistry) {
 const { errors, notes, checked } = checkPins({ pkg, lock, published, linked, registryChecked: useRegistry });
 
 // ── CHECK 3 (R3-477): the INSTALLED tree vs the pin, run BEFORE
-// verify:capabilities regenerates anything (check:pins is verify's first step).
+// any installed-package-reading verify leg runs (check:pins is verify first step).
 // `node_modules` existing at all is the gate; a per-name read failure is the
 // stale/partial-install red, not a skip.
 const nodeModulesPresent = existsSync('node_modules');

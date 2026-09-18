@@ -68,7 +68,7 @@ const FIX_GUIDANCE =
   'CAUSED the R3-477 prune. The repair is ADDITIVE: re-add the exact entry npm names\n' +
   '(version + resolved + integrity, `optional`/`peer` as its siblings have them) to\n' +
   'package-lock.json by hand, leaving every other entry alone, then confirm with a clean\n' +
-  "`npm ci`. CI's ci.yml comment beside its `npm ci` step describes the same repair.";
+  '`npm ci`.';
 
 const selfTest = () => {
   let failures = 0;
@@ -158,9 +158,10 @@ try {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
     maxBuffer: 32 * 1024 * 1024,
-    // A full resolve is bounded: CI's real `npm ci` completes in ~90 s. A hung
-    // npm must fail loudly (the unknown-non-zero default below), not hang
-    // verify — the same bound fetchVersions() sets for its npm call.
+    // A full resolve is bounded: CI's real `npm ci` completes in ~90 s. On
+    // timeout the run is killed and classified could-not-tell (the network
+    // branch below): CI red, local warn — the same bound fetchVersions() sets
+    // for its npm call.
     timeout: 120_000,
   });
 } catch (e) {
