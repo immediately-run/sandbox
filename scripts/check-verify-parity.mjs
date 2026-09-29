@@ -10,10 +10,11 @@
 // a leg that exists only in local `verify` is enforcement that has not shipped.
 //
 // Ported from the SDK's R3-779 gate (scripts/check-verify-parity.mjs, itself ported
-// from site-main's R3-641 original — the SDK copy carries the block-scalar walk fix,
-// site-main#626, which is why THIS port sources the SDK's and not site-main's). The
-// three copies are byte-comparable below this header. If you change the MECHANISM
-// here, change it in both siblings too (or the port claim here becomes a lie).
+// from site-main's R3-641 original) — the item designated the SDK's copy as the
+// source; by the time this landed all three mechanisms were already byte-identical
+// (the block-scalar walk fix reached site-main as 5adc64b/92529ca). The three copies
+// are byte-comparable below this header. If you change the MECHANISM here, change it
+// in both siblings too (or the port claim here becomes a lie).
 //
 // MECHANICS.
 //   legs     — every `npm run <name>` in the `verify` script, plus `test` for
@@ -33,8 +34,10 @@
 //   scope    — "covered" means a `run:` block ANYWHERE in the workflow file,
 //              including push-only jobs: the gate asserts a leg RUNS in CI, not
 //              that it gates PRs. Every current leg maps to the PR-triggered
-//              job (verified 2026-09-29); a leg moving to a push-only job is
-//              the known hole, named here rather than scanned for.
+//              job (verified 2026-09-29). The known holes, named here rather than
+//              scanned for: a leg moving to a push-only job, a step- or job-level
+//              `if:` that skips it on PRs, `continue-on-error: true`, and
+//              `|| true` swallowing the failure (sandbox#121 round 1).
 //
 //     node scripts/check-verify-parity.mjs --self-test   (prove the classifier can fail)
 //     node scripts/check-verify-parity.mjs               (the check)
@@ -232,10 +235,10 @@ function selfTest() {
       expect: 'ok',
     },
   ];
-  // The anchoring case: the parser against the REAL package.json and ci.yml —
-  // a fixture-only suite proves the classifier logic and nothing about the
-  // producer it parses (the check-docs-wiki lesson: self-tests that hand-type
-  // both inputs pass while the real file drifts past the grammar).
+  // The anchoring case: the parsers against the REAL package.json AND the REAL
+  // ci.yml — a fixture-only suite proves the classifier logic and nothing about
+  // the producers it parses (the check-docs-wiki lesson: self-tests that
+  // hand-type both inputs pass while the real file drifts past the grammar).
   const realVerify = JSON.parse(readFileSync(PACKAGE_PATH, 'utf8')).scripts.verify;
   const realLegs = parseVerifyLegs(realVerify);
   const anchored = realLegs.length >= 10 && realLegs.includes('test');
@@ -245,7 +248,16 @@ function selfTest() {
     );
     process.exit(1);
   }
-  console.log(`  ✓ self-test: the real verify script parses to ${realLegs.length} legs (anchored to the producer)`);
+  const realBlocks = parseCiRunBlocks(readFileSync(WORKFLOW_PATH, 'utf8'));
+  if (realBlocks.length === 0 || !realBlocks.some((b) => /npm (run|test)/.test(b))) {
+    console.error(
+      `  ✗ self-test: the REAL ci.yml parsed to ${realBlocks.length} run blocks — the block walk broke against its producer`,
+    );
+    process.exit(1);
+  }
+  console.log(
+    `  ✓ self-test: the real verify script parses to ${realLegs.length} legs and the real ci.yml to ${realBlocks.length} run blocks (anchored to both producers)`,
+  );
 
   let failed = 0;
   for (const c of cases) {
