@@ -51,6 +51,14 @@ jobs:
           npm run check:untested
           npm run check:dist-documents:selftest
 
+      # R3-838 — the committed embeddedToolchainHash.ts must equal the hash of
+      # the INSTALLED transpiler pin: jest and `npm run dev` read the committed
+      # copy, and the build job's prebuild regenerates (and thereby masks) any
+      # drift, so this gate runs here — after install, where the pin exists, and
+      # never after a build. Self-test first: a gate that cannot fail is not one.
+      - name: Test | Toolchain hash committed == installed (R3-838)
+        run: npm run check:toolchain-hash
+
       - name: Lint | Eslint Check
         run: npm run lint
 
