@@ -30,8 +30,26 @@ jobs:
       - name: Release | Dependency pins are published and lock-agreeing (R3-327)
         run: npm run check:pins
 
+      # R3-814 — the parity gate for this enumeration itself: every `verify` leg
+      # either runs in this file or carries a `# verify-parity-exempt:` line with a
+      # reason. Pre-install, deliberately: it reads only package.json and this file,
+      # so it fails fast on the diff that added a leg without CI coverage.
+      - name: Release | CI covers every verify leg (R3-814)
+        run: npm run check:verify-parity
+
       - name: Setup | Install dependencies
         run: npm ci
+
+      # R3-814 — the five legs this job used to omit (a PR could be green here while
+      # `npm run verify` was red on the branch). One grouped step, not five new
+      # checkout taxes (the site-main R3-641 pattern).
+      - name: Verify | clones / unused / untested / lockfile-installable / dist-documents selftest
+        run: |
+          npm run check:lockfile-installable
+          npm run check:clones
+          npm run check:unused
+          npm run check:untested
+          npm run check:dist-documents:selftest
 
       - name: Lint | Eslint Check
         run: npm run lint
@@ -59,7 +77,6 @@ jobs:
 
       - name: Test | Protocol snapshot self-test
         run: npm run protocol:selftest
-
 
   build:
     runs-on: ubuntu-latest
