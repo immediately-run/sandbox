@@ -54,18 +54,46 @@ const bodyFor = (h) =>
   `export const EMBEDDED_TOOLCHAIN_HASH = '${h}';\n`;
 const body = bodyFor(hash);
 
-if (process.argv.includes('--self-test')) {
-  // A gate that cannot fail is not a gate: the drifted-copy case must be
-  // detected (and the clean case must pass — the same comparison the real
-  // check runs).
-  const committed = readFileSync(out, 'utf8');
-  if (committed !== body) {
-    console.error(
-      'self-test: FAIL — the committed copy already drifts; run `npm run gen:toolchain-hash` and commit, then re-run',
-    );
+// The ONE comparison the gate and its self-test share (R2, review round 1: a
+// self-test that never drives the branch it claims to prove is a tautology).
+// null = in sync; a string = the drift report. A MISSING committed file is the
+// same answer as a drifted one (first run before any build is drift-shaped).
+const driftReport = (committed) =>
+  committed === body
+    ? null
+    : `check:toolchain-hash: DRIFT — the committed embeddedToolchainHash.ts does not match the installed ` +
+      `@immediately-run/transpiler pin (expected hash ${hash}). Fix: \`npm run gen:toolchain-hash\` and commit the result.`;
+const readCommitted = () => {
+  try {
+    return readFileSync(out, 'utf8');
+  } catch {
+    return null;
+  }
+};
+
+// Strict modes: an unrecognized flag must NOT fall through to the mutating
+// write path — a typo'd `--chek` would regenerate the file and mask the very
+// drift the gate exists to catch (review round 1, R3).
+const KNOWN_FLAGS = new Set(['--check', '--self-test']);
+const flags = process.argv.slice(2).filter((a) => a.startsWith('--'));
+const unknown = flags.filter((f) => !KNOWN_FLAGS.has(f));
+if (unknown.length > 0) {
+  console.error(`gen-toolchain-hash: unrecognized flag(s): ${unknown.join(', ')} — usage: [--check | --self-test]`);
+  process.exit(2);
+}
+
+if (flags.includes('--self-test')) {
+  const report = driftReport(readCommitted());
+  if (report) {
+    console.error('self-test: FAIL — the committed copy already drifts. ' + report);
     process.exit(1);
   }
-  if (committed === bodyFor('0'.repeat(64))) {
+  // Drive the SAME predicate against a corrupted copy: a zeroed hash must be
+  // detected (and if the hash literal is absent from the file, appending noise
+  // is drift too).
+  const committed = readCommitted();
+  const corrupted = committed.includes(hash) ? committed.replace(hash, '0'.repeat(64)) : committed + '\n// drift';
+  if (driftReport(corrupted) === null) {
     console.error('self-test: FAIL — a corrupted hash was NOT detected');
     process.exit(1);
   }
@@ -73,30 +101,17 @@ if (process.argv.includes('--self-test')) {
   process.exit(0);
 }
 
-if (process.argv.includes('--check')) {
-  let current = '';
-  try {
-    current = readFileSync(out, 'utf8');
-  } catch {
-    /* first run */
-  }
-  if (current !== body) {
-    console.error(
-      `check:toolchain-hash: DRIFT — the committed embeddedToolchainHash.ts does not match the installed ` +
-        `@immediately-run/transpiler pin (expected hash ${hash}). Fix: \`npm run gen:toolchain-hash\` and commit the result.`,
-    );
+if (flags.includes('--check')) {
+  const report = driftReport(readCommitted());
+  if (report) {
+    console.error(report);
     process.exit(1);
   }
   console.log(`check:toolchain-hash: committed == installed (${hash})`);
   process.exit(0);
 }
 
-let current = '';
-try {
-  current = readFileSync(out, 'utf8');
-} catch {
-  /* first run */
-}
+const current = readCommitted();
 if (current !== body) {
   writeFileSync(out, body);
   console.log(`Baked EMBEDDED_TOOLCHAIN_HASH=${hash} -> ${out}`);
