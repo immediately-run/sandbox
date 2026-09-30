@@ -14,7 +14,8 @@ import type { SandboxMount } from '../mounts/mountState';
 import type { IDisposable } from '../utils/Disposable';
 import { APP_ROOT, MANIFEST_SIDECAR_PATH, underAppRoot } from '../fsLayout';
 import { isTransformable, rootRuntimeDependencies } from '@immediately-run/transpiler';
-import { ArtifactStore, type MdxMetadataAdditive } from './artifacts/artifactStore';
+import { ArtifactStore, type MdxMetadataAdditive, type SeedResult } from './artifacts/artifactStore';
+import { formatStampMismatch } from './artifacts/artifactIndex';
 import { getEmbeddedToolchain } from './artifacts/embeddedToolchain';
 import { BundlerStatus } from '../protocol/message-types';
 import { ResolverCache, resolveAsync } from '../resolver/resolver';
@@ -769,10 +770,7 @@ export class Bundler {
    * without adopting writes artifacts into `/transpiled` that a pre-registered module would
    * never read, which is the silent-no-op this pairing exists to prevent.
    */
-  async seedArtifacts(ctx: {
-    dirtySet: ReadonlySet<string>;
-    writableLayer: ReadonlySet<string>;
-  }): Promise<{ seeded: number; securityReject?: 'writable-layer-artifact' }> {
+  async seedArtifacts(ctx: { dirtySet: ReadonlySet<string>; writableLayer: ReadonlySet<string> }): Promise<SeedResult> {
     const result = await this.artifactStore.seed(ctx);
     // An artifact entry a root declared for a path a NESTED root owns is not written, so the
     // inner root's bytes are never served under the outer root's name. Say so: a repo whose
@@ -1854,6 +1852,14 @@ export class Bundler {
           `[ir-artifacts] seeded ${seedResult.seeded} pre-transpiled artifact(s) into /transpiled ` +
             `across ${this.artifactStore.rootCount()} root(s)`,
         );
+        // R3-843: a stamp mismatch seeds ZERO of a FULL payload — the fail-safe working
+        // as designed, and indistinguishable from "no artifacts shipped" in the count
+        // line alone. The reason is loud for the same R3-294 discipline as the count:
+        // once per root per boot (seed() runs once), console.info (default-visible).
+        for (const { root, mismatch } of seedResult.stampMismatches ?? []) {
+          // eslint-disable-next-line no-console
+          console.info(formatStampMismatch(root, mismatch));
+        }
       }
     }
 

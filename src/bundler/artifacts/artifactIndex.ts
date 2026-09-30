@@ -121,7 +121,50 @@ export function parseArtifactIndex(raw: unknown): ArtifactIndex | null {
  * too — either mismatch ignores all artifacts.
  */
 export function toolchainMatches(toolchain: ArtifactToolchain, embedded: EmbeddedToolchainIdentity): boolean {
-  return toolchain.version === embedded.version && toolchain.toolchainHash === embedded.toolchainHash;
+  return toolchainMismatch(toolchain, embedded) === null;
+}
+
+/** Why the stamp gate refused, when it did (R3-843 — the refusal was silent at the
+ *  default log level, so a broken stamp pipeline went dark: every first-party zip
+ *  seeded 0 on every boot and the fallback hid it). */
+export interface ToolchainStampMismatch {
+  /** The zip's stamp. */
+  stamped: ArtifactToolchain;
+  /** The runtime's embedded identity. */
+  embedded: EmbeddedToolchainIdentity;
+  /** Which compared field(s) differ — a version-only drift and a bytes drift have
+   *  different causes (a stale pipeline pin vs a republish), so the log keeps them
+   *  apart. */
+  fields: ('version' | 'toolchainHash')[];
+}
+
+/** The stamp gate with the refusal spelled out; `null` on a match (§4.4). */
+export function toolchainMismatch(
+  toolchain: ArtifactToolchain,
+  embedded: EmbeddedToolchainIdentity,
+): ToolchainStampMismatch | null {
+  const fields: ToolchainStampMismatch['fields'] = [];
+  if (toolchain.version !== embedded.version) fields.push('version');
+  if (toolchain.toolchainHash !== embedded.toolchainHash) fields.push('toolchainHash');
+  return fields.length === 0 ? null : { stamped: toolchain, embedded, fields };
+}
+
+/** The one-line mismatch report the bundler logs (once per root per boot). Kept as a
+ *  pure function so the string a drill greps for is the one the tests pin. Hashes are
+ *  shortened to the 12-char prefix the eye compares; the full values differ by
+ *  construction when `toolchainHash` is in `fields`. */
+export function formatStampMismatch(root: string, m: ToolchainStampMismatch): string {
+  const parts = m.fields.map((f) =>
+    f === 'version'
+      ? `version: zip ${m.stamped.version} ≠ runtime ${m.embedded.version}`
+      : `toolchainHash: zip ${m.stamped.toolchainHash.slice(0, 12)}… ≠ runtime ${m.embedded.toolchainHash.slice(
+          0,
+          12,
+        )}…`,
+  );
+  return `[ir-artifacts] ${root}: toolchain stamp mismatch (${parts.join(
+    '; ',
+  )}) — the zip's artifacts are ignored; live-transpiling`;
 }
 
 /**
