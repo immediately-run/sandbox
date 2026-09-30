@@ -22,6 +22,8 @@
  * only `handleRepoMount` validated anything at all.
  */
 
+import { HOST_MOUNT_ROOTS } from '@immediately-run/platform-constants';
+
 /**
  * The roots the HOST is allowed to announce a mount under. Everything the host
  * publishes today lands in one of these two:
@@ -37,8 +39,15 @@
  * through this list by construction rather than by a denylist (a denylist is
  * only as good as its enumeration — `/app/../app`, `/APP`, a future third
  * bundler-owned path).
+ *
+ * The list itself is single-sourced in `@immediately-run/platform-constants`
+ * (R3-463) — ONE vocabulary shared with the host announce side (site-main
+ * `filesystem/mountPath.ts`), so a root can no longer be added on this side
+ * only. Re-exported here because this module is where frame-side code looks
+ * for it.
  */
-export const HOST_MOUNT_ROOTS = ['mnt', 'task'] as const;
+
+export { HOST_MOUNT_ROOTS };
 
 /** The repo dual-mount (§11.2) is narrower still: only the canonical `/mnt/{hash}`. */
 export const REPO_MOUNT_ROOTS = ['mnt'] as const;
