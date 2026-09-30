@@ -5,8 +5,10 @@
 // require (`require("./Omnibox")` in tsup/esbuild dual output). Node-mode CJS interop
 // (`__toESM(require(...), 1)`) is only correct when that require meets the CJS sibling
 // — meeting the ESM `.js` build instead hands the interop wrapper `{__esModule,
-// default}` to consumers where the value belongs (the 2026-09-06 front-door outage's
-// mechanism: React received the module object for a component).
+// default}` to consumers where the value belongs (surfaced 2026-09-08 by R3-567's live
+// acceptance: React received the module object for a component. R3-565's 2026-09-06
+// outage was the sibling defect in the same neighbourhood — a dependency's CSS
+// evaluated as JS — whose chain ran through this same extensionless require).
 //
 // Node's own CJS resolver never tries `.cjs` for an extensionless require, which is
 // why the emitters consider the shape safe; this runtime is not node, and here the

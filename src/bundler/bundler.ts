@@ -254,13 +254,16 @@ export class Bundler {
   modules: Map<string, Module> = new Map();
   transformationQueue: TransformationQueue;
   resolverCache: ResolverCache = new Map();
-  // Resolution-RESULT cache (specifier+dir → resolved path), distinct from
-  // resolverCache (which memoizes package.json/tsconfig *content*, not results).
-  // The resolution algorithm is the cold-boot cost — ~3k resolveAsync calls over the
-  // precompiled node_modules closure, each re-running candidate generation + probes
-  // even with cached reads. Node resolution is dir-relative, so two files in the same
-  // dir resolve a given specifier identically: keying by dirname dedups them. Reset
-  // per compile alongside resolverCache, so edits get fresh resolution.
+  // Resolution-RESULT cache ((specifier, dir, extension-order) → resolved path),
+  // distinct from resolverCache (which memoizes package.json/tsconfig *content*, not
+  // results). The resolution algorithm is the cold-boot cost — ~3k resolveAsync calls
+  // over the precompiled node_modules closure, each re-running candidate generation +
+  // probes even with cached reads. Node resolution is dir-relative, so two files in
+  // the same dir resolve a given specifier identically: keying by dirname dedups them
+  // — and the EXTENSION-ORDER component in the key is what lets R3-577's
+  // importer-aware reorder coexist with the cache (a .cjs importer and a .js importer
+  // in one dir resolve the same specifier differently and must not share an entry).
+  // Reset per compile alongside resolverCache, so edits get fresh resolution.
   resolutionCache: Map<string, Promise<string>> = new Map();
   // R3-49d CDN-layout fast path: per-package alias-eligibility verdict (immutable
   // for the closure) + fast-hit/fall-through counters (diagnostic, logged once at

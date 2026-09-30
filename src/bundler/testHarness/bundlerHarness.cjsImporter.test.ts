@@ -1,11 +1,9 @@
-import gensync from 'gensync';
-
 import { resolveAsync as rawResolveAsync } from '../../resolver/resolver';
 import { importerAwareExtensions } from '../../resolver/utils/extensions';
 import { createBundlerHarness, type BundlerHarness } from './bundlerHarness';
 
-// R3-577 — the 2026-09-06 front-door outage's mechanism, as a fixture: a
-// dual-published package whose CJS build carries an EXTENSIONLESS internal require
+// R3-577 — the mechanism R3-567's 2026-09-08 live acceptance surfaced, as a fixture:
+// a dual-published package whose CJS build carries an EXTENSIONLESS internal require
 // (tsup/esbuild's emit), with the ESM and CJS siblings side by side. Node-mode interop
 // (`__toESM(require("./Omnibox"), 1)`) is only correct when the require meets the CJS
 // sibling; the default .js-first order hands it the ESM build, and the interop wrapper
@@ -58,9 +56,7 @@ describe('R3-577 — a .cjs importer meets its CJS sibling first', () => {
     // the bundler's reorder is bypassed, so the .cjs importer meets the ESM build.
     // If this case ever goes green against the raw resolver, the fixture no longer
     // discriminates and the harness cases above prove nothing.
-    const files = new Map<string, string>();
-    const fsAny = (h.bundler as unknown as { fs: { isFile: unknown; readFile: unknown } }).fs;
-    void files;
+    const fsAny = h.bundler.fs;
     const resolved = await rawResolveAsync('./Omnibox', {
       filename: '/app/node_modules/dual-pkg/dist/index.cjs',
       extensions: ['.js', '.jsx', '.mjs', '.cjs', '.ts', '.tsx', '.mdx'], // the pre-fix default

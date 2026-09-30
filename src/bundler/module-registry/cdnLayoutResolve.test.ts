@@ -4,6 +4,7 @@ import { resolveSync } from '../../resolver/resolver';
 import { NodeModule } from './NodeModule';
 import { CDNModuleFileType } from './module-cdn';
 import { isFastPathEligible, parseNodeModulePath, resolveFromCdnLayout } from './cdnLayoutResolve';
+import { importerAwareExtensions } from '../../resolver/utils/extensions';
 
 // The default extension set the bundler passes to resolveAsync (resolver prepends '').
 const EXTS = ['.js', '.jsx', '.mjs', '.cjs', '.ts', '.tsx', '.mdx'];
@@ -220,5 +221,52 @@ describe('resolveFromCdnLayout ⟺ real resolver equivalence', () => {
       real = undefined;
     }
     expect(fast).toBe(real);
+  });
+});
+
+// R3-577 — the fast path under the importer-aware order: a .cjs importer inside a
+// precompiled package must meet its CJS sibling here too (this is the branch the
+// defect class resolves through in production — R3-567's acceptance ran 4424 fast
+// hits against 60 fall-throughs).
+describe('fast path under the importer-aware extension order (R3-577)', () => {
+  const DUAL: Record<string, FileSpec> = {
+    'dual-pkg': {
+      'package.json': JSON.stringify({ name: 'dual-pkg', version: '1.0.0', main: 'dist/index.cjs' }),
+      'dist/index.cjs': 'var O = require("./Omnibox");\nmodule.exports = O;\n',
+      'dist/Omnibox.js': '/* ESM */ export default function Omnibox() {}\n',
+      'dist/Omnibox.cjs': '/* CJS */ module.exports = function Omnibox() {};\n',
+    },
+  };
+  const { registry, isFile, readFile } = makeRegistry(DUAL);
+  const importer = '/node_modules/dual-pkg/dist/index.cjs';
+
+  it('is eligible for the fast path at all (main/module fields carry no alias remap)', () => {
+    expect(isFastPathEligible('dual-pkg', registry.get('dual-pkg')!)).toBe(true);
+  });
+
+  it('a .cjs importer gets the .cjs sibling through the fast path with the reordered list', () => {
+    const fast = resolveFromCdnLayout(
+      './Omnibox',
+      importer,
+      importerAwareExtensions(importer, EXTS),
+      registry,
+      new Map(),
+    );
+    expect(fast).toBe('/node_modules/dual-pkg/dist/Omnibox.cjs');
+  });
+
+  it('FAULT PAIR: the same call with the pre-fix order returns the ESM sibling (the outage shape)', () => {
+    const fast = resolveFromCdnLayout('./Omnibox', importer, EXTS, registry, new Map());
+    expect(fast).toBe('/node_modules/dual-pkg/dist/Omnibox.js');
+  });
+
+  it('and the real resolver agrees with the fast path under the reordered list (equivalence)', () => {
+    const real = resolveSync('./Omnibox', {
+      filename: importer,
+      extensions: importerAwareExtensions(importer, EXTS),
+      isFile,
+      readFile,
+    });
+    expect(real).toBe('/node_modules/dual-pkg/dist/Omnibox.cjs');
   });
 });
