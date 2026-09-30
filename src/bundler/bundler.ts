@@ -18,6 +18,7 @@ import { ArtifactStore, type MdxMetadataAdditive } from './artifacts/artifactSto
 import { getEmbeddedToolchain } from './artifacts/embeddedToolchain';
 import { BundlerStatus } from '../protocol/message-types';
 import { ResolverCache, resolveAsync } from '../resolver/resolver';
+import { importerAwareExtensions } from '../resolver/utils/extensions';
 import {
   resolveSelfHostVersionDetailed,
   fetchVendoredModule,
@@ -639,6 +640,12 @@ export class Bundler {
     filename: string,
     extensions: string[] = ['.js', '.jsx', '.mjs', '.cjs', '.ts', '.tsx', '.mdx'],
   ): Promise<string> {
+    // R3-577: a `.cjs` importer tries its CJS sibling FIRST (see
+    // resolver/utils/extensions.ts — node-mode interop is only correct when an
+    // extensionless internal require meets the `.cjs` build, and the default order
+    // hands it the ESM sibling). Reorder BEFORE the cache key so a `.cjs` importer
+    // and a `.js` importer in the same dir never share a memoized result.
+    extensions = importerAwareExtensions(filename, extensions);
     // Resolution result is a pure function of (specifier, the dir chain from
     // `filename` up, extensions) for the FS snapshot of this compile — node
     // resolution is dir-relative, so two files in the same dir resolve a specifier
