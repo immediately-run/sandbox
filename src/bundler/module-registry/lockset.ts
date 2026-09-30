@@ -11,6 +11,8 @@
 
 import { DepMap } from '.';
 import { CDN_VERSION, IResolvedDependency } from './module-cdn';
+import { computeInputDepMap } from '@immediately-run/transpiler';
+import { gitDependencyNames } from '../gitDependency';
 
 export interface LocksetSection {
   cdnVersion: number;
@@ -71,7 +73,18 @@ export const depMapsEqual = (a: DepMap, b: DepMap): boolean => {
  * PRE-strip map — recomputed here through the same shared `computeInputDepMap`
  * the CLI uses, so the two sides are one function, not mirrored logic — and
  * drop the git names from the APPLIED manifest (they resolve from the mount,
- * never the lockset).
+ * never the lockset; a name the preset's augmentation re-introduced into the
+ * runtime's input is KEPT — its resolved entry is exactly what the runtime
+ * still requests).
+ *
+ * Two conditions this "pre-strip map the CLI mirrors" phrasing silently leans
+ * on, named so the next divergence is diagnosable: (1) the CLI passes the app's
+ * `immediately.run.resolveFromRegistry` names as extra skips where the runtime
+ * reads none — an app declaring those still falls back to live resolution (a
+ * pre-existing sibling of this item's defect, unchanged here); (2) the maps
+ * agree on self-hosted names only while the transpiler's `SELF_HOSTED_MODULES`
+ * and sandbox's `SELF_HOST_BASES` name the same set — a mirrored pair with no
+ * shared source, checked by nothing today.
  *
  * Security posture: the echo-match still proves app identity — `echoMap` is
  * computed from THIS runtime's own parsed package.json, not from the sidecar.
@@ -86,9 +99,21 @@ export interface LocksetEchoContext {
    *  git entries included; the exact quantity the CLI's echo mirrors. */
   echoMap: DepMap;
   /** The git-form names the runtime stripped from its own fetch input (a subset
-   *  of `echoMap`'s keys). Dropped from the applied manifest. */
+   *  of `echoMap`'s keys). Dropped from the applied manifest — except a name
+   *  the preset's augmentation re-introduced, which the runtime still requests. */
   gitNames: Set<string>;
 }
+
+/**
+ * Build {@link LocksetEchoContext} from the root runtime DepMap — the one
+ * construction, shared by `loadNodeModules` and the tests, so the placement
+ * decision (PRE-strip: over the un-stripped root map) is the tested artifact,
+ * not re-derived per caller.
+ */
+export const locksetEchoContextFor = (rootRuntimeDeps: DepMap): LocksetEchoContext => ({
+  echoMap: computeInputDepMap(rootRuntimeDeps),
+  gitNames: gitDependencyNames(rootRuntimeDeps),
+});
 
 /**
  * Does the sidecar's dependency echo identify THIS app's dependency declaration?

@@ -129,9 +129,13 @@ export class ModuleRegistry {
             // R3-844: git-form names resolve from the MOUNT, never the lockset
             // (the runtime stripped them from its own input; a resolved entry
             // under one — the CLI's gap-filler can produce one — would have
-            // preloadModules fetch a package the mount already provides).
+            // preloadModules fetch a package the mount already provides). A git
+            // name the preset's AUGMENTATION re-introduced into the runtime's
+            // input (an app git-pinning core-js, say) is KEPT: the runtime still
+            // requests it, and dropping it would fail the completeness assert
+            // below on a package.json that boots fine live.
             this.manifest = echo?.gitNames.size
-              ? lockset.resolved.filter((r) => !echo.gitNames.has(r.n))
+              ? lockset.resolved.filter((r) => !(echo.gitNames.has(r.n) && !(r.n in sortedDeps)))
               : lockset.resolved;
             resolvedFromLockset = true;
           } else {
@@ -144,7 +148,11 @@ export class ModuleRegistry {
         }
       } else {
         logger.debug('Sidecar lockset dependency echo does not match; resolving live', {
-          computed: sortedDeps,
+          // R3-844: with an echo context the comparator's left-hand side is the
+          // PRE-strip map, not the runtime's fetch input — log both, labeled,
+          // or a git-library mismatch would print a map that was never compared.
+          compared: echo?.echoMap ?? sortedDeps,
+          fetchInput: sortedDeps,
           lockset: lockset.dependencies,
         });
       }

@@ -9,10 +9,9 @@
  */
 import { ModuleRegistry } from '.';
 import { Bundler } from '../bundler';
-import { depMapsEqual, locksetClosureValid, validateLockset } from './lockset';
+import { depMapsEqual, locksetClosureValid, locksetEchoContextFor, validateLockset } from './lockset';
 import { CDN_VERSION, fetchManifest } from './module-cdn';
 import { computeInputDepMap, rootRuntimeDependencies } from '@immediately-run/transpiler';
-import { gitDependencyNames } from '../gitDependency';
 
 jest.mock('./module-cdn', () => ({
   ...jest.requireActual('./module-cdn'),
@@ -188,15 +187,16 @@ describe("R3-844 — a git-library consumer's lockset applies (echo parity)", ()
   const GIT_RANGE = 'github:immediately-run/omnibox#main';
   const PKG = { dependencies: { react: '^18.2.0', [GIT_NAME]: GIT_RANGE } };
 
-  // The CLI side (src/lockset.ts → headDependencies + computeInputDepMap): the
-  // shared function over the root runtime deps — git entry INCLUDED. This is
-  // not a reimplementation; it IS the CLI's computation, through the one shared
-  // source (PRETRANSPILED_ARTIFACTS_SPEC §4.4).
-  const cliEcho = computeInputDepMap(rootRuntimeDependencies(PKG as never));
+  // The context is the SHIPPED constructor's, not a hand-built mirror — the
+  // construction (pre-strip, over the root runtime deps) is the placement the
+  // suite pins (review round 1: every test hand-building {echoMap, gitNames}
+  // left that decision untested).
+  const ctx = locksetEchoContextFor(rootRuntimeDependencies(PKG as never));
+  const cliEcho = ctx.echoMap;
   // The runtime side (loadNodeModules): strip git (+self-host) names, then
   // augment + filter build deps — the map the old comparator compared.
   const runtimeInput = computeInputDepMap(rootRuntimeDependencies(PKG as never));
-  const gitNames = new Set(gitDependencyNames(rootRuntimeDependencies(PKG as never)));
+  const gitNames = ctx.gitNames;
   const strippedInput = Object.fromEntries(Object.entries(runtimeInput).filter(([n]) => !gitNames.has(n)));
 
   it('parity: what the CLI writes equals what the runtime recomputes pre-strip (and differs post-strip — the defect)', () => {
@@ -212,18 +212,56 @@ describe("R3-844 — a git-library consumer's lockset applies (echo parity)", ()
 
   it('the drill: the echo includes the git entry, the runtime input does not — the lockset APPLIES anyway', async () => {
     const r = registry();
-    // The lockset as today's CLI writes it: echo = cliEcho (8-entry shape, omnibox
-    // included); resolved carries the CDN closure plus a gap-filled omnibox entry
-    // (R3-567 fills from the installed tree) — which must NOT reach the manifest.
+    // The lockset as today's CLI writes it: echo = cliEcho (omnibox included);
+    // resolved carries the CDN closure plus a gap-filled omnibox entry (R3-567
+    // fills from the installed tree) — which must NOT reach the manifest.
     const ls = lockset({
       dependencies: { ...cliEcho },
       resolved: [...RESOLVED, { n: GIT_NAME, v: '0.3.0', d: 0 }],
     });
-    await r.fetchManifest({ ...strippedInput }, true, ls as never, { echoMap: cliEcho, gitNames });
+    await r.fetchManifest({ ...strippedInput }, true, ls as never, ctx);
     expect(mockedFetchManifest).not.toHaveBeenCalled(); // the blocking /dep_tree call is SKIPPED
     // The git name resolves from the mount, never the lockset.
     expect(r.manifest.map((d) => d.n)).not.toContain(GIT_NAME);
     expect(r.manifest).toEqual(RESOLVED);
+  });
+
+  it('a git-pinned AUGMENTED name is kept in the manifest — the runtime still requests it (round-1 blocking)', async () => {
+    // An app git-pins core-js (a fork). Augmentation overwrites the value on
+    // BOTH sides (echo and runtime input get '3.22.7'), so the echo matches and
+    // the naive git-drop would remove core-js from the manifest while the input
+    // still requests it — the completeness assert dies on a package.json that
+    // boots fine live. The drop is scoped to names ABSENT from the input.
+    const FORK_PKG = { dependencies: { react: '^18.2.0', 'core-js': 'github:fork/core-js#fix' } };
+    const forkCtx = locksetEchoContextFor(rootRuntimeDependencies(FORK_PKG as never));
+    // Augmentation replaced the git value in the echo map…
+    expect(forkCtx.gitNames.has('core-js')).toBe(true);
+    expect(forkCtx.echoMap['core-js']).toBe('3.22.7');
+    // …so the runtime input still requests it (it is NOT stripped by name).
+    const forkInput = Object.fromEntries(
+      Object.entries(forkCtx.echoMap).filter(([n]) => !forkCtx.gitNames.has(n) || n === 'core-js'),
+    );
+    const r = registry();
+    const ls = lockset({ dependencies: { ...forkCtx.echoMap } });
+    await r.fetchManifest({ ...forkInput }, true, ls as never, forkCtx);
+    expect(mockedFetchManifest).not.toHaveBeenCalled();
+    expect(r.manifest.map((d) => d.n)).toContain('core-js');
+  });
+
+  it("a mounted library's CONTRIBUTED dep (in the input, not the echo) still resolves from the lockset", async () => {
+    // R3-293: the runtime folds the mounted git library's own deps into its
+    // input AFTER the strip; the CLI's echo never sees them. The lockset still
+    // applies (identity is the echo), and the completeness assert below passes
+    // when the CLI's resolved closure covers the contributed name — as it does
+    // when the CDN answered the echo's git entry with its transitive closure.
+    const r = registry();
+    const ls = lockset({
+      dependencies: { ...cliEcho },
+      resolved: [...RESOLVED, { n: 'lib-contrib-dep', v: '2.4.1', d: 1 }],
+    });
+    await r.fetchManifest({ ...strippedInput, 'lib-contrib-dep': '^2.0.0' }, true, ls as never, ctx);
+    expect(mockedFetchManifest).not.toHaveBeenCalled();
+    expect(r.manifest.map((d) => d.n)).toContain('lib-contrib-dep');
   });
 
   it('a forged non-git extra in the echo still fails the match (no widened identity)', async () => {
@@ -233,7 +271,7 @@ describe("R3-844 — a git-library consumer's lockset applies (echo parity)", ()
     });
     // The runtime's own git parse never named evil-pkg, so its pre-strip echo map
     // does not contain it → no match → live resolution.
-    await r.fetchManifest({ ...strippedInput }, true, forged as never, { echoMap: cliEcho, gitNames });
+    await r.fetchManifest({ ...strippedInput }, true, forged as never, ctx);
     expect(mockedFetchManifest).toHaveBeenCalledTimes(1);
     expect(r.manifest.map((d) => d.n)).not.toContain('evil-pkg');
   });
@@ -241,7 +279,7 @@ describe("R3-844 — a git-library consumer's lockset applies (echo parity)", ()
   it('a git-name resolved entry the CLI did NOT gap-fill is simply absent — the mount serves it', async () => {
     const r = registry();
     const ls = lockset({ dependencies: { ...cliEcho } }); // resolved = RESOLVED, no git entry
-    await r.fetchManifest({ ...strippedInput }, true, ls as never, { echoMap: cliEcho, gitNames });
+    await r.fetchManifest({ ...strippedInput }, true, ls as never, ctx);
     expect(mockedFetchManifest).not.toHaveBeenCalled();
     expect(r.manifest).toEqual(RESOLVED);
   });

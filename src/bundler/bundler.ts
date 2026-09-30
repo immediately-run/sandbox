@@ -13,7 +13,7 @@ import { MountService } from '../mounts/MountService';
 import type { SandboxMount } from '../mounts/mountState';
 import type { IDisposable } from '../utils/Disposable';
 import { APP_ROOT, MANIFEST_SIDECAR_PATH, underAppRoot } from '../fsLayout';
-import { computeInputDepMap, isTransformable, rootRuntimeDependencies } from '@immediately-run/transpiler';
+import { isTransformable, rootRuntimeDependencies } from '@immediately-run/transpiler';
 import { ArtifactStore, type MdxMetadataAdditive } from './artifacts/artifactStore';
 import { getEmbeddedToolchain } from './artifacts/embeddedToolchain';
 import { BundlerStatus } from '../protocol/message-types';
@@ -41,7 +41,7 @@ import { NamedPromiseQueue } from '../utils/NamedPromiseQueue';
 import { nullthrows } from '../utils/nullthrows';
 import { ModuleRegistry } from './module-registry';
 import { resolveFromCdnLayout } from './module-registry/cdnLayoutResolve';
-import { LocksetSection, validateLockset } from './module-registry/lockset';
+import { LocksetSection, locksetEchoContextFor, validateLockset } from './module-registry/lockset';
 import { collectLocalEntrySideEffects } from './sideEffectImports';
 import { Module } from './module/Module';
 import { CRYPTO_MODULE_CODE, UNSUPPORTED_BUILTIN_MODULE_CODE } from './shims';
@@ -605,17 +605,13 @@ export class Bundler {
       // R3-844: the lockset echo the CLI writes mirrors the PRE-strip input —
       // `computeInputDepMap` over the root runtime deps, git-form entries
       // included — while `dependencies` below has them (and the self-hosted
-      // names) stripped. Recompute the CLI-side map through the SAME shared
-      // function so the echo-match is one computation, not mirrored logic, and
-      // carry the git names so the applied manifest drops them (they resolve
-      // from the mount, never the lockset). Without this, a git-library
-      // consumer's lockset could never match its own echo and the boot always
-      // needed the /dep_tree CDN call — a CDN outage blanked exactly the apps
-      // the library-mount rail serves.
-      const locksetEcho = {
-        echoMap: computeInputDepMap(dependencies),
-        gitNames: gitDependencyNames(dependencies),
-      };
+      // names) stripped. The one shared constructor (lockset.ts) computes it
+      // here, BEFORE the strip, so the echo-match is one computation on both
+      // sides and the applied manifest can drop the mount-resolved git names.
+      // Without this, a git-library consumer's lockset could never match its
+      // own echo and the boot always needed the /dep_tree CDN call — a CDN
+      // outage blanked exactly the apps the library-mount rail serves.
+      const locksetEcho = locksetEchoContextFor(dependencies);
       // Self-hosted (resolveFromRegistry) modules are already registered as
       // local modules by addLocalModules; strip them so the CDN /dep_tree/ query
       // never has to resolve them (immune to npm→CDN replication lag). Their own
