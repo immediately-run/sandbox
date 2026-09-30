@@ -1836,6 +1836,9 @@ export class Bundler {
         // §8.14: a seeding input was present in the writable layer — the whole
         // section is rejected (live transpile for everything this session).
         logger.warn(`Artifact seeding rejected (${seedResult.securityReject}); live transpiling.`);
+        // A security reject on one root must not mute another root's stamp-mismatch
+        // reason (the two aggregate independently) — the loop below runs for both
+        // branches; only the count line is else-scoped.
       } else {
         // `console.info`, not `logger.debug`, and deliberately unconditional (R3-294).
         //
@@ -1852,14 +1855,15 @@ export class Bundler {
           `[ir-artifacts] seeded ${seedResult.seeded} pre-transpiled artifact(s) into /transpiled ` +
             `across ${this.artifactStore.rootCount()} root(s)`,
         );
-        // R3-843: a stamp mismatch seeds ZERO of a FULL payload — the fail-safe working
-        // as designed, and indistinguishable from "no artifacts shipped" in the count
-        // line alone. The reason is loud for the same R3-294 discipline as the count:
-        // once per root per boot (seed() runs once), console.info (default-visible).
-        for (const { root, mismatch } of seedResult.stampMismatches ?? []) {
-          // eslint-disable-next-line no-console
-          console.info(formatStampMismatch(root, mismatch));
-        }
+      }
+      // R3-843: a stamp mismatch seeds ZERO of a FULL payload — the fail-safe working
+      // as designed, and indistinguishable from "no artifacts shipped" in the count
+      // line alone. The reason is loud for the same R3-294 discipline as the count:
+      // once per root per boot (seed() runs once per root), console.info
+      // (default-visible), and in BOTH the rejected and the clean branches above.
+      for (const { root, mismatch } of seedResult.stampMismatches ?? []) {
+        // eslint-disable-next-line no-console
+        console.info(formatStampMismatch(root, mismatch));
       }
     }
 

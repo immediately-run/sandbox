@@ -149,19 +149,25 @@ export function toolchainMismatch(
   return fields.length === 0 ? null : { stamped: toolchain, embedded, fields };
 }
 
+/** A hash prefix long enough to SEE the difference: 12 chars by default, extended past
+ *  the first differing character when two differing hashes share the 12-char prefix —
+ *  otherwise the line could print `zip abc… ≠ runtime abc…` and deny itself. */
+function divergentPrefix(a: string, b: string): [string, string] {
+  let i = 0;
+  while (i < a.length && i < b.length && a[i] === b[i]) i++;
+  const n = Math.max(12, i + 1);
+  return [a.slice(0, n), b.slice(0, n)];
+}
+
 /** The one-line mismatch report the bundler logs (once per root per boot). Kept as a
  *  pure function so the string a drill greps for is the one the tests pin. Hashes are
- *  shortened to the 12-char prefix the eye compares; the full values differ by
- *  construction when `toolchainHash` is in `fields`. */
+ *  shortened to a prefix the eye compares (see `divergentPrefix`). */
 export function formatStampMismatch(root: string, m: ToolchainStampMismatch): string {
-  const parts = m.fields.map((f) =>
-    f === 'version'
-      ? `version: zip ${m.stamped.version} ≠ runtime ${m.embedded.version}`
-      : `toolchainHash: zip ${m.stamped.toolchainHash.slice(0, 12)}… ≠ runtime ${m.embedded.toolchainHash.slice(
-          0,
-          12,
-        )}…`,
-  );
+  const parts = m.fields.map((f) => {
+    if (f === 'version') return `version: zip ${m.stamped.version} ≠ runtime ${m.embedded.version}`;
+    const [z, r] = divergentPrefix(m.stamped.toolchainHash, m.embedded.toolchainHash);
+    return `toolchainHash: zip ${z}… ≠ runtime ${r}…`;
+  });
   return `[ir-artifacts] ${root}: toolchain stamp mismatch (${parts.join(
     '; ',
   )}) — the zip's artifacts are ignored; live-transpiling`;
