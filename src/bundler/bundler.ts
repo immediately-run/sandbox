@@ -41,7 +41,7 @@ import { NamedPromiseQueue } from '../utils/NamedPromiseQueue';
 import { nullthrows } from '../utils/nullthrows';
 import { ModuleRegistry } from './module-registry';
 import { resolveFromCdnLayout } from './module-registry/cdnLayoutResolve';
-import { LocksetSection, validateLockset } from './module-registry/lockset';
+import { LocksetSection, locksetEchoContextFor, validateLockset } from './module-registry/lockset';
 import { collectLocalEntrySideEffects } from './sideEffectImports';
 import { Module } from './module/Module';
 import { CRYPTO_MODULE_CODE, UNSUPPORTED_BUILTIN_MODULE_CODE } from './shims';
@@ -602,6 +602,16 @@ export class Bundler {
     // `rootRuntimeDependencies` so the CLI's lockset echo matches (§4.4).
     let dependencies = rootRuntimeDependencies(this.parsedPackageJSON);
     if (Object.keys(dependencies).length > 0) {
+      // R3-844: the lockset echo the CLI writes mirrors the PRE-strip input —
+      // `computeInputDepMap` over the root runtime deps, git-form entries
+      // included — while `dependencies` below has them (and the self-hosted
+      // names) stripped. The one shared constructor (lockset.ts) computes it
+      // here, BEFORE the strip, so the echo-match is one computation on both
+      // sides and the applied manifest can drop the mount-resolved git names.
+      // Without this, a git-library consumer's lockset could never match its
+      // own echo and the boot always needed the /dep_tree CDN call — a CDN
+      // outage blanked exactly the apps the library-mount rail serves.
+      const locksetEcho = locksetEchoContextFor(dependencies);
       // Self-hosted (resolveFromRegistry) modules are already registered as
       // local modules by addLocalModules; strip them so the CDN /dep_tree/ query
       // never has to resolve them (immune to npm→CDN replication lag). Their own
@@ -626,7 +636,7 @@ export class Bundler {
         'Preset needs to be defined when loading node modules',
       ).augmentDependencies(dependencies);
 
-      await this.moduleRegistry.fetchManifest(dependencies, true, await this.readSidecarLockset());
+      await this.moduleRegistry.fetchManifest(dependencies, true, await this.readSidecarLockset(), locksetEcho);
 
       // Load all modules
       await this.moduleRegistry.preloadModules();
