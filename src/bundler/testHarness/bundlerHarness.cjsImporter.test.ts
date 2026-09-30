@@ -1,4 +1,5 @@
 import { resolveAsync as rawResolveAsync } from '../../resolver/resolver';
+import { NodeModule } from '../../bundler/module-registry/NodeModule';
 import { importerAwareExtensions } from '../../resolver/utils/extensions';
 import { createBundlerHarness, type BundlerHarness } from './bundlerHarness';
 
@@ -56,12 +57,11 @@ describe('R3-577 — a .cjs importer meets its CJS sibling first', () => {
     // the bundler's reorder is bypassed, so the .cjs importer meets the ESM build.
     // If this case ever goes green against the raw resolver, the fixture no longer
     // discriminates and the harness cases above prove nothing.
-    const fsAny = h.bundler.fs;
     const resolved = await rawResolveAsync('./Omnibox', {
       filename: '/app/node_modules/dual-pkg/dist/index.cjs',
       extensions: ['.js', '.jsx', '.mjs', '.cjs', '.ts', '.tsx', '.mdx'], // the pre-fix default
-      isFile: fsAny.isFile as never,
-      readFile: fsAny.readFile as never,
+      isFile: h.bundler.fs.isFile,
+      readFile: h.bundler.fs.readFile,
     });
     expect(resolved).toBe('/app/node_modules/dual-pkg/dist/Omnibox.js'); // the WRONG file — proof the fixture bites
 
@@ -77,9 +77,34 @@ describe('R3-577 — a .cjs importer meets its CJS sibling first', () => {
         '.tsx',
         '.mdx',
       ]),
-      isFile: fsAny.isFile as never,
-      readFile: fsAny.readFile as never,
+      isFile: h.bundler.fs.isFile,
+      readFile: h.bundler.fs.readFile,
     });
     expect(fixed).toBe('/app/node_modules/dual-pkg/dist/Omnibox.cjs');
+  });
+});
+
+describe('R3-577 — the join: Bundler.resolveAsync hands the reordered list to the fast path', () => {
+  let h: BundlerHarness;
+  beforeEach(async () => {
+    h = await createBundlerHarness();
+  });
+  afterEach(() => h.teardown());
+
+  it('a .cjs importer inside a registry package resolves its CJS sibling THROUGH the fast path', async () => {
+    // The dual-published package registered as a registry NodeModule — the shape
+    // resolveFromCdnLayout exists for (a precompiled package under /node_modules).
+    const files: Record<string, { c: string; d: string[]; t: boolean }> = {};
+    for (const [k, v] of Object.entries(DUAL_PKG)) {
+      if (!k.startsWith('node_modules/dual-pkg/')) continue;
+      files[k.slice('node_modules/dual-pkg/'.length)] = { c: v as string, d: [], t: false };
+    }
+    h.bundler.moduleRegistry.modules.set('dual-pkg', new NodeModule('dual-pkg', '1.0.0', files, []));
+
+    const resolved = await h.bundler.resolveAsync('./Omnibox', '/node_modules/dual-pkg/dist/index.cjs');
+    expect(resolved).toBe('/node_modules/dual-pkg/dist/Omnibox.cjs');
+    // The join IS the assertion: the harness fs carries nothing under /node_modules —
+    // the package's content exists ONLY in the registry — so a correct answer can
+    // only have come through the CDN-layout fast path (the full resolver would miss).
   });
 });
