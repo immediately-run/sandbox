@@ -98,9 +98,13 @@ export interface LocksetEchoContext {
   /** The pre-strip echo map — `computeInputDepMap` over the root runtime deps,
    *  git entries included; the exact quantity the CLI's echo mirrors. */
   echoMap: DepMap;
-  /** The git-form names the runtime stripped from its own fetch input (a subset
-   *  of `echoMap`'s keys). Dropped from the applied manifest — except a name
-   *  the preset's augmentation re-introduced, which the runtime still requests. */
+  /** The git-form names the runtime stripped from its own fetch input (usually
+   *  a subset of `echoMap`'s keys — except a git-pinned BUILD dep, which
+   *  `filterBuildDeps` removes from the echo map while the name stays here;
+   *  harmless: the drop only removes, and closure already refuses an
+   *  undeclared depth-0 entry). Dropped from the applied manifest — except a
+   *  name the preset's augmentation re-introduced, which the runtime still
+   *  requests. */
   gitNames: Set<string>;
 }
 
