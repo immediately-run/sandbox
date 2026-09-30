@@ -14,7 +14,8 @@ import {
   outWithinArtifacts,
   parseArtifactIndex,
   readableLayerOnly,
-  toolchainMatches,
+  toolchainMismatch,
+  type ToolchainStampMismatch,
   validateSeedEntry,
 } from './artifactIndex';
 
@@ -67,6 +68,11 @@ export interface SeedResult {
   seeded: number;
   /** Set when the whole section was rejected for a security reason (§5.1 PT2-4). */
   securityReject?: 'writable-layer-artifact';
+  /** Per-root §4.4 stamp-gate refusals (R3-843): the zip carried a full payload and the
+   *  runtime ignored ALL of it — the case that went dark until the reason rode the
+   *  result and the bundler logged it. Absent/invalid indexes are NOT here (a repo
+   *  with no artifacts is the ordinary case, not a mismatch). */
+  stampMismatches?: { root: string; mismatch: ToolchainStampMismatch }[];
 }
 
 /** The result of a spot-verification pass (§5.7). */
@@ -257,6 +263,7 @@ export class ArtifactStore {
 
     let seeded = 0;
     let securityReject: SeedResult['securityReject'];
+    let stampMismatches: SeedResult['stampMismatches'];
     for (const root of this.roots) {
       if (this.seededRoots.has(root)) continue;
       this.seededRoots.add(root);
@@ -265,8 +272,13 @@ export class ArtifactStore {
       // A rejection anywhere is worth surfacing; the app root's is the one that can
       // actually fire (see `addRoot` on why the gate is app-scoped), so first wins.
       securityReject ??= result.securityReject;
+      if (result.stampMismatches) stampMismatches = [...(stampMismatches ?? []), ...result.stampMismatches];
     }
-    return securityReject ? { seeded, securityReject } : { seeded };
+    return {
+      seeded,
+      ...(securityReject ? { securityReject } : {}),
+      ...(stampMismatches ? { stampMismatches } : {}),
+    };
   }
 
   /** Seed one root's artifact section. Every failure mode is a no-op for THAT root only —
@@ -282,7 +294,8 @@ export class ArtifactStore {
     if (!index) return { seeded: 0 };
     // §4.4 stamp gate: both version and toolchainHash must match. Per-root — a library
     // built with an older toolchain live-transpiles while the app still uses its artifacts.
-    if (!toolchainMatches(index.toolchain, this.embedded)) return { seeded: 0 };
+    const mismatch = toolchainMismatch(index.toolchain, this.embedded);
+    if (mismatch) return { seeded: 0, stampMismatches: [{ root, mismatch }] };
 
     // §5.1 readable-layer-only (PT2-4): the index, the sidecar, and EVERY artifact
     // file must live in the readable (zip) layer only; any in the writable layer
