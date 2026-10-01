@@ -12,6 +12,7 @@ import { Bundler } from '../bundler';
 import { Module } from '../module/Module';
 import { ModuleNotFoundError } from '../../errors/ModuleNotFound';
 import { filterBuildDeps } from './build-dep';
+import { isJsFamilyFile } from '../presets/Preset';
 import { depMapsEchoMatch, locksetClosureValid, LocksetEchoContext, LocksetSection } from './lockset';
 import { ICDNModule, ICDNModuleFile, IResolvedDependency, fetchManifest, fetchModule } from './module-cdn';
 import { bundledIndexPath, bundledPackagePath, decodeBundledModule, parseBundledIndex } from './bundledPackages';
@@ -328,7 +329,22 @@ export class ModuleRegistry {
       return [];
     }
 
-    const module = new Module(path, file.c, true, this.bundler);
+    // A package file's published bytes are precompiled JAVASCRIPT only for the
+    // JS-family extensions the preset routes to the babel/raw-cjs chains
+    // (`isJsFamilyFile`, the one home of the classification). Every other
+    // package file is DATA: registering it "compiled" (its raw source as the
+    // compiled output) makes the first import EVALUATE that source as
+    // JavaScript — `SyntaxError: Unexpected token '.'`, which killed the front
+    // door for two days when a dependency shipped `dist/Omnibox.js` importing
+    // `./omnibox.css` (an app-local `.css` never tripped it:
+    // `_transformModule` compiles those through the preset's css branch).
+    // Register non-JS files uncompiled instead — the first import routes them
+    // through the SAME preset chain an app-local file takes (the source re-read
+    // off the `/node_modules` registry mount), so a stylesheet is applied, a
+    // JSON file parsed, and anything the preset has no transformer for (`.scss`,
+    // an uppercase `.CSS`, a `.md`) fails at transform time naming the file —
+    // never an opaque SyntaxError at evaluation.
+    const module = new Module(path, file.c, isJsFamilyFile(path), this.bundler);
     this.bundler.modules.set(path, module);
     return file.d.map((dep) => {
       return async () => {
