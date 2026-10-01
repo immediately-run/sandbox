@@ -328,7 +328,24 @@ export class ModuleRegistry {
       return [];
     }
 
-    const module = new Module(path, file.c, true, this.bundler);
+    // A package file's published bytes are precompiled JAVASCRIPT only for the code
+    // extensions the preset routes to the babel/raw-cjs chains. A `.css` or `.json`
+    // package file is DATA: registering it "compiled" (its raw source as the
+    // compiled output) makes the first import EVALUATE that source as JavaScript —
+    // `SyntaxError: Unexpected token '.'`, which killed the front door for two days
+    // when a dependency shipped `dist/Omnibox.js` importing `./omnibox.css` (an
+    // app-local `.css` never tripped it: `_transformModule` compiles those through
+    // the preset's css branch). Register these uncompiled instead — the first
+    // import compiles them through the SAME css/style (json) chain an app-local
+    // file takes, the source re-read off the `/node_modules` registry mount — so a
+    // stylesheet is applied and a JSON file parsed, with a malformed one failing
+    // at transform time naming the file rather than as an opaque SyntaxError at
+    // evaluation. The extensions mirror the preset's own routing
+    // (`ReactPreset.mapTransformers` / `SolidPreset.mapTransformers`): `.css`
+    // lowercase-only, `.json` case-insensitive. Package files of any other
+    // extension keep the precompiled registration.
+    const isPublishedDataFile = /\.css$/.test(path) || /\.json$/i.test(path);
+    const module = new Module(path, file.c, !isPublishedDataFile, this.bundler);
     this.bundler.modules.set(path, module);
     return file.d.map((dep) => {
       return async () => {
