@@ -157,7 +157,7 @@
     "react": "19.1.0",
     "react-dom": "19.1.0",
     "typescript": "5.8.3",
-    "@grpc/grpc-js": "^1.13.6"
+    "@grpc/grpc-js": "^1.14.5"
   },
   "@parcel/resolver-default": {
     "packageExports": true
