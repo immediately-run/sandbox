@@ -286,9 +286,12 @@ function* expandFile(
       // all — the read itself is confined (§4c.3, 3S-7), so a hostile
       // `browser`/`alias` remap cannot reach outside bytes, not even as an
       // existence oracle. The root is the importer's effective root (the app
-      // root, or the package's own subtree for package internals).
+      // root, or the package's own subtree for package internals). The
+      // candidate is normalized BEFORE the check: an alias value like
+      // '/app/../firestore/x.js' is returned verbatim by
+      // normalizeAliasFilePath and would pass a raw prefix test.
       const confineRoot = effectiveConfinement(opts);
-      if (confineRoot && !isWithinRoot(confineRoot, f)) {
+      if (confineRoot && !isWithinRoot(confineRoot, pathUtils.normalize(f))) {
         continue; // eslint-disable-line no-continue
       }
       const exists = yield* isFile(f, opts.isFile);
@@ -376,7 +379,11 @@ export const resolver = gensync<(moduleSpecifier: string, inputOpts: IResolveOpt
   // space content — but a package still cannot reach OUT of its subtree).
   if (opts.confineToRoot && modulePath[0] === '/') {
     const effectiveRoot = packageSubtreeRoot(opts.filename) ?? opts.confineToRoot;
-    if (!isWithinRoot(effectiveRoot, modulePath)) {
+    // Normalize BEFORE comparing: resolveFile returns a '/'-leading specifier
+    // verbatim, so '/app/../firestore/x' would otherwise pass the containment
+    // check on its string prefix (the item's "never a prefix test on an
+    // unnormalized spelling" rule).
+    if (!isWithinRoot(effectiveRoot, pathUtils.normalize(modulePath))) {
       throw new ModuleNotFoundError(normalizedSpecifier, opts.filename);
     }
   }

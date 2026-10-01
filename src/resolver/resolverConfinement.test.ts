@@ -1,6 +1,7 @@
 import gensync from 'gensync';
 
 import { ModuleNotFoundError } from '../errors/ModuleNotFound';
+import * as pathUtils from '../utils/path';
 import { isWithinRoot, resolveSync } from './resolver';
 
 /**
@@ -18,13 +19,17 @@ import { isWithinRoot, resolveSync } from './resolver';
  * the trees a ZenFS root-bound resolver can otherwise reach.
  */
 describe('resolver confinement (confineToRoot)', () => {
-  // The in-root manifest carries a hostile alias: a remap of an app path to
-  // OUTSIDE bytes — the author-controlled escape the chroot must refuse even
-  // though the alias itself is read from inside the root.
+  // The in-root manifest carries two hostile aliases: a remap of an app path
+  // to OUTSIDE bytes — and the same remap spelled through a dot-dot that stays
+  // '/app/'-prefixed as a STRING. Both are the author-controlled escapes the
+  // chroot must refuse even though the alias is read from inside the root.
   const APP_PACKAGE = JSON.stringify({
     name: 'snapshot-program',
     main: 'src/index.js',
-    alias: { '/app/src/missing.js': '/firestore/aliased.js' },
+    alias: {
+      '/app/src/missing.js': '/firestore/aliased.js',
+      '/app/src/dotdot.js': '/app/../firestore/aliased.js',
+    },
   });
   const files = new Map<string, string>([
     ['/app/package.json', APP_PACKAGE],
@@ -70,13 +75,17 @@ describe('resolver confinement (confineToRoot)', () => {
     ['/app2/x.js', 'export const prefixSibling = true;'],
   ]);
 
-  const isFile = gensync({ sync: (p: string) => files.has(p) });
+  // The map keys are canonical; the FS underneath the resolver (ZenFS)
+  // resolves dot segments, so the double normalizes on lookup — as the real
+  // filesystem does — while the read spy records the RAW probed spelling.
+  const isFile = gensync({ sync: (p: string) => files.has(pathUtils.normalize(p)) });
   const reads: string[] = [];
   const readFile = gensync({
     sync: (p: string) => {
       reads.push(p);
-      if (!files.has(p)) throw new Error('File not found');
-      return files.get(p) as string;
+      const key = pathUtils.normalize(p);
+      if (!files.has(key)) throw new Error('File not found');
+      return files.get(key) as string;
     },
   });
 
@@ -194,6 +203,33 @@ describe('resolver confinement (confineToRoot)', () => {
     );
     // Control: unconfined, brout's escape resolves.
     expect(resolveSync('brout', { ...base, filename: '/app/src/index.js' })).toBe('/firestore/x.js');
+  });
+
+  it('a dot-dot-bearing ABSOLUTE spelling (/app/../firestore/x) is ENOENT — containment never reads unnormalized strings', () => {
+    // The item's Architecture rule, directly: the containment check must not be
+    // a string-prefix test on an unnormalized path. resolveFile returns a
+    // '/'-leading specifier verbatim, so this spelling reaches the check with
+    // its '..' intact.
+    expect(() => resolveSync('/app/../firestore/x', { ...CONFINED, filename: '/app/src/index.js' })).toThrowError(
+      ModuleNotFoundError,
+    );
+    // …and the same spelling INSIDE the root still resolves (normalization is
+    // not a refusal of legal paths). The resolver returns the probed spelling
+    // verbatim — its standing contract; the FS canonicalizes underneath.
+    expect(resolveSync('/app/src/../src/util', { ...CONFINED, filename: '/app/src/index.js' })).toBe(
+      '/app/src/../src/util.js',
+    );
+  });
+
+  it('a dot-dot-bearing ALIAS value (/app/../firestore/…) cannot escape either', () => {
+    // The in-root manifest remaps an app path to a dot-dot spelling of outside
+    // bytes; the probe-side check normalizes before comparing.
+    expect(() => resolveSync('./dotdot', { ...CONFINED, filename: '/app/src/index.js' })).toThrowError(
+      ModuleNotFoundError,
+    );
+    // Control: unconfined, the alias fires (the resolver returns the probed
+    // spelling verbatim — its standing contract; the FS canonicalizes).
+    expect(resolveSync('./dotdot', { ...base, filename: '/app/src/index.js' })).toBe('/app/../firestore/aliased.js');
   });
 
   it('isWithinRoot: containment is on the path boundary, never a raw prefix', () => {
