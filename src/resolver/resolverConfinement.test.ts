@@ -37,16 +37,27 @@ describe('resolver confinement (confineToRoot)', () => {
     ['/repository/x.js', 'export const otherRepo = true;'],
     // A root tsconfig whose paths would resolve a bare specifier into the app.
     ['/tsconfig.json', JSON.stringify({ compilerOptions: { baseUrl: '/', paths: { 'tcfg/*': ['/app/src/*'] } } })],
-    // The package channel: a CDN/registry-shaped dependency at /node_modules.
+    // The package channel: a CDN/registry-shaped dependency at /node_modules,
+    // with one INTERNAL relative import (the common compiled shape).
     ['/node_modules/react/package.json', JSON.stringify({ name: 'react', main: 'index.js' })],
-    ['/node_modules/react/index.js', 'module.exports = {};'],
+    ['/node_modules/react/index.js', "require('./cjs/react.production.js');"],
+    ['/node_modules/react/cjs/react.production.js', 'module.exports = {};'],
+    // A second package, to prove cross-package relatives are refused.
+    ['/node_modules/leftpad/package.json', JSON.stringify({ name: 'leftpad', main: 'index.js' })],
+    ['/node_modules/leftpad/index.js', 'module.exports = () => "";'],
     // A hostile package whose main escapes its own subtree.
     ['/node_modules/evil/package.json', JSON.stringify({ name: 'evil', main: '../../firestore/x.js' })],
+    // A prefix-sharing sibling of the confinement root: '/app2' starts with
+    // '/app' as a STRING but is not inside it — the walk must never read here.
+    ['/app2/package.json', JSON.stringify({ name: 'prefix-sibling' })],
+    ['/app2/x.js', 'export const prefixSibling = true;'],
   ]);
 
   const isFile = gensync({ sync: (p: string) => files.has(p) });
+  const reads: string[] = [];
   const readFile = gensync({
     sync: (p: string) => {
+      reads.push(p);
       if (!files.has(p)) throw new Error('File not found');
       return files.get(p) as string;
     },
@@ -104,6 +115,50 @@ describe('resolver confinement (confineToRoot)', () => {
     // Control: unconfined, the same escape resolves — the refusal above is the
     // confinement's doing, not a broken fixture.
     expect(resolveSync('evil', { ...base, filename: '/app/src/index.js' })).toBe('/firestore/x.js');
+  });
+
+  it('package INTERNALS resolve within the package subtree under confinement', () => {
+    // react's compiled entry requires './cjs/react.production.js' — a confined
+    // program's dependencies must keep working (the closure pins them; the
+    // chroot is not what pins them).
+    expect(resolveSync('./cjs/react.production.js', { ...CONFINED, filename: '/node_modules/react/index.js' })).toBe(
+      '/node_modules/react/cjs/react.production.js',
+    );
+  });
+
+  it('a CROSS-package relative import is refused (the subtree is per-package)', () => {
+    expect(() => resolveSync('../leftpad', { ...CONFINED, filename: '/node_modules/react/index.js' })).toThrowError(
+      ModuleNotFoundError,
+    );
+    // Control: unconfined, it resolves.
+    expect(resolveSync('../leftpad', { ...base, filename: '/node_modules/react/index.js' })).toBe(
+      '/node_modules/leftpad/index.js',
+    );
+  });
+
+  it('a prefix-sharing sibling of the root (/app2 under /app) is never read', () => {
+    reads.length = 0;
+    expect(() => resolveSync('../../app2/x', { ...CONFINED, filename: '/app/src/index.js' })).toThrowError(
+      ModuleNotFoundError,
+    );
+    // 3S-7, to the letter: no discovery read touched the outside tree — not
+    // even /app2/package.json (the raw-prefix floor would have read it).
+    expect(reads.filter((p) => p.startsWith('/app2'))).toEqual([]);
+    // Control: unconfined, it resolves (and reads the outside manifest).
+    expect(resolveSync('../../app2/x', { ...base, filename: '/app/src/index.js' })).toBe('/app2/x.js');
+  });
+
+  it('a trailing-slash root behaves exactly like its normal form', () => {
+    reads.length = 0;
+    expect(resolveSync('./util', { ...base, confineToRoot: '/app/', filename: '/app/src/index.js' })).toBe(
+      '/app/src/util.js',
+    );
+    // …and the root's own package.json IS still probed (a trailing slash used
+    // to floor the walk one level early).
+    expect(reads).toContain('/app/package.json');
+    expect(() =>
+      resolveSync('../../firestore/x', { ...base, confineToRoot: '/app/', filename: '/app/src/index.js' }),
+    ).toThrowError(ModuleNotFoundError);
   });
 
   it('isWithinRoot: containment is on the path boundary, never a raw prefix', () => {

@@ -653,13 +653,13 @@ export class Bundler {
     // directly from the CDN module layout, skipping the resolution algorithm
     // entirely. Null = the fast path can't/shouldn't handle it → fall through to
     // the full resolver below (correctness degrades gracefully, never breaks).
-    const fast = resolveFromCdnLayout(
-      specifier,
-      filename,
-      extensions,
-      this.moduleRegistry.modules,
-      this.cdnLayoutEligibility,
-    );
+    // R3-772: the fast path accepts CROSS-package relatives (any package under
+    // /node_modules), which the confined resolver refuses — under a confinement
+    // root the two must agree, so a confined frame skips the fast path (a
+    // snapshot program pays the full resolver; correctness over cold-boot).
+    const fast = this.resolutionConfinement
+      ? null
+      : resolveFromCdnLayout(specifier, filename, extensions, this.moduleRegistry.modules, this.cdnLayoutEligibility);
     if (fast !== null) {
       this.cdnFastHits++;
       const fastPromise = Promise.resolve(fast);
