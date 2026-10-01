@@ -673,6 +673,9 @@ export class Bundler {
       isFile: this.fs.isFile,
       readFile: this.fs.readFile,
       resolverCache: this.resolverCache,
+      // R3-772: the snapshot chroot rides every resolution when the host
+      // confined this frame (snapshot mounts only); absent otherwise.
+      ...(this.resolutionConfinement ? { confineToRoot: this.resolutionConfinement } : {}),
     });
     this.resolutionCache.set(key, promise);
     promise.catch(() => this.resolutionCache.delete(key));
@@ -1327,6 +1330,21 @@ export class Bundler {
    *  `/app/package.json` from the filesystem as before (standalone fallback). */
   setConfigPackageJSON(pkg: IPackageJSON | undefined): void {
     this.configPackageJSON = pkg ?? null;
+  }
+
+  // The snapshot chroot (BUNDLE_EMBEDDING §4c.3, R3-772): when set, module
+  // resolution is confined to this root — see IResolveOptionsInput.confineToRoot.
+  // Null (the default) is today's unconfined resolution for every other frame.
+  private resolutionConfinement: string | null = null;
+
+  /** Confine module resolution to `root` (the frame serves a snapshot-mounted
+   *  space program), or lift the confinement with `null`. Drops the resolution
+   *  memo so a confined compile never reuses an unconfined hit. The launch path
+   *  (R3-773) sets this for snapshot mounts only. */
+  setResolutionConfinement(root: string | null): void {
+    if (this.resolutionConfinement === root) return;
+    this.resolutionConfinement = root;
+    this.resolutionCache = new Map();
   }
 
   /** True if a repo-relative path is dirty (must not be seeded from artifacts). */

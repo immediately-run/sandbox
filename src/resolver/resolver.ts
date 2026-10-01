@@ -17,12 +17,36 @@ export interface IResolveOptionsInput {
   readFile: FnReadFile;
   moduleDirectories?: string[];
   resolverCache?: ResolverCache;
+  /**
+   * R3-772 (BUNDLE_EMBEDDING §4c.3) — the snapshot chroot. When set (an absolute,
+   * normalized root, e.g. the app root of a snapshot-mounted program), module
+   * resolution is confined to it: a relative specifier that escapes the root or
+   * an absolute specifier outside it fails with ModuleNotFoundError (the
+   * resolver's ENOENT), the package.json/tsconfig discovery walks stop at the
+   * root (never probing outside it), and a root-`/tsconfig.json` is not read.
+   *
+   * The bare-specifier PACKAGE channel is not confined by this option: a
+   * `node_modules` walk product is dependency content, pinned by the recorded
+   * closure at offer time (host-side), not app-authored space content. When the
+   * walk enters a package, the recursion RE-CONFINES to that package's root, so
+   * a package's own internals resolve within its subtree exactly as before.
+   *
+   * Callers pass a NORMALIZED absolute root (pathUtils-normal form); the
+   * containment check normalizes every candidate before comparing — this is
+   * never a prefix test on an unnormalized spelling.
+   */
+  confineToRoot?: string;
 }
 
 interface IResolveOptions extends IResolveOptionsInput {
   moduleDirectories: string[];
   resolverCache: ResolverCache;
 }
+
+/** Containment in the confinement root, on an already-normalized absolute path
+ *  (`pathUtils.join` output). `/app2/x` is NOT inside `/app`. */
+export const isWithinRoot = (root: string, absPath: string): boolean =>
+  absPath === root || absPath.startsWith(root.endsWith('/') ? root : `${root}/`);
 
 function normalizeResolverOptions(opts: IResolveOptionsInput): IResolveOptions {
   const normalizedModuleDirectories: Set<string> = opts.moduleDirectories
@@ -37,6 +61,7 @@ function normalizeResolverOptions(opts: IResolveOptionsInput): IResolveOptions {
     readFile: opts.readFile,
     moduleDirectories: [...normalizedModuleDirectories],
     resolverCache: opts.resolverCache || new Map(),
+    ...(opts.confineToRoot ? { confineToRoot: pathUtils.normalize(opts.confineToRoot) } : {}),
   };
 }
 
@@ -48,7 +73,11 @@ interface IFoundPackageJSON {
 function* loadPackageJSON(
   filepath: string,
   opts: IResolveOptions,
-  rootDir: string = '/',
+  // The walk floor: under a confinement root the discovery walk stops there —
+  // a parent package.json ABOVE the root is never read (§4c.3, review 3S-7:
+  // every read the resolver performs for resolution is confined, not only the
+  // resolved module paths).
+  rootDir: string = opts.confineToRoot ?? '/',
 ): Generator<any, IFoundPackageJSON | null, any> {
   const directories = getParentDirectories(filepath, rootDir);
   for (const directory of directories) {
@@ -157,12 +186,18 @@ function* resolveNodeModule(moduleSpecifier: string, opts: IResolveOptions): Gen
             return yield* resolver(pkgFilePath, {
               ...opts,
               filename: pkgJson.filepath,
+              // Re-confine to the package's own root (R3-772): the package
+              // channel entered it legitimately, and its internals resolve
+              // within its subtree — the app root's confinement does not read
+              // across, and neither does the package's.
+              confineToRoot: opts.confineToRoot ? rootDir : undefined,
             });
           } catch (err) {
             if (!pkgSpecifierParts.filepath) {
               return yield* resolver(pathUtils.join(pkgFilePath, 'index'), {
                 ...opts,
                 filename: pkgJson.filepath,
+                confineToRoot: opts.confineToRoot ? rootDir : undefined,
               });
             }
 
@@ -216,6 +251,13 @@ function* expandFile(
     const f = filepath + ext;
     const aliasedPath = resolveAlias(pkg, f);
     if (aliasedPath === f) {
+      // R3-772: under a confinement root an outside-root candidate is not
+      // probed at all — the read itself is confined (§4c.3, 3S-7), so a
+      // hostile `browser`/`alias` remap in an in-root package.json cannot
+      // reach outside bytes, not even as an existence oracle.
+      if (opts.confineToRoot && !isWithinRoot(opts.confineToRoot, f)) {
+        continue; // eslint-disable-line no-continue
+      }
       const exists = yield* isFile(f, opts.isFile);
       if (exists) {
         return f;
@@ -249,6 +291,13 @@ export function normalizeModuleSpecifier(specifier: string): string {
 
 const TS_CONFIG_CACHE_KEY = '__root_tsconfig';
 function* getTSConfig(opts: IResolveOptions): Generator<any, ProcessedTSConfig | false, any> {
+  // R3-772: `/tsconfig.json` sits at the FILESYSTEM root — outside any
+  // confinement root — so a confined resolution does not read it (3S-7). A
+  // snapshot program's path mappings are therefore unsupported; the import
+  // fails as unresolved rather than resolving through an outside-root map.
+  if (opts.confineToRoot) {
+    return false;
+  }
   const cachedConfig = opts.resolverCache.get(TS_CONFIG_CACHE_KEY);
   if (cachedConfig != null) {
     return cachedConfig;
@@ -283,6 +332,17 @@ export const resolver = gensync<(moduleSpecifier: string, inputOpts: IResolveOpt
   const normalizedSpecifier = normalizeModuleSpecifier(moduleSpecifier);
   const opts = normalizeResolverOptions(inputOpts);
   const modulePath = yield* resolveModule(normalizedSpecifier, opts);
+
+  // R3-772 (BUNDLE_EMBEDDING §4c.3) — the chroot: for a snapshot-mounted
+  // program, a module resolution that leaves the app root — a `..` escape
+  // (`../../firestore/x`), an absolute specifier (`/repository/x`), or an alias
+  // remap landing outside — is ENOENT, BEFORE any probe touches the path. The
+  // package channel is exempt by construction: resolveNodeModule re-confines
+  // its recursion to the package's own root, so this check only ever sees the
+  // app-root confinement for app-authored specifiers.
+  if (opts.confineToRoot && modulePath[0] === '/' && !isWithinRoot(opts.confineToRoot, modulePath)) {
+    throw new ModuleNotFoundError(normalizedSpecifier, opts.filename);
+  }
 
   if (modulePath[0] !== '/') {
     // This isn't a node module, we can attempt to resolve using a tsconfig/jsconfig
