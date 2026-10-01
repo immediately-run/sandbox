@@ -664,13 +664,13 @@ export class Bundler {
     // directly from the CDN module layout, skipping the resolution algorithm
     // entirely. Null = the fast path can't/shouldn't handle it → fall through to
     // the full resolver below (correctness degrades gracefully, never breaks).
-    const fast = resolveFromCdnLayout(
-      specifier,
-      filename,
-      extensions,
-      this.moduleRegistry.modules,
-      this.cdnLayoutEligibility,
-    );
+    // R3-772: the fast path accepts CROSS-package relatives (any package under
+    // /node_modules), which the confined resolver refuses — under a confinement
+    // root the two must agree, so a confined frame skips the fast path (a
+    // snapshot program pays the full resolver; correctness over cold-boot).
+    const fast = this.resolutionConfinement
+      ? null
+      : resolveFromCdnLayout(specifier, filename, extensions, this.moduleRegistry.modules, this.cdnLayoutEligibility);
     if (fast !== null) {
       this.cdnFastHits++;
       const fastPromise = Promise.resolve(fast);
@@ -684,6 +684,9 @@ export class Bundler {
       isFile: this.fs.isFile,
       readFile: this.fs.readFile,
       resolverCache: this.resolverCache,
+      // R3-772: the snapshot chroot rides every resolution when the host
+      // confined this frame (snapshot mounts only); absent otherwise.
+      ...(this.resolutionConfinement ? { confineToRoot: this.resolutionConfinement } : {}),
     });
     this.resolutionCache.set(key, promise);
     promise.catch(() => this.resolutionCache.delete(key));
@@ -1335,6 +1338,21 @@ export class Bundler {
    *  `/app/package.json` from the filesystem as before (standalone fallback). */
   setConfigPackageJSON(pkg: IPackageJSON | undefined): void {
     this.configPackageJSON = pkg ?? null;
+  }
+
+  // The snapshot chroot (BUNDLE_EMBEDDING §4c.3, R3-772): when set, module
+  // resolution is confined to this root — see IResolveOptionsInput.confineToRoot.
+  // Null (the default) is today's unconfined resolution for every other frame.
+  private resolutionConfinement: string | null = null;
+
+  /** Confine module resolution to `root` (the frame serves a snapshot-mounted
+   *  space program), or lift the confinement with `null`. Drops the resolution
+   *  memo so a confined compile never reuses an unconfined hit. The launch path
+   *  (R3-773) sets this for snapshot mounts only. */
+  setResolutionConfinement(root: string | null): void {
+    if (this.resolutionConfinement === root) return;
+    this.resolutionConfinement = root;
+    this.resolutionCache = new Map();
   }
 
   /** True if a repo-relative path is dirty (must not be seeded from artifacts). */
