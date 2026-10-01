@@ -4,7 +4,7 @@ import { Module } from '../../module/Module';
 import { BabelTransformer } from '../../transforms/babel';
 import { CSSTransformer } from '../../transforms/css';
 import { StyleTransformer } from '../../transforms/style';
-import { Preset } from '../Preset';
+import { Preset, isJsFamilyFile } from '../Preset';
 
 // DEAD-CANDIDATE(2026-06): entire SolidJS preset is inherited Sandpack/CodeSandbox
 // surface immediately.run never adopted (React-only). Not registered in
@@ -41,7 +41,7 @@ export class SolidPreset extends Preset {
       ];
     }
 
-    if (/\.(m|c)?(t|j)sx?$/.test(module.filepath) && !module.filepath.endsWith('.d.ts')) {
+    if (isJsFamilyFile(module.filepath)) {
       return [['babel-transformer', {}]];
     }
 

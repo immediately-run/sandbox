@@ -1,5 +1,9 @@
+import { TRANSPILER_VERSION } from '@immediately-run/transpiler';
+
+import { EMBEDDED_TOOLCHAIN_HASH } from '../artifacts/embeddedToolchainHash';
 import { NodeModule } from '../module-registry/NodeModule';
-import { createBundlerHarness, installEvalGlobals, type BundlerHarness } from './bundlerHarness';
+import { isJsFamilyFile } from '../presets/Preset';
+import { createBundlerHarness, installEvalGlobals, mountInMemoryFs, type BundlerHarness } from './bundlerHarness';
 
 /**
  * R3-565 — a dependency's stylesheet is applied, not executed.
@@ -167,5 +171,86 @@ describe('R3-565 — a package file that is data compiles through the preset cha
 
   it("a dependency's `.json` parses — `require` yields the object, not a SyntaxError", () => {
     expect((globalThis as Record<string, unknown>).__jsonDep).toEqual({ answer: 42 });
+  });
+
+  it('the JS-family classification derives its cases, not one favorite member', () => {
+    // The class both consumers agree on: everything here is a package-file
+    // extension seen in the wild. JS-family members register precompiled and
+    // route to babel/raw-cjs; every data member rides the preset chain.
+    const jsFamily = [
+      '/node_modules/leftpad/index.js',
+      '/node_modules/pkg/dist/index.mjs',
+      '/node_modules/pkg/dist/index.cjs',
+      '/node_modules/pkg/src/mod.ts',
+      '/node_modules/pkg/src/mod.tsx',
+      '/node_modules/pkg/src/mod.jsx',
+      '/node_modules/pkg/dist/mts-file.mts',
+      '/node_modules/pkg/dist/cts-file.cts',
+      '/app/src/App.tsx',
+    ];
+    const data = [
+      '/node_modules/@scope/pkg/dist/omnibox.css',
+      '/node_modules/@scope/pkg/dist/Omibox.CSS',
+      '/node_modules/@scope/pkg/dist/theme.scss',
+      '/node_modules/pkg/data.json',
+      '/node_modules/pkg/README.md',
+      '/node_modules/pkg/logo.svg',
+      '/node_modules/pkg/logo.png',
+      '/node_modules/pkg/index.d.ts',
+    ];
+    const classify = (paths: string[]): string[] => paths.map((p) => `${p}:${isJsFamilyFile(p)}`);
+    expect(classify(jsFamily)).toEqual(jsFamily.map((p) => `${p}:true`));
+    expect(classify(data)).toEqual(data.map((p) => `${p}:false`));
+  });
+
+  it("a seeded 'artifact' for a package stylesheet is never adopted — it compiles through the chain", async () => {
+    // The adoption seam (adoptSeededModules) replaces a registered-uncompiled
+    // module with a seeded artifact's bytes. A crafted library zip that carries
+    // an "artifact" entry for a DATA file (a stylesheet) must not have those
+    // bytes adopted as the module's compiled JavaScript — the same registration
+    // the CDN seam refuses. Drives the real producers: the library mount (the
+    // artifact root), the L3 registration (addGitDependencyModule), and the
+    // bundler's own seedArtifacts.
+    const HOSTILE_ARTIFACT = '/* crafted artifact */ module.exports = "adopted";\n';
+    const unmount = await mountInMemoryFs('/mnt/csslib', {
+      'package.json': '{"name":"css-lib","version":"1.0.0","main":"index.js"}',
+      'index.js': "require('./theme.css');\nmodule.exports = 'ok';",
+      'theme.css': CSS,
+      '.immediately.run/contribute-manifest.json': JSON.stringify({
+        schemaVersion: 1,
+        commitSha: 'lib-commit-sha',
+        entries: [{ path: 'theme.css', sha: 'sha-theme', type: 'blob' }],
+      }),
+      '.immediately.run/artifacts/index.json': JSON.stringify({
+        schemaVersion: 1,
+        toolchain: {
+          transpiler: '@immediately-run/transpiler',
+          version: TRANSPILER_VERSION,
+          toolchainHash: EMBEDDED_TOOLCHAIN_HASH,
+          preset: 'react',
+        },
+        files: {
+          '/theme.css': { srcSha: 'sha-theme', out: 'transpiled/theme.css.js', deps: [] },
+        },
+      }),
+      '.immediately.run/artifacts/transpiled/theme.css.js': HOSTILE_ARTIFACT,
+    });
+    try {
+      await h.bundler.registerGitLibraryMount('css-lib', '/mnt/csslib');
+      await h.bundler.addGitDependencyModule('css-lib', [
+        { path: 'package.json', content: '{"name":"css-lib","version":"1.0.0"}' },
+        { path: 'index.js', content: "require('./theme.css');\nmodule.exports = 'ok';", isModule: true },
+        { path: 'theme.css', content: CSS, isModule: true },
+      ]);
+      const seeded = await h.bundler.seedArtifacts({ dirtySet: new Set(), writableLayer: new Set() });
+      expect(seeded.seeded).toBe(1); // the crafted entry validated + seeded
+
+      const mod = await h.bundler.transformModule('/node_modules/css-lib/theme.css');
+      expect(mod.compiled).toContain('createStyleNode'); // the chain, not the crafted bytes
+      expect(mod.compiled).toContain(CSS);
+      expect(mod.compiled).not.toBe(HOSTILE_ARTIFACT);
+    } finally {
+      unmount();
+    }
   });
 });
