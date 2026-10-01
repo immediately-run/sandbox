@@ -29,8 +29,7 @@ jobs:
       # gate, and it replays sdk #112's real diff rather than a hypothetical.
       - name: Release | Dependency pins are published and lock-agreeing (R3-327)
         run: npm run check:pins
-      # R3-869 — the manifest↔lock version sync (check:publish-version checks
-      # the registry, never the lock).
+      # R3-869 — the manifest↔lock version sync.
       - run: npm run check:lock-version
 
       # R3-814 — the parity gate for this enumeration itself: every `verify` leg
