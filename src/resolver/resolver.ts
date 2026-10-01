@@ -97,11 +97,14 @@ interface IFoundPackageJSON {
 function* loadPackageJSON(
   filepath: string,
   opts: IResolveOptions,
-  // The walk floor: under a confinement root the discovery walk stops there —
-  // a parent package.json ABOVE the root is never read (§4c.3, review 3S-7:
-  // every read the resolver performs for resolution is confined, not only the
-  // resolved module paths).
-  rootDir: string = opts.confineToRoot ?? '/',
+  // The walk floor: under confinement the walk stops at the importer's
+  // EFFECTIVE root (the app root, or the package's own subtree when resolving
+  // a package's internals — otherwise an entered package's own manifest would
+  // be skipped and its main/browser/alias fields silently lost). A parent
+  // package.json ABOVE the floor is never read (§4c.3, review 3S-7: every read
+  // the resolver performs for resolution is confined, not only the resolved
+  // module paths).
+  rootDir: string = effectiveConfinement(opts) ?? '/',
 ): Generator<any, IFoundPackageJSON | null, any> {
   const directories = getParentDirectories(filepath, rootDir);
   for (const directory of directories) {

@@ -47,6 +47,23 @@ describe('resolver confinement (confineToRoot)', () => {
     ['/node_modules/leftpad/index.js', 'module.exports = () => "";'],
     // A hostile package whose main escapes its own subtree.
     ['/node_modules/evil/package.json', JSON.stringify({ name: 'evil', main: '../../firestore/x.js' })],
+    // A package whose entry is NOT <root>/index.js — its main remap lives in
+    // the package's own manifest and must still apply under confinement.
+    ['/node_modules/foo/package.json', JSON.stringify({ name: 'foo', main: 'lib/main.js' })],
+    ['/node_modules/foo/lib/main.js', 'module.exports = "foo";'],
+    // A package with a browser-field remap, in-package (applies) — and one
+    // package whose browser field remaps OUT of the package (refused).
+    [
+      '/node_modules/br/package.json',
+      JSON.stringify({ name: 'br', main: 'server.js', browser: { './server.js': './browser.js' } }),
+    ],
+    ['/node_modules/br/server.js', 'module.exports = "server";'],
+    ['/node_modules/br/browser.js', 'module.exports = "browser";'],
+    [
+      '/node_modules/brout/package.json',
+      JSON.stringify({ name: 'brout', main: 'index.js', browser: { './index.js': '/firestore/x.js' } }),
+    ],
+    ['/node_modules/brout/index.js', 'module.exports = "index";'],
     // A prefix-sharing sibling of the confinement root: '/app2' starts with
     // '/app' as a STRING but is not inside it — the walk must never read here.
     ['/app2/package.json', JSON.stringify({ name: 'prefix-sibling' })],
@@ -159,6 +176,24 @@ describe('resolver confinement (confineToRoot)', () => {
     expect(() =>
       resolveSync('../../firestore/x', { ...base, confineToRoot: '/app/', filename: '/app/src/index.js' }),
     ).toThrowError(ModuleNotFoundError);
+  });
+
+  it('a package whose entry is not <root>/index.js still resolves (its own main remap applies)', () => {
+    // The discovery walk for a package's internals floors at the PACKAGE's
+    // root, so its manifest — and its main field — are read as unconfined.
+    expect(resolveSync('foo', { ...CONFINED, filename: '/app/src/index.js' })).toBe('/node_modules/foo/lib/main.js');
+    expect(resolveSync('foo', { ...base, filename: '/app/src/index.js' })).toBe('/node_modules/foo/lib/main.js');
+  });
+
+  it('a package browser-field remap applies in-package, and cannot remap out of it', () => {
+    expect(resolveSync('br', { ...CONFINED, filename: '/app/src/index.js' })).toBe('/node_modules/br/browser.js');
+    // The escape variant: brout's browser field points at /firestore — refused
+    // (the alias remap lands outside the package's confinement subtree).
+    expect(() => resolveSync('brout', { ...CONFINED, filename: '/app/src/index.js' })).toThrowError(
+      ModuleNotFoundError,
+    );
+    // Control: unconfined, brout's escape resolves.
+    expect(resolveSync('brout', { ...base, filename: '/app/src/index.js' })).toBe('/firestore/x.js');
   });
 
   it('isWithinRoot: containment is on the path boundary, never a raw prefix', () => {
