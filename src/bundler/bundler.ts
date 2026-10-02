@@ -777,7 +777,7 @@ export class Bundler {
         await this.artifactStore.writeThrough(path, module.compiled, [...module.dependencyMap.keys()]);
       } catch (e) {
         const code = (e as { code?: string })?.code;
-        console.warn(
+        logger.warn(
           `transpile-cache write failed for ${path}${code ? ` (${code})` : ''}: ${
             e instanceof Error ? e.message : String(e)
           } — continuing with the compiled module`,

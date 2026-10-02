@@ -352,9 +352,15 @@ export class ArtifactStore {
       }
       // Same per-path chain as writeThrough/invalidate (R3-900) — a seed that
       // races a discard's reset-delete must not collide on the tmpfs slot.
-      await this.runSequenced(transpiledPathFor(modulePath), () =>
-        this.fs.writeFile(transpiledPathFor(modulePath), content),
-      );
+      // And the §5.5 per-file rule applies to the write too: a rejected write
+      // skips just this file (the cache fails soft; the module transpiles live).
+      try {
+        await this.runSequenced(transpiledPathFor(modulePath), () =>
+          this.fs.writeFile(transpiledPathFor(modulePath), content),
+        );
+      } catch {
+        continue;
+      }
       this.deps.set(modulePath, v.deps);
       this.seededPaths.add(modulePath);
       seeded++;
@@ -365,11 +371,6 @@ export class ArtifactStore {
     return { seeded };
   }
 
-  /**
-   * Consult `/transpiled` for an app module (§5.3). HIT → the precompiled bytes +
-   * its recorded deps; MISS → null (caller live-transpiles). Awaits any in-flight
-   * reset-delete for this path so a re-transform never reads a stale entry.
-   */
   /**
    * R3-900 — run `op` on `transpiledPath` AFTER every op already queued for it.
    * The returned promise carries the op's own outcome (a writeThrough caller sees
@@ -389,6 +390,12 @@ export class ArtifactStore {
     return run;
   }
 
+  /**
+   * Consult `/transpiled` for an app module (§5.3). HIT → the precompiled bytes +
+   * its recorded deps; MISS → null (caller live-transpiles). Awaits any pending op
+   * for this path — a reset-delete OR an in-flight write-through (R3-900) — so a
+   * re-transform never reads a stale entry and never reads bytes mid-rewrite.
+   */
   async consult(appModulePath: string): Promise<{ content: string; deps: string[] } | null> {
     if (this.distrusted || this.rootFor(appModulePath) === null) return null;
     const transpiledPath = transpiledPathFor(appModulePath);
