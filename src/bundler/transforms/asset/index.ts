@@ -68,17 +68,21 @@ export class AssetTransformer extends Transformer {
       // never asserted as absence.
       const code = (cause as { code?: unknown }).code;
       const importer = this.bundler.initiators.get(filepath)?.values().next().value as string | undefined;
-      // ENOENT is genuine absence; anything else keeps its own message via the
-      // console, while the thrown shape stays the ONE error (the cause rides
-      // the logger below — never asserted as absence it is not).
-      if (code === 'ENOENT') {
-        console.warn(
-          `[bundler] asset ${filepath} (imported by ${importer ?? 'an unknown module'}) is absent from the tree — ` +
-            `check the import path; an in-browser agent may have written the import without creating the file.`,
-        );
-      } else {
+      // "Cannot find module" is a claim about ABSENCE — make it only for ENOENT.
+      // Any other failure (a rate-limited or permission-denied blob read) keeps
+      // its own mechanism in the thrown message too, so the stage never
+      // announces a missing file for a fetch the tree index answered fine.
+      if (code !== 'ENOENT') {
         console.warn(`[bundler] asset ${filepath} could not be read:`, cause);
+        throw new Error(
+          `Asset "${filepath}" (imported by ${importer ?? 'an unknown module'}) could not be read: ` +
+            `${(cause as Error).message}`,
+        );
       }
+      console.warn(
+        `[bundler] asset ${filepath} (imported by ${importer ?? 'an unknown module'}) is absent from the tree — ` +
+          `check the import path; an in-browser agent may have written the import without creating the file.`,
+      );
       throw new ModuleNotFoundError(filepath, importer ?? '(unknown importer)');
     }
     const bytes = contents instanceof Uint8Array ? contents : new Uint8Array(contents as ArrayBuffer);

@@ -47,6 +47,17 @@ describe('Bundler: an import of a missing file names the module and the importer
     expect((globalThis as Record<string, unknown>).__title).toMatch(/^data:image\/jpeg;base64,/);
   });
 
+  it('a resolved asset import records movies.ts in the real initiators map the read-failure wrap reads', () => {
+    // The wrap's importer lookup only matters when RESOLUTION SUCCEEDED and the
+    // READ then failed (the fetch-fs split) — a resolution miss names the
+    // importer itself via the resolver's parent. With the file present,
+    // resolution succeeds and addDependency records the initiator: the exact
+    // map entry the wrap reads at read-failure time.
+    const initiators = h.bundler.initiators.get(underAppRoot('/src/assets/posters/avatar.jpg'));
+    expect(initiators).toBeDefined();
+    expect([...initiators!]).toContain(underAppRoot('/src/data/movies.ts'));
+  });
+
   it('the delete-edit flow: the memoized resolution cache answers from the pre-delete snapshot (documented stale-cache contract)', async () => {
     h.bundler.enableHMR();
     (globalThis as Record<string, unknown>).__title = '__stale__';
@@ -65,5 +76,15 @@ describe('Bundler: an import of a missing file names the module and the importer
     // follow-up. Asserting the resolve keeps this honest red/green for it.
     const evaluate = await h.bundler.compile();
     expect(evaluate).toBeTruthy();
+  });
+
+  it('the add-by-edit boundary (the report agent vector): adding a NEVER-SEEN import rejects the recompile naming it AND its importer', async () => {
+    h.bundler.enableHMR();
+    await fs.promises.writeFile(
+      underAppRoot('/src/data/movies.ts'),
+      "import avatar from '../assets/posters/newposter.jpg';\nexport const TITLE = avatar;\n",
+    );
+    h.bundler.markFilesChanged([underAppRoot('/src/data/movies.ts')]);
+    await expect(h.bundler.compile()).rejects.toThrow(/newposter\.jpg.*movies\.ts|movies\.ts.*newposter\.jpg/s);
   });
 });
