@@ -769,7 +769,20 @@ export class Bundler {
     // §5.3 write-through: cache a live-transpiled covered source so an in-session
     // re-read that didn't reset THIS module hits the tmpfs instead of the chain.
     if (module.compiled != null && module.compilationError == null && isTransformable(path)) {
-      await this.artifactStore.writeThrough(path, module.compiled, [...module.dependencyMap.keys()]);
+      // R3-900: the cache is an optimisation and fails soft. A rejected write is
+      // a missed cache entry — the freshly compiled module above is the result;
+      // it is never thrown away because persisting it failed. Log once, with the
+      // path and the code, and continue.
+      try {
+        await this.artifactStore.writeThrough(path, module.compiled, [...module.dependencyMap.keys()]);
+      } catch (e) {
+        const code = (e as { code?: string })?.code;
+        console.warn(
+          `transpile-cache write failed for ${path}${code ? ` (${code})` : ''}: ${
+            e instanceof Error ? e.message : String(e)
+          } — continuing with the compiled module`,
+        );
+      }
     }
     for (let dep of module.dependencies) {
       const resolvedDependency = await this.resolveAsync(dep, module.filepath);
