@@ -170,9 +170,13 @@ export class ArtifactStore {
   // and written-through modules (collected live), so a consult HIT can re-register
   // them without re-running the chain.
   private deps = new Map<string, string[]>();
-  // In-flight `/transpiled` deletes, so a consult awaits a racing reset-delete and
-  // never reads an entry that is being discarded (§5.3 sequencing).
-  private pendingDeletes = new Map<string, Promise<void>>();
+  // R3-900: in-flight `/transpiled` ops per path — deletes AND writes on ONE
+  // chain, each link never rejecting (a failed write must not wedge the path).
+  // `invalidate` used to start an unlink that only `consult` awaited while
+  // `writeThrough` wrote straight past it: two writers, or a write and an
+  // in-flight unlink, reached one tmpfs path and ZenFS `commitNew` answered the
+  // second create with EEXIST — a cache collision surfacing as a load failure.
+  private pendingOps = new Map<string, Promise<void>>();
   // App paths actually seeded from the index (the universe spot-verify samples).
   private seededPaths = new Set<string>();
   // App paths a consult actually served from a seeded artifact (the consumed set).
@@ -346,7 +350,17 @@ export class ArtifactStore {
         notOwned.push(modulePath);
         continue;
       }
-      await this.fs.writeFile(transpiledPathFor(modulePath), content);
+      // Same per-path chain as writeThrough/invalidate (R3-900) — a seed that
+      // races a discard's reset-delete must not collide on the tmpfs slot.
+      // And the §5.5 per-file rule applies to the write too: a rejected write
+      // skips just this file (the cache fails soft; the module transpiles live).
+      try {
+        await this.runSequenced(transpiledPathFor(modulePath), () =>
+          this.fs.writeFile(transpiledPathFor(modulePath), content),
+        );
+      } catch {
+        continue;
+      }
       this.deps.set(modulePath, v.deps);
       this.seededPaths.add(modulePath);
       seeded++;
@@ -358,14 +372,34 @@ export class ArtifactStore {
   }
 
   /**
+   * R3-900 — run `op` on `transpiledPath` AFTER every op already queued for it.
+   * The returned promise carries the op's own outcome (a writeThrough caller sees
+   * a rejected write and fails soft); the stored chain link never rejects, so one
+   * failed op cannot wedge the path for the next. Serialisation is what makes a
+   * write-after-delete and a write-after-write settle instead of racing ZenFS
+   * `commitNew` into EEXIST.
+   */
+  private runSequenced(transpiledPath: string, op: () => Promise<void>): Promise<void> {
+    const tail = this.pendingOps.get(transpiledPath) ?? Promise.resolve();
+    const run = tail.then(op);
+    const settled = run.catch(() => undefined);
+    this.pendingOps.set(transpiledPath, settled);
+    void settled.finally(() => {
+      if (this.pendingOps.get(transpiledPath) === settled) this.pendingOps.delete(transpiledPath);
+    });
+    return run;
+  }
+
+  /**
    * Consult `/transpiled` for an app module (§5.3). HIT → the precompiled bytes +
-   * its recorded deps; MISS → null (caller live-transpiles). Awaits any in-flight
-   * reset-delete for this path so a re-transform never reads a stale entry.
+   * its recorded deps; MISS → null (caller live-transpiles). Awaits any pending op
+   * for this path — a reset-delete OR an in-flight write-through (R3-900) — so a
+   * re-transform never reads a stale entry and never reads bytes mid-rewrite.
    */
   async consult(appModulePath: string): Promise<{ content: string; deps: string[] } | null> {
     if (this.distrusted || this.rootFor(appModulePath) === null) return null;
     const transpiledPath = transpiledPathFor(appModulePath);
-    const pending = this.pendingDeletes.get(transpiledPath);
+    const pending = this.pendingOps.get(transpiledPath);
     if (pending) await pending;
     if (!(await this.fs.isFileAsync(transpiledPath))) return null;
     const content = await this.fs.readFileAsync(transpiledPath);
@@ -382,7 +416,12 @@ export class ArtifactStore {
    */
   async writeThrough(appModulePath: string, compiled: string, deps: string[]): Promise<void> {
     if (this.rootFor(appModulePath) === null) return;
-    await this.fs.writeFile(transpiledPathFor(appModulePath), compiled);
+    // R3-900: serialised with any in-flight delete or earlier write of this path.
+    // A rejection here is a missed cache entry — the caller keeps the compiled
+    // module it already holds and logs; it must NOT throw the compile away.
+    await this.runSequenced(transpiledPathFor(appModulePath), () =>
+      this.fs.writeFile(transpiledPathFor(appModulePath), compiled),
+    );
     this.deps.set(appModulePath, deps);
   }
 
@@ -395,12 +434,10 @@ export class ArtifactStore {
     if (this.rootFor(appModulePath) === null) return;
     const transpiledPath = transpiledPathFor(appModulePath);
     this.deps.delete(appModulePath);
-    const done = this.fs.deleteFile(transpiledPath).finally(() => {
-      if (this.pendingDeletes.get(transpiledPath) === done) {
-        this.pendingDeletes.delete(transpiledPath);
-      }
-    });
-    this.pendingDeletes.set(transpiledPath, done);
+    // R3-900: the unlink rides the same per-path chain the writes do, so a
+    // recompile's writeThrough queued behind it writes into an empty slot
+    // instead of racing the unlink (ZenFS `commitNew` → EEXIST).
+    void this.runSequenced(transpiledPath, () => this.fs.deleteFile(transpiledPath)).catch(() => undefined);
   }
 
   /** The `path → blob sha` map from ONE root's manifest sidecar. Absent (a REST-fetched
