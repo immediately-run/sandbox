@@ -16,3 +16,4 @@ static/immediately-run-sdk
 # Generated authoring-worker bundles (scripts/gen-authoring-{libs,types}.mjs)
 src/services/authoring/bundled-libs.generated.ts
 src/services/authoring/bundled-types.generated.ts
+coverage/
