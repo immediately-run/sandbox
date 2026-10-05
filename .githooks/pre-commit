@@ -3,6 +3,9 @@
 # not the tree (R3-951): the whole-tree `npm run format:check` OOMs small
 # workers on a big checkout (deterministic kills 2026-10-05), and CI's
 # format:check remains the whole-tree gate. A malformed file nobody touched is
-# CI's catch, not this hook's. Wired by the `prepare` script
+# CI's catch, not this hook's. The check reads WORKTREE bytes of the staged
+# paths (a staged-malformed-then-worktree-fixed file passes here and fails in
+# CI — the pre-existing class the whole-tree hook also carried; the lint-staged
+# stash dance is deliberately out of scope). Wired by the `prepare` script
 # (git config core.hooksPath .githooks), so it needs no hook-manager dependency.
 exec node scripts/check-format-staged.mjs

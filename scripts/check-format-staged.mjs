@@ -18,7 +18,6 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 /** One read of the repo's own package.json script — the derivation's producer. */
@@ -30,19 +29,23 @@ export function repoScript(name, cwd = process.cwd()) {
 
 /** The `{ prefix, exts }[]` a `prettier --check "<glob>" …` script scans. */
 export function formatGlobsFromScript(script) {
-  const m = /^prettier --check\s+(.+)$/.exec(script.trim());
+  const m = /^prettier --check\s+((?:"[^"]+"\s*)+)$/.exec(script.trim());
   if (!m) {
-    throw new Error(`check-format-staged: format:check is not a plain 'prettier --check <globs>': ${script}`);
+    // Anchored tail: a flag between --check and the globs (e.g. --ignore-path)
+    // would be DROPPED here while CI's run honours it — a silent hook/CI
+    // divergence, so the whole shape refuses, loudly.
+    throw new Error(
+      `check-format-staged: format:check is not a plain 'prettier --check "<glob>"…' — flags or other args belong in CI, or extend this parser: ${script}`,
+    );
   }
   const globs = [...m[1].matchAll(/"([^"]+)"/g)].map((t) => t[1]);
-  if (globs.length === 0) {
-    throw new Error(`check-format-staged: format:check names no quoted globs: ${script}`);
-  }
   return globs.map((glob) => {
     const g = /^([\w./-]+)\/\*\*\/\*\.(?:\{([\w,]+)\}|(\w+))$/.exec(glob);
-    if (!g) {
+    if (!g || g[1].startsWith('.')) {
+      // A './'-prefixed glob parses but can never match a git path (git emits
+      // 'src/x.ts', never './src/x.ts') — refuse it rather than match nothing.
       throw new Error(
-        `check-format-staged: format:check glob "${glob}" is not the supported 'dir/**/*.ext' / 'dir/**/*.{a,b}' shape — extend the matcher or the hook checks nothing`,
+        `check-format-staged: format:check glob "${glob}" is not the supported 'dir/**/*.ext' / 'dir/**/*.{a,b}' shape (or starts with '.') — extend the matcher or the hook checks nothing`,
       );
     }
     return { prefix: g[1], exts: (g[2] ?? g[3]).split(',') };
@@ -169,7 +172,12 @@ function runSelfTest() {
   assert(threw, 'an unrecognized script shape throws (never silently checks nothing)');
 
   // The runner: a malformed file blocks, a clean one passes (the block-the-commit leg).
-  const dir = mkdtempSync(join(tmpdir(), 'fmt-staged-'));
+  // The fixture dir sits INSIDE the repo so prettier resolves the repo's own
+  // config the way the production hook resolves it — in /tmp the default config
+  // would answer and a shared-config change could flip the real verdict while
+  // this test stayed green. (Not under node_modules: prettier never reads
+  // there, config or not.)
+  const dir = mkdtempSync(join(process.cwd(), '.fmt-staged-'));
   const good = join(dir, 'good.ts');
   const bad = join(dir, 'bad.ts');
   writeFileSync(good, 'export const a = 1;\n');
