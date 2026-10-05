@@ -69,6 +69,7 @@ jobs:
       # drifted unnoticed. `format:check` is a real --check.
       - name: Format | Prettier Check
         run: npm run format:check
+      - run: npm run check:format-staged
 
       - name: Test | Verify types
         run: npm run typecheck

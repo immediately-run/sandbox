@@ -1,8 +1,11 @@
 #!/bin/sh
-# Keep an unformatted commit from reaching a branch. CI's `format:check` is the real
-# gate — this only moves the failure from a CI round-trip to the moment you commit.
-# Wired by the `prepare` script (git config core.hooksPath .githooks), so it needs no
-# hook-manager dependency: this replaced husky, which guarded nothing else here.
-# Checks the whole source scope rather than staged files only — the scope is small, and
-# a staged-files-only check passes while `main` is red, which is how drift starts.
-npm run format:check
+# Keep an unformatted commit from reaching a branch — over the COMMIT's files,
+# not the tree (R3-951): the whole-tree `npm run format:check` OOMs small
+# workers on a big checkout (deterministic kills 2026-10-05), and CI's
+# format:check remains the whole-tree gate. A malformed file nobody touched is
+# CI's catch, not this hook's. The check reads WORKTREE bytes of the staged
+# paths (a staged-malformed-then-worktree-fixed file passes here and fails in
+# CI — the pre-existing class the whole-tree hook also carried; the lint-staged
+# stash dance is deliberately out of scope). Wired by the `prepare` script
+# (git config core.hooksPath .githooks), so it needs no hook-manager dependency.
+exec node scripts/check-format-staged.mjs

@@ -44,7 +44,7 @@
     "check:unused": "node scripts/check-unused.mjs",
     "check:untested": "node scripts/check-untested.mjs",
     "check:verify-parity": "node scripts/check-verify-parity.mjs --self-test && node scripts/check-verify-parity.mjs",
-    "verify": "npm run check:lock-version && npm run check:verify-parity && npm run check:pins && npm run check:lockfile-installable && npm run lint && npm run format:check && npm run check:clones && npm run check:unused && npm run check:untested && npm run check:toolchain-hash && npm run typecheck && npm run protocol:check && npm run protocol:selftest && npm run check:dist-documents:selftest && npm test -- --forceExit && npm run build",
+    "verify": "npm run check:lock-version && npm run check:verify-parity && npm run check:pins && npm run check:lockfile-installable && npm run lint && npm run format:check && npm run check:format-staged && npm run check:clones && npm run check:unused && npm run check:untested && npm run check:toolchain-hash && npm run typecheck && npm run protocol:check && npm run protocol:selftest && npm run check:dist-documents:selftest && npm test -- --forceExit && npm run build",
     "drill:m3-csp": "node scripts/m3-csp-drill.mjs",
     "deploy": "firebase deploy",
     "drill:test-realm": "node scripts/test-realm-drill.mjs",
@@ -52,7 +52,8 @@
     "check:dist-documents:selftest": "node scripts/check-dist-documents.mjs --self-test",
     "check:lockfile-installable": "node scripts/check-lockfile-installable.mjs --self-test && node scripts/check-lockfile-installable.mjs",
     "check:toolchain-hash": "node scripts/gen-toolchain-hash.mjs --self-test && node scripts/gen-toolchain-hash.mjs --check",
-    "check:lock-version": "node scripts/check-lock-version.mjs --self-test && node scripts/check-lock-version.mjs"
+    "check:lock-version": "node scripts/check-lock-version.mjs --self-test && node scripts/check-lock-version.mjs",
+    "check:format-staged": "node scripts/check-format-staged.mjs --self-test"
   },
   "browserslist": "> 2.5%, not ie 11, not dead, not op_mini all",
   "alias": {
