@@ -41,11 +41,12 @@ export function formatGlobsFromScript(script) {
   const globs = [...m[1].matchAll(/"([^"]+)"/g)].map((t) => t[1]);
   return globs.map((glob) => {
     const g = /^([\w./-]+)\/\*\*\/\*\.(?:\{([\w,]+)\}|(\w+))$/.exec(glob);
-    if (!g || g[1].startsWith('.')) {
-      // A './'-prefixed glob parses but can never match a git path (git emits
-      // 'src/x.ts', never './src/x.ts') — refuse it rather than match nothing.
+    if (!g || /(?:^|\/)\.\.?(?:\/|$)/.test(g[1])) {
+      // A '.'/'..' segment anywhere in the prefix parses but can never match a
+      // git path (git emits 'src/x.ts', never 'src/./x.ts') — refuse it rather
+      // than match nothing, which would be a silent hook/CI divergence.
       throw new Error(
-        `check-format-staged: format:check glob "${glob}" is not the supported 'dir/**/*.ext' / 'dir/**/*.{a,b}' shape (or starts with '.') — extend the matcher or the hook checks nothing`,
+        `check-format-staged: format:check glob "${glob}" is not the supported 'dir/**/*.ext' / 'dir/**/*.{a,b}' shape (or carries a dot segment) — extend the matcher or the hook checks nothing`,
       );
     }
     return { prefix: g[1], exts: (g[2] ?? g[3]).split(',') };
@@ -162,14 +163,22 @@ function runSelfTest() {
     `the synthetic ${synthetic.length}-file commit selects exactly its ${inScope.length} in-scope members`,
   );
 
-  // A non-conforming script fails loudly, naming where to look.
-  let threw = false;
-  try {
-    formatGlobsFromScript('prettier --write "src/**"');
-  } catch (err) {
-    threw = /format:check|glob/.test(String(err));
-  }
-  assert(threw, 'an unrecognized script shape throws (never silently checks nothing)');
+  // Every refusal shape has an asserting leg — a loosened regex must go red here.
+  const refuses = (script) => {
+    try {
+      formatGlobsFromScript(script);
+      return false;
+    } catch {
+      return true;
+    }
+  };
+  assert(refuses('prettier --write "src/**"'), 'a non-check verb throws');
+  assert(
+    refuses('prettier --check --ignore-path .x "src/**/*.ts"'),
+    'a flag between --check and the globs throws (never silently dropped)',
+  );
+  assert(refuses('prettier --check "./src/**/*.ts"'), 'a leading-./ glob throws (it could never match a git path)');
+  assert(refuses('prettier --check "src/./**/*.ts"'), 'an embedded dot segment throws (same divergence class)');
 
   // The runner: a malformed file blocks, a clean one passes (the block-the-commit leg).
   // The fixture dir sits INSIDE the repo so prettier resolves the repo's own
