@@ -18,7 +18,8 @@
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 /** One read of the repo's own package.json script — the derivation's producer. */
 export function repoScript(name, cwd = process.cwd()) {
@@ -179,6 +180,7 @@ function runSelfTest() {
   );
   assert(refuses('prettier --check "./src/**/*.ts"'), 'a leading-./ glob throws (it could never match a git path)');
   assert(refuses('prettier --check "src/./**/*.ts"'), 'an embedded dot segment throws (same divergence class)');
+  assert(refuses('prettier --check "src/../lib/**/*.ts"'), 'a .. segment throws');
 
   // The runner: a malformed file blocks, a clean one passes (the block-the-commit leg).
   // The fixture dir sits INSIDE the repo so prettier resolves the repo's own
@@ -199,9 +201,13 @@ function runSelfTest() {
   }
 }
 
-if (process.argv.includes('--self-test')) {
+// Importing the module (for its exported, testable core) must not run the CLI
+// — only a direct invocation does.
+const isMain = Boolean(process.argv[1]) && import.meta.url === pathToFileURL(resolve(process.argv[1])).href;
+
+if (isMain && process.argv.includes('--self-test')) {
   runSelfTest();
-} else {
+} else if (isMain) {
   const selected = selectFilesToFormat(repoScript('format:check'), stagedFiles());
   if (selected.length === 0) {
     console.log('format(staged): nothing to check');
