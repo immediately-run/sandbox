@@ -16,10 +16,17 @@
 // rather than silently checking nothing.
 
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+
+/** One read of the repo's own package.json script — the derivation's producer. */
+export function repoScript(name, cwd = process.cwd()) {
+  const script = JSON.parse(readFileSync(join(cwd, 'package.json'), 'utf8')).scripts?.[name];
+  if (!script) throw new Error(`check-format-staged: package.json has no scripts.${name}`);
+  return script;
+}
 
 /** The `{ prefix, exts }[]` a `prettier --check "<glob>" …` script scans. */
 export function formatGlobsFromScript(script) {
@@ -55,8 +62,18 @@ export function selectFilesToFormat(scriptText, changedFiles) {
 
 /** `git diff --cached` — the commit's added/copied/modified/renamed-to paths. */
 export function stagedFiles(cwd = process.cwd()) {
-  const out = execFileSync('git', ['diff', '--cached', '--name-only', '--diff-filter=ACMR'], { cwd, encoding: 'utf8' });
-  return out.split('\n').filter(Boolean);
+  // `-z` NUL-terminates and never quotes: without it, core.quotePath C-quotes a
+  // non-ASCII staged path ("caf\303\251.ts") and the glob match would drop it
+  // while CI's whole-tree sweep still checks it — a hook/CI disagreement.
+  const out = execFileSync(
+    'git',
+    ['-c', 'core.quotePath=false', 'diff', '--cached', '--name-only', '-z', '--diff-filter=ACMR'],
+    {
+      cwd,
+      encoding: 'utf8',
+    },
+  );
+  return out.split('\0').filter(Boolean);
 }
 
 /** The repo's own prettier binary (bin field read from its package.json — the
@@ -76,7 +93,12 @@ export function runPrettierCheck(files, cwd = process.cwd()) {
     execFileSync(process.execPath, [prettierBinPath(cwd), '--check', ...files], { cwd, stdio: 'inherit' });
     return 0;
   } catch (err) {
-    return err.status ?? 1;
+    // A non-zero prettier exit is the formatting verdict. Anything else — a
+    // spawn failure, a signal kill (the memory-fence class this item exists
+    // because of), a bin resolution throw — has no exit status and must surface
+    // as the error it is, never as a "not prettier-clean" misdiagnosis.
+    if (err != null && typeof err.status === 'number') return err.status;
+    throw err;
   }
 }
 
@@ -91,7 +113,7 @@ function runSelfTest() {
   };
 
   // The real producer: this repo's own package.json script drives the derivation.
-  const realScript = JSON.parse(readFileSync(join(process.cwd(), 'package.json'), 'utf8')).scripts['format:check'];
+  const realScript = repoScript('format:check');
   const globs = formatGlobsFromScript(realScript);
   assert(globs.length > 0, 'the repo’s own format:check globs derive');
   for (const { prefix, exts } of globs) {
@@ -113,6 +135,26 @@ function runSelfTest() {
   assert(fileMatchesGlobs('src/a/b.tsx', demo) && fileMatchesGlobs('test/x.mjs', demo), 'brace + single shapes match');
   assert(!fileMatchesGlobs('test/x.js', demo), 'an unlisted extension does not match');
 
+  // The commit-list selection itself (the item's instrumented-list leg): a
+  // synthetic ~20-file commit selects exactly the in-scope members.
+  const synthetic = [
+    ...Array.from({ length: 8 }, (_, i) => `src/mod/a${i}.ts`),
+    ...Array.from({ length: 5 }, (_, i) => `src/deep/nested/b${i}.tsx`),
+    'scripts/tool.mjs',
+    'src/data.json',
+    'README.md',
+    'docs/guide.md',
+    'src/styles.css',
+    '.github/workflows/ci.yml',
+    'package.json',
+  ];
+  const selectedDemo = selectFilesToFormat(realScript, synthetic);
+  const inScope = synthetic.filter((f) => fileMatchesGlobs(f, globs));
+  assert(
+    JSON.stringify(selectedDemo) === JSON.stringify(inScope) && selectedDemo.length > 10,
+    `the synthetic 20-file commit selects exactly its in-scope members (${selectedDemo.length}/${synthetic.length})`,
+  );
+
   // A non-conforming script fails loudly, naming where to look.
   let threw = false;
   try {
@@ -128,21 +170,31 @@ function runSelfTest() {
   const bad = join(dir, 'bad.ts');
   writeFileSync(good, 'export const a = 1;\n');
   writeFileSync(bad, 'export const a=1\n');
-  assert(runPrettierCheck([good]) === 0, 'a well-formed file passes');
-  assert(runPrettierCheck([bad]) !== 0, 'a malformed file fails (the commit is blocked)');
+  try {
+    assert(runPrettierCheck([good]) === 0, 'a well-formed file passes');
+    assert(runPrettierCheck([bad]) !== 0, 'a malformed file fails (the commit is blocked)');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 if (process.argv.includes('--self-test')) {
   runSelfTest();
 } else {
-  const script = JSON.parse(readFileSync(join(process.cwd(), 'package.json'), 'utf8')).scripts['format:check'];
-  const selected = selectFilesToFormat(script, stagedFiles());
+  const selected = selectFilesToFormat(repoScript('format:check'), stagedFiles());
   if (selected.length === 0) {
     console.log('format(staged): nothing to check');
     process.exit(0);
   }
-  console.log(`format(staged): checking ${selected.length} changed file(s)`);
-  const status = runPrettierCheck(selected);
+  const checkable = selected.filter((f) => existsSync(f));
+  const gone = selected.filter((f) => !existsSync(f));
+  for (const f of gone) console.log(`format(staged): skipping ${f} — staged but deleted from the worktree`);
+  if (checkable.length === 0) {
+    console.log('format(staged): nothing to check');
+    process.exit(0);
+  }
+  console.log(`format(staged): checking ${checkable.length} changed file(s)`);
+  const status = runPrettierCheck(checkable);
   if (status !== 0) {
     console.error('\nformat(staged): the commit’s changed files are not prettier-clean.');
     console.error('Fix with `npx prettier --write <file>`. The whole-tree sweep is CI’s format:check leg.');
