@@ -151,8 +151,12 @@ function runSelfTest() {
   const selectedDemo = selectFilesToFormat(realScript, synthetic);
   const inScope = synthetic.filter((f) => fileMatchesGlobs(f, globs));
   assert(
-    JSON.stringify(selectedDemo) === JSON.stringify(inScope) && selectedDemo.length > 10,
-    `the synthetic 20-file commit selects exactly its in-scope members (${selectedDemo.length}/${synthetic.length})`,
+    inScope.length > 0 && inScope.length < synthetic.length,
+    'the synthetic list has both in- and out-of-scope members',
+  );
+  assert(
+    JSON.stringify(selectedDemo) === JSON.stringify(inScope),
+    `the synthetic ${synthetic.length}-file commit selects exactly its ${inScope.length} in-scope members`,
   );
 
   // A non-conforming script fails loudly, naming where to look.
