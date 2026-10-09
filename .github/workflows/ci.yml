@@ -50,6 +50,7 @@ jobs:
           npm run check:lockfile-installable
           npm run check:clones
           npm run check:unused
+          npm run check:comment-refs
           npm run check:untested
           npm run check:dist-documents:selftest
 
