@@ -99,11 +99,12 @@ describe('R3-577 — the join: Bundler.resolveAsync hands the reordered list to 
     // Pin the path, not just the answer: the registry-backed fs can ALSO satisfy the
     // full resolver (a fall-through regression would still resolve the .cjs sibling
     // there), so the fast-hit counter moving is what proves the answer came THROUGH
-    // resolveFromCdnLayout.
-    const before = h.bundler.cdnFastPathStats.fastHits;
+    // resolveFromCdnLayout. Both pins are RELATIVE (before + 1) so unrelated harness
+    // boot activity cannot redden this case — only this resolution can move them.
+    const before = h.bundler.cdnFastPathStats;
     const resolved = await h.bundler.resolveAsync('./Omnibox', '/node_modules/dual-pkg/dist/index.cjs');
     expect(resolved).toBe('/node_modules/dual-pkg/dist/Omnibox.cjs');
-    expect(h.bundler.cdnFastPathStats.fastHits).toBe(before + 1);
-    expect(h.bundler.cdnFastPathStats.fallThroughs).toBe(0);
+    expect(h.bundler.cdnFastPathStats.fastHits).toBe(before.fastHits + 1);
+    expect(h.bundler.cdnFastPathStats.fallThroughs).toBe(before.fallThroughs);
   });
 });
