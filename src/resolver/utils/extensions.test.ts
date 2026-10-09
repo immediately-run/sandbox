@@ -1,8 +1,8 @@
-import { importerAwareExtensions } from './extensions';
+import { DEFAULT_EXTENSIONS, importerAwareExtensions } from './extensions';
 
 // R3-577 — the importer-aware extension order (see extensions.ts for the why).
 describe('importerAwareExtensions', () => {
-  const DEFAULT = ['.js', '.jsx', '.mjs', '.cjs', '.ts', '.tsx', '.mdx'];
+  const DEFAULT = DEFAULT_EXTENSIONS;
 
   it('a .cjs importer tries .cjs first, the rest of the order unchanged', () => {
     expect(importerAwareExtensions('/app/node_modules/pkg/dist/index.cjs', DEFAULT)).toEqual([

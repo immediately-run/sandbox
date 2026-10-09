@@ -15,6 +15,15 @@
 // importer-aware order is what makes the emitted shape mean what it means on node.
 
 /**
+ * The bundler's default extension order — the ONE canonical spelling (R3-577 review:
+ * the literal had five hand-typed copies across bundler.ts and the test suites, and a
+ * future reorder of the production default would leave every test copy silently
+ * pinning the old order). Tests that mean "the pre-fix order" keep a hand-typed
+ * literal as frozen data on purpose, so a default change cannot silently defang them.
+ */
+export const DEFAULT_EXTENSIONS: string[] = ['.js', '.jsx', '.mjs', '.cjs', '.ts', '.tsx', '.mdx'];
+
+/**
  * The extension order for an import issued FROM `importerFilename`: the default list
  * unchanged, except that a `.cjs` importer tries `.cjs` FIRST. Every other importer
  * (and any extension list not containing `.cjs`) gets the input order back verbatim.

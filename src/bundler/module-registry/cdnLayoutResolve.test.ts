@@ -4,10 +4,10 @@ import { resolveSync } from '../../resolver/resolver';
 import { NodeModule } from './NodeModule';
 import { CDNModuleFileType } from './module-cdn';
 import { isFastPathEligible, parseNodeModulePath, resolveFromCdnLayout } from './cdnLayoutResolve';
-import { importerAwareExtensions } from '../../resolver/utils/extensions';
+import { DEFAULT_EXTENSIONS, importerAwareExtensions } from '../../resolver/utils/extensions';
 
 // The default extension set the bundler passes to resolveAsync (resolver prepends '').
-const EXTS = ['.js', '.jsx', '.mjs', '.cjs', '.ts', '.tsx', '.mdx'];
+const EXTS = DEFAULT_EXTENSIONS;
 
 type FileSpec = Record<string, string | number>;
 

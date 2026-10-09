@@ -19,7 +19,7 @@ import { formatStampMismatch } from './artifacts/artifactIndex';
 import { getEmbeddedToolchain } from './artifacts/embeddedToolchain';
 import { BundlerStatus } from '../protocol/message-types';
 import { ResolverCache, resolveAsync } from '../resolver/resolver';
-import { importerAwareExtensions } from '../resolver/utils/extensions';
+import { DEFAULT_EXTENSIONS, importerAwareExtensions } from '../resolver/utils/extensions';
 import {
   resolveSelfHostVersionDetailed,
   fetchVendoredModule,
@@ -272,6 +272,17 @@ export class Bundler {
   private cdnLayoutEligibility: Map<string, boolean> = new Map();
   private cdnFastHits = 0;
   private cdnFallThroughs = 0;
+
+  /**
+   * Read-only view of the fast-path counters (R3-577 review: a test that claims an
+   * answer came "through the fast path" must pin it — the registry-backed fs can
+   * also satisfy the full resolver, so the resolved path alone proves nothing about
+   * WHICH path produced it; the boot log prints these same numbers at ir-perf:cdn-resolve).
+   */
+  get cdnFastPathStats(): { fastHits: number; fallThroughs: number } {
+    return { fastHits: this.cdnFastHits, fallThroughs: this.cdnFallThroughs };
+  }
+
   // Filepaths of modules whose evaluation is in progress (synchronous require
   // chain), used by Module.evaluate to detect import cycles instead of
   // recursing into a stack overflow.
@@ -649,11 +660,7 @@ export class Bundler {
     }
   }
 
-  async resolveAsync(
-    specifier: string,
-    filename: string,
-    extensions: string[] = ['.js', '.jsx', '.mjs', '.cjs', '.ts', '.tsx', '.mdx'],
-  ): Promise<string> {
+  async resolveAsync(specifier: string, filename: string, extensions: string[] = DEFAULT_EXTENSIONS): Promise<string> {
     // R3-577: a `.cjs` importer tries its CJS sibling FIRST (see
     // resolver/utils/extensions.ts — node-mode interop is only correct when an
     // extensionless internal require meets the `.cjs` build, and the default order

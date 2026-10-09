@@ -1,6 +1,6 @@
 import { resolveAsync as rawResolveAsync } from '../../resolver/resolver';
 import { NodeModule } from '../../bundler/module-registry/NodeModule';
-import { importerAwareExtensions } from '../../resolver/utils/extensions';
+import { DEFAULT_EXTENSIONS, importerAwareExtensions } from '../../resolver/utils/extensions';
 import { createBundlerHarness, type BundlerHarness } from './bundlerHarness';
 
 // R3-577 — the mechanism R3-567's 2026-09-08 live acceptance surfaced, as a fixture:
@@ -59,7 +59,10 @@ describe('R3-577 — a .cjs importer meets its CJS sibling first', () => {
     // discriminates and the harness cases above prove nothing.
     const resolved = await rawResolveAsync('./Omnibox', {
       filename: '/app/node_modules/dual-pkg/dist/index.cjs',
-      extensions: ['.js', '.jsx', '.mjs', '.cjs', '.ts', '.tsx', '.mdx'], // the pre-fix default
+      // Frozen as DATA on purpose — "the pre-fix order" — deliberately NOT
+      // DEFAULT_EXTENSIONS, so a future reorder of the production default cannot
+      // silently defang this fault pair.
+      extensions: ['.js', '.jsx', '.mjs', '.cjs', '.ts', '.tsx', '.mdx'],
       isFile: h.bundler.fs.isFile,
       readFile: h.bundler.fs.readFile,
     });
@@ -68,15 +71,7 @@ describe('R3-577 — a .cjs importer meets its CJS sibling first', () => {
     // …and the helper applied by hand restores the CJS answer (the fix, isolated):
     const fixed = await rawResolveAsync('./Omnibox', {
       filename: '/app/node_modules/dual-pkg/dist/index.cjs',
-      extensions: importerAwareExtensions('/app/node_modules/dual-pkg/dist/index.cjs', [
-        '.js',
-        '.jsx',
-        '.mjs',
-        '.cjs',
-        '.ts',
-        '.tsx',
-        '.mdx',
-      ]),
+      extensions: importerAwareExtensions('/app/node_modules/dual-pkg/dist/index.cjs', DEFAULT_EXTENSIONS),
       isFile: h.bundler.fs.isFile,
       readFile: h.bundler.fs.readFile,
     });
@@ -101,10 +96,14 @@ describe('R3-577 — the join: Bundler.resolveAsync hands the reordered list to 
     }
     h.bundler.moduleRegistry.modules.set('dual-pkg', new NodeModule('dual-pkg', '1.0.0', files, []));
 
+    // Pin the path, not just the answer: the registry-backed fs can ALSO satisfy the
+    // full resolver (a fall-through regression would still resolve the .cjs sibling
+    // there), so the fast-hit counter moving is what proves the answer came THROUGH
+    // resolveFromCdnLayout.
+    const before = h.bundler.cdnFastPathStats.fastHits;
     const resolved = await h.bundler.resolveAsync('./Omnibox', '/node_modules/dual-pkg/dist/index.cjs');
     expect(resolved).toBe('/node_modules/dual-pkg/dist/Omnibox.cjs');
-    // The join IS the assertion: the harness fs carries nothing under /node_modules —
-    // the package's content exists ONLY in the registry — so a correct answer can
-    // only have come through the CDN-layout fast path (the full resolver would miss).
+    expect(h.bundler.cdnFastPathStats.fastHits).toBe(before + 1);
+    expect(h.bundler.cdnFastPathStats.fallThroughs).toBe(0);
   });
 });
