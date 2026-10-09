@@ -14,7 +14,8 @@ import type { SandboxMount } from '../mounts/mountState';
 import type { IDisposable } from '../utils/Disposable';
 import { APP_ROOT, MANIFEST_SIDECAR_PATH, underAppRoot } from '../fsLayout';
 import { isTransformable, rootRuntimeDependencies } from '@immediately-run/transpiler';
-import { ArtifactStore, type MdxMetadataAdditive } from './artifacts/artifactStore';
+import { ArtifactStore, type MdxMetadataAdditive, type SeedResult } from './artifacts/artifactStore';
+import { formatStampMismatch } from './artifacts/artifactIndex';
 import { getEmbeddedToolchain } from './artifacts/embeddedToolchain';
 import { BundlerStatus } from '../protocol/message-types';
 import { ResolverCache, resolveAsync } from '../resolver/resolver';
@@ -42,7 +43,7 @@ import { NamedPromiseQueue } from '../utils/NamedPromiseQueue';
 import { nullthrows } from '../utils/nullthrows';
 import { ModuleRegistry } from './module-registry';
 import { resolveFromCdnLayout } from './module-registry/cdnLayoutResolve';
-import { LocksetSection, validateLockset } from './module-registry/lockset';
+import { LocksetSection, locksetEchoContextFor, validateLockset } from './module-registry/lockset';
 import { collectLocalEntrySideEffects } from './sideEffectImports';
 import { Module } from './module/Module';
 import { CRYPTO_MODULE_CODE, UNSUPPORTED_BUILTIN_MODULE_CODE } from './shims';
@@ -606,6 +607,16 @@ export class Bundler {
     // `rootRuntimeDependencies` so the CLI's lockset echo matches (§4.4).
     let dependencies = rootRuntimeDependencies(this.parsedPackageJSON);
     if (Object.keys(dependencies).length > 0) {
+      // R3-844: the lockset echo the CLI writes mirrors the PRE-strip input —
+      // `computeInputDepMap` over the root runtime deps, git-form entries
+      // included — while `dependencies` below has them (and the self-hosted
+      // names) stripped. The one shared constructor (lockset.ts) computes it
+      // here, BEFORE the strip, so the echo-match is one computation on both
+      // sides and the applied manifest can drop the mount-resolved git names.
+      // Without this, a git-library consumer's lockset could never match its
+      // own echo and the boot always needed the /dep_tree CDN call — a CDN
+      // outage blanked exactly the apps the library-mount rail serves.
+      const locksetEcho = locksetEchoContextFor(dependencies);
       // Self-hosted (resolveFromRegistry) modules are already registered as
       // local modules by addLocalModules; strip them so the CDN /dep_tree/ query
       // never has to resolve them (immune to npm→CDN replication lag). Their own
@@ -630,7 +641,7 @@ export class Bundler {
         'Preset needs to be defined when loading node modules',
       ).augmentDependencies(dependencies);
 
-      await this.moduleRegistry.fetchManifest(dependencies, true, await this.readSidecarLockset());
+      await this.moduleRegistry.fetchManifest(dependencies, true, await this.readSidecarLockset(), locksetEcho);
 
       // Load all modules
       await this.moduleRegistry.preloadModules();
@@ -663,13 +674,13 @@ export class Bundler {
     // directly from the CDN module layout, skipping the resolution algorithm
     // entirely. Null = the fast path can't/shouldn't handle it → fall through to
     // the full resolver below (correctness degrades gracefully, never breaks).
-    const fast = resolveFromCdnLayout(
-      specifier,
-      filename,
-      extensions,
-      this.moduleRegistry.modules,
-      this.cdnLayoutEligibility,
-    );
+    // R3-772: the fast path accepts CROSS-package relatives (any package under
+    // /node_modules), which the confined resolver refuses — under a confinement
+    // root the two must agree, so a confined frame skips the fast path (a
+    // snapshot program pays the full resolver; correctness over cold-boot).
+    const fast = this.resolutionConfinement
+      ? null
+      : resolveFromCdnLayout(specifier, filename, extensions, this.moduleRegistry.modules, this.cdnLayoutEligibility);
     if (fast !== null) {
       this.cdnFastHits++;
       const fastPromise = Promise.resolve(fast);
@@ -683,6 +694,9 @@ export class Bundler {
       isFile: this.fs.isFile,
       readFile: this.fs.readFile,
       resolverCache: this.resolverCache,
+      // R3-772: the snapshot chroot rides every resolution when the host
+      // confined this frame (snapshot mounts only); absent otherwise.
+      ...(this.resolutionConfinement ? { confineToRoot: this.resolutionConfinement } : {}),
     });
     this.resolutionCache.set(key, promise);
     promise.catch(() => this.resolutionCache.delete(key));
@@ -765,7 +779,20 @@ export class Bundler {
     // §5.3 write-through: cache a live-transpiled covered source so an in-session
     // re-read that didn't reset THIS module hits the tmpfs instead of the chain.
     if (module.compiled != null && module.compilationError == null && isTransformable(path)) {
-      await this.artifactStore.writeThrough(path, module.compiled, [...module.dependencyMap.keys()]);
+      // R3-900: the cache is an optimisation and fails soft. A rejected write is
+      // a missed cache entry — the freshly compiled module above is the result;
+      // it is never thrown away because persisting it failed. Log once, with the
+      // path and the code, and continue.
+      try {
+        await this.artifactStore.writeThrough(path, module.compiled, [...module.dependencyMap.keys()]);
+      } catch (e) {
+        const code = (e as { code?: string })?.code;
+        logger.warn(
+          `transpile-cache write failed for ${path}${code ? ` (${code})` : ''}: ${
+            e instanceof Error ? e.message : String(e)
+          } — continuing with the compiled module`,
+        );
+      }
     }
     for (let dep of module.dependencies) {
       const resolvedDependency = await this.resolveAsync(dep, module.filepath);
@@ -779,10 +806,7 @@ export class Bundler {
    * without adopting writes artifacts into `/transpiled` that a pre-registered module would
    * never read, which is the silent-no-op this pairing exists to prevent.
    */
-  async seedArtifacts(ctx: {
-    dirtySet: ReadonlySet<string>;
-    writableLayer: ReadonlySet<string>;
-  }): Promise<{ seeded: number; securityReject?: 'writable-layer-artifact' }> {
+  async seedArtifacts(ctx: { dirtySet: ReadonlySet<string>; writableLayer: ReadonlySet<string> }): Promise<SeedResult> {
     const result = await this.artifactStore.seed(ctx);
     // An artifact entry a root declared for a path a NESTED root owns is not written, so the
     // inner root's bytes are never served under the outer root's name. Say so: a repo whose
@@ -1339,6 +1363,21 @@ export class Bundler {
     this.configPackageJSON = pkg ?? null;
   }
 
+  // The snapshot chroot (BUNDLE_EMBEDDING §4c.3, R3-772): when set, module
+  // resolution is confined to this root — see IResolveOptionsInput.confineToRoot.
+  // Null (the default) is today's unconfined resolution for every other frame.
+  private resolutionConfinement: string | null = null;
+
+  /** Confine module resolution to `root` (the frame serves a snapshot-mounted
+   *  space program), or lift the confinement with `null`. Drops the resolution
+   *  memo so a confined compile never reuses an unconfined hit. The launch path
+   *  (R3-773) sets this for snapshot mounts only. */
+  setResolutionConfinement(root: string | null): void {
+    if (this.resolutionConfinement === root) return;
+    this.resolutionConfinement = root;
+    this.resolutionCache = new Map();
+  }
+
   /** True if a repo-relative path is dirty (must not be seeded from artifacts). */
   isDirtyPath(repoRelPath: string): boolean {
     return this.dirtyPaths.has(repoRelPath);
@@ -1848,6 +1887,9 @@ export class Bundler {
         // §8.14: a seeding input was present in the writable layer — the whole
         // section is rejected (live transpile for everything this session).
         logger.warn(`Artifact seeding rejected (${seedResult.securityReject}); live transpiling.`);
+        // A security reject on one root must not mute another root's stamp-mismatch
+        // reason (the two aggregate independently) — the loop below runs for both
+        // branches; only the count line is else-scoped.
       } else {
         // `console.info`, not `logger.debug`, and deliberately unconditional (R3-294).
         //
@@ -1864,6 +1906,15 @@ export class Bundler {
           `[ir-artifacts] seeded ${seedResult.seeded} pre-transpiled artifact(s) into /transpiled ` +
             `across ${this.artifactStore.rootCount()} root(s)`,
         );
+      }
+      // R3-843: a stamp mismatch seeds ZERO of a FULL payload — the fail-safe working
+      // as designed, and indistinguishable from "no artifacts shipped" in the count
+      // line alone. The reason is loud for the same R3-294 discipline as the count:
+      // once per root per boot (seed() runs once per root), console.info
+      // (default-visible), and in BOTH the rejected and the clean branches above.
+      for (const { root, mismatch } of seedResult.stampMismatches ?? []) {
+        // eslint-disable-next-line no-console
+        console.info(formatStampMismatch(root, mismatch));
       }
     }
 

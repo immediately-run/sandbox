@@ -22,23 +22,19 @@
  * only `handleRepoMount` validated anything at all.
  */
 
+import { HOST_MOUNT_ROOTS } from '@immediately-run/platform-constants';
+
 /**
- * The roots the HOST is allowed to announce a mount under. Everything the host
- * publishes today lands in one of these two:
- *
- * - `/mnt/{hash}` — every `mountPublisher.add` whose path comes from
- *   `mountPathFromId()`: spaces, working trees, content corpora, settings,
- *   git-library mounts (site-main `filesystem/mountUri.ts`).
- * - `/task/{slot}/{paramKey}[/{i}]` — the §5.7 task file-delegation chroots
- *   (site-main `editor/task/taskDelegation.ts`).
- *
- * Adding a root here is a deliberate widening of what a message can shadow;
- * `/app` and `/node_modules` are reserved to the bundler and are unreachable
- * through this list by construction rather than by a denylist (a denylist is
- * only as good as its enumeration — `/app/../app`, `/APP`, a future third
- * bundler-owned path).
+ * The roots the HOST is allowed to announce a mount under — single-sourced in
+ * `@immediately-run/platform-constants` (R3-463), which owns the vocabulary
+ * and its rationale. What this gate adds on top is the STRICTNESS: a mount
+ * path must land strictly BELOW one of the roots (`isAllowedMountPath` below),
+ * so `/mnt` or `/task` itself can never shadow the namespace the other mounts
+ * live in. Re-exported here because this module is where frame-side code looks
+ * for the list.
  */
-export const HOST_MOUNT_ROOTS = ['mnt', 'task'] as const;
+
+export { HOST_MOUNT_ROOTS };
 
 /** The repo dual-mount (§11.2) is narrower still: only the canonical `/mnt/{hash}`. */
 export const REPO_MOUNT_ROOTS = ['mnt'] as const;

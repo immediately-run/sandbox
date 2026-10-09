@@ -12,7 +12,7 @@ import { Bundler } from '../bundler';
 import { Module } from '../module/Module';
 import { ModuleNotFoundError } from '../../errors/ModuleNotFound';
 import { filterBuildDeps } from './build-dep';
-import { depMapsEqual, locksetClosureValid, LocksetSection } from './lockset';
+import { depMapsEchoMatch, locksetClosureValid, LocksetEchoContext, LocksetSection } from './lockset';
 import { ICDNModule, ICDNModuleFile, IResolvedDependency, fetchManifest, fetchModule } from './module-cdn';
 import { bundledIndexPath, bundledPackagePath, decodeBundledModule, parseBundledIndex } from './bundledPackages';
 import { SELF_HOST_BASES } from '../moduleOrigins';
@@ -93,7 +93,12 @@ export class ModuleRegistry {
     }
   }
 
-  async fetchManifest(deps: DepMap, shouldFilterBuildDeps = true, lockset?: LocksetSection): Promise<void> {
+  async fetchManifest(
+    deps: DepMap,
+    shouldFilterBuildDeps = true,
+    lockset?: LocksetSection,
+    echo?: LocksetEchoContext,
+  ): Promise<void> {
     if (shouldFilterBuildDeps) {
       deps = filterBuildDeps(deps);
     }
@@ -105,9 +110,11 @@ export class ModuleRegistry {
     // stale or foreign lockset can never be applied. `validateLockset` has
     // already checked shape + cdnVersion; the dependency echo is checked here
     // because this is where the final (filtered) input DepMap exists.
+    // R3-844: with an echo context (a git-library consumer), the match runs
+    // against the PRE-strip map the CLI mirrors — see `depMapsEchoMatch`.
     let resolvedFromLockset = false;
     if (lockset) {
-      if (depMapsEqual(sortedDeps, lockset.dependencies)) {
+      if (depMapsEchoMatch(sortedDeps, lockset, echo)) {
         // The echo matches the INPUT, but a lockset could still inject extra
         // packages into `resolved` (SPEC_REVIEW PT-2). Reject the WHOLE lockset
         // if its resolved set isn't closed over the declared deps; never trust
@@ -119,7 +126,17 @@ export class ModuleRegistry {
           // into the boot. Live resolution re-pins and retries instead.
           if (findUnrequestedPrereleases(sortedDeps, lockset.resolved).length === 0) {
             logger.debug('Using sidecar lockset, skipping dep_tree resolution', lockset.resolved);
-            this.manifest = lockset.resolved;
+            // R3-844: git-form names resolve from the MOUNT, never the lockset
+            // (the runtime stripped them from its own input; a resolved entry
+            // under one — the CLI's gap-filler can produce one — would have
+            // preloadModules fetch a package the mount already provides). A git
+            // name the preset's AUGMENTATION re-introduced into the runtime's
+            // input (an app git-pinning core-js, say) is KEPT: the runtime still
+            // requests it, and dropping it would fail the completeness assert
+            // below on a package.json that boots fine live.
+            this.manifest = echo?.gitNames.size
+              ? lockset.resolved.filter((r) => !(echo.gitNames.has(r.n) && !(r.n in sortedDeps)))
+              : lockset.resolved;
             resolvedFromLockset = true;
           } else {
             logger.warn('Sidecar lockset carries a prerelease no requested range asked for; resolving live');
@@ -131,7 +148,11 @@ export class ModuleRegistry {
         }
       } else {
         logger.debug('Sidecar lockset dependency echo does not match; resolving live', {
-          computed: sortedDeps,
+          // R3-844: with an echo context the comparator's left-hand side is the
+          // PRE-strip map, not the runtime's fetch input — log both, labeled,
+          // or a git-library mismatch would print a map that was never compared.
+          compared: echo?.echoMap ?? sortedDeps,
+          fetchInput: sortedDeps,
           lockset: lockset.dependencies,
         });
       }
