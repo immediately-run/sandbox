@@ -865,6 +865,15 @@ export class Bundler {
     for (const path of this.artifactStore.seededPathList()) {
       const existing = this.modules.get(path);
       if (!existing || existing.compiled != null) continue;
+      // A seeded artifact is transpiled JAVASCRIPT by construction — the CLI's
+      // artifact builder only covers transformable sources. Guard the adoption
+      // with the same `isTransformable` the `_transformModule` consult uses, so
+      // a crafted index that carries an "artifact" for a data file (a package
+      // stylesheet) can never have its raw bytes adopted as a module's compiled
+      // JavaScript — the exact registration this seam's sibling
+      // (`_writePrecompiledModule`) refuses. Inert for every real artifact: all
+      // of them are transformable.
+      if (!isTransformable(path)) continue;
       const hit = await this.artifactStore.consult(path);
       if (!hit) continue;
       const seeded = new Module(path, hit.content, true, this);
