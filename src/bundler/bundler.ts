@@ -19,6 +19,7 @@ import { formatStampMismatch } from './artifacts/artifactIndex';
 import { getEmbeddedToolchain } from './artifacts/embeddedToolchain';
 import { BundlerStatus } from '../protocol/message-types';
 import { ResolverCache, resolveAsync } from '../resolver/resolver';
+import { DEFAULT_EXTENSIONS, importerAwareExtensions } from '../resolver/utils/extensions';
 import {
   resolveSelfHostVersionDetailed,
   fetchVendoredModule,
@@ -254,13 +255,16 @@ export class Bundler {
   modules: Map<string, Module> = new Map();
   transformationQueue: TransformationQueue;
   resolverCache: ResolverCache = new Map();
-  // Resolution-RESULT cache (specifier+dir → resolved path), distinct from
-  // resolverCache (which memoizes package.json/tsconfig *content*, not results).
-  // The resolution algorithm is the cold-boot cost — ~3k resolveAsync calls over the
-  // precompiled node_modules closure, each re-running candidate generation + probes
-  // even with cached reads. Node resolution is dir-relative, so two files in the same
-  // dir resolve a given specifier identically: keying by dirname dedups them. Reset
-  // per compile alongside resolverCache, so edits get fresh resolution.
+  // Resolution-RESULT cache ((specifier, dir, extension-order) → resolved path),
+  // distinct from resolverCache (which memoizes package.json/tsconfig *content*, not
+  // results). The resolution algorithm is the cold-boot cost — ~3k resolveAsync calls
+  // over the precompiled node_modules closure, each re-running candidate generation +
+  // probes even with cached reads. Node resolution is dir-relative, so two files in
+  // the same dir resolve a given specifier identically: keying by dirname dedups them
+  // — and the EXTENSION-ORDER component in the key is what lets R3-577's
+  // importer-aware reorder coexist with the cache (a .cjs importer and a .js importer
+  // in one dir resolve the same specifier differently and must not share an entry).
+  // Reset per compile alongside resolverCache, so edits get fresh resolution.
   resolutionCache: Map<string, Promise<string>> = new Map();
   // R3-49d CDN-layout fast path: per-package alias-eligibility verdict (immutable
   // for the closure) + fast-hit/fall-through counters (diagnostic, logged once at
@@ -268,6 +272,17 @@ export class Bundler {
   private cdnLayoutEligibility: Map<string, boolean> = new Map();
   private cdnFastHits = 0;
   private cdnFallThroughs = 0;
+
+  /**
+   * Read-only view of the fast-path counters (R3-577 review: a test that claims an
+   * answer came "through the fast path" must pin it — the registry-backed fs can
+   * also satisfy the full resolver, so the resolved path alone proves nothing about
+   * WHICH path produced it; the boot log prints these same numbers at ir-perf:cdn-resolve).
+   */
+  get cdnFastPathStats(): { fastHits: number; fallThroughs: number } {
+    return { fastHits: this.cdnFastHits, fallThroughs: this.cdnFallThroughs };
+  }
+
   // Filepaths of modules whose evaluation is in progress (synchronous require
   // chain), used by Module.evaluate to detect import cycles instead of
   // recursing into a stack overflow.
@@ -645,11 +660,13 @@ export class Bundler {
     }
   }
 
-  async resolveAsync(
-    specifier: string,
-    filename: string,
-    extensions: string[] = ['.js', '.jsx', '.mjs', '.cjs', '.ts', '.tsx', '.mdx'],
-  ): Promise<string> {
+  async resolveAsync(specifier: string, filename: string, extensions: string[] = DEFAULT_EXTENSIONS): Promise<string> {
+    // R3-577: a `.cjs` importer tries its CJS sibling FIRST (see
+    // resolver/utils/extensions.ts — node-mode interop is only correct when an
+    // extensionless internal require meets the `.cjs` build, and the default order
+    // hands it the ESM sibling). Reorder BEFORE the cache key so a `.cjs` importer
+    // and a `.js` importer in the same dir never share a memoized result.
+    extensions = importerAwareExtensions(filename, extensions);
     // Resolution result is a pure function of (specifier, the dir chain from
     // `filename` up, extensions) for the FS snapshot of this compile — node
     // resolution is dir-relative, so two files in the same dir resolve a specifier
