@@ -54,14 +54,14 @@ export interface LintResult {
 }
 
 // The minimal `Linter` surface used here — so the Worker can inject the browserify
-// build and tests stay decoupled from the eslint major.
+// build and tests stay decoupled from the eslint major. R3-1081: ESLint 9's flat
+// config — no defineParser; the parser rides the config object (languageOptions).
 export interface LinterLike {
-  defineParser(name: string, parser: unknown): void;
   verify(
     code: string,
     config: unknown,
     filename?: string,
-  ): { line: number; column: number; ruleId: string | null; severity: number; message: string }[];
+  ): { line: number; column: number; ruleId: string | null; severity: number; message: string; fatal?: boolean }[];
 }
 // Runtime-supplied linter + parser. REQUIRED — `runLint` has no built-in default so
 // this module stays free of any Node-only static import (see the file header).
@@ -70,7 +70,6 @@ export interface LintDeps {
   tsParser: unknown;
 }
 
-const TS_PARSER = '@authoring/ts-parser';
 const PARSER_OPTIONS = { ecmaVersion: 2022, sourceType: 'module', ecmaFeatures: { jsx: true } };
 
 // Fixed, kernel-reviewed rule presets (the eslint analog of the babel-plugin
@@ -120,8 +119,31 @@ export function runLint(req: LintRequest, deps: LintDeps): LintResult {
   }
 
   const linter = deps.createLinter();
-  linter.defineParser(TS_PARSER, deps.tsParser);
-  const config = { parser: TS_PARSER, parserOptions: PARSER_OPTIONS, rules: PRESETS[presetName] };
+  // ESLint 9's verify catches EVERY parser throw into a fatal diagnostic, which
+  // loses the contract's distinction: a syntax error in the CALLER's code is a
+  // diagnostic (tsc owns it, the file was read fine), a parser that CRASHES is a
+  // skipped file (the kernel's bug, nothing linted). The wrapper re-marks the
+  // crash so the fatal message below still separates them: a syntax error from
+  // typescript-estree carries a `location`; a crash does not.
+  const parser = {
+    parseForESLint: (...args: unknown[]) => {
+      try {
+        return (deps.tsParser as { parseForESLint: (...a: unknown[]) => unknown }).parseForESLint(...args);
+      } catch (e) {
+        if (e && typeof e === 'object' && 'location' in e) throw e;
+        throw new Error(`PARSER-CRASH: ${(e as Error)?.message ?? String(e)}`);
+      }
+    },
+  };
+  // Flat config: a config object without `files` matches NOTHING (ESLint 9) —
+  // the service is TS-only by design (the kernel-bound parser), so the matcher
+  // is the TS extension set, and a non-TS path reports the no-config diagnostic
+  // rather than silently linting as TS.
+  const config = {
+    files: ['**/*.{ts,tsx}'],
+    languageOptions: { parser, parserOptions: PARSER_OPTIONS },
+    rules: PRESETS[presetName],
+  };
 
   const diagnostics: LintDiag[] = [];
   const skipped: LintSkip[] = [];
@@ -137,10 +159,22 @@ export function runLint(req: LintRequest, deps: LintDeps): LintResult {
     }
     let messages: ReturnType<LinterLike['verify']>;
     try {
-      messages = linter.verify(f.content, config, f.path);
+      // Flat-config `files` patterns match cwd-RELATIVE paths — a caller's
+      // leading-slash path (`/a.ts`) matches nothing and reports the no-config
+      // diagnostic instead of linting. Strip it for the match only; the
+      // diagnostics carry the caller's own path.
+      messages = linter.verify(f.content, config, f.path.replace(/^\/+/, ''));
     } catch {
       // A parse failure is not fatal — tsc owns syntax errors — but it is not nothing
       // either. It was previously a bare `continue`, which reported the file as clean.
+      skipped.push({ path: f.path, reason: 'parse-error' });
+      continue;
+    }
+    // ESLint 9's Linter.verify catches a throwing parser and returns the fatal
+    // message instead of throwing — the skip contract holds via the wrapper's
+    // PARSER-CRASH marker (a caller-side syntax error is a diagnostic, never a
+    // skip; a parser crash is a skip, never a clean bill).
+    if (messages.some((m) => m.fatal && m.message.startsWith('Parsing error: PARSER-CRASH:'))) {
       skipped.push({ path: f.path, reason: 'parse-error' });
       continue;
     }

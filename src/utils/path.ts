@@ -15,7 +15,7 @@ function normalizeArray(parts: string[], allowAboveRoot?: boolean) {
     const p = parts[i];
 
     // ignore empty parts
-    if (!p || p === '.') continue; // eslint-disable-line no-continue
+    if (!p || p === '.') continue;
 
     if (p === '..') {
       if (res.length && res[res.length - 1] !== '..') {
@@ -151,7 +151,7 @@ export function extname(path: string) {
         startPart = i + 1;
         break;
       }
-      // eslint-disable-next-line
+
       continue;
     }
     if (end === -1) {

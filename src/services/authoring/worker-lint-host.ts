@@ -2,9 +2,9 @@
 // `worker-lib-host.ts` (the typecheck lib seam): the SAME `runLint` core is fed a
 // runtime-appropriate `Linter` + parser, so no Node-only build reaches the Worker.
 //
-//   - `Linter`  — `eslint-linter-browserify`, the webpack build of eslint's own
-//     `Linter` class (identical `defineParser`/`verify` API), with no `createRequire`/
-//     `url.pathToFileURL` calls, so it loads clean in a Worker.
+//   - `Linter`  — `eslint-linter-browserify` 9.x, the webpack build of eslint's own
+//     `Linter` class (the same flat-config `verify` API as the Node build; no
+//     `createRequire`/`url.pathToFileURL` calls, so it loads clean in a Worker).
 //   - parser    — `@typescript-eslint/parser`. Its `typescript-estree` engine only
 //     touches Node-only `globby`/`fs` on the PROJECT (type-aware) path, which this
 //     service never takes (`parserOptions.project` is never set — CS-1 forbids

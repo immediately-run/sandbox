@@ -21,7 +21,7 @@ export function handleEvaluate(command: string): { error: boolean; result: any }
       try {
         const wrapped = `(${command})`;
         // `new Function` is used to validate Javascript syntax
-        // eslint-disable-next-line
+
         new Function(wrapped);
         command = wrapped;
       } catch (e) {
@@ -29,7 +29,7 @@ export function handleEvaluate(command: string): { error: boolean; result: any }
       }
     }
 
-    result = (0, eval)(command); // eslint-disable-line no-eval
+    result = (0, eval)(command);
   } catch (e) {
     result = e;
     error = true;
