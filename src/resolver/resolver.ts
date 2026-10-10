@@ -113,7 +113,7 @@ function* loadPackageJSON(
     // `/node_modules/react2` under `/node_modules/react`) — such a directory is
     // outside the floor and its manifest is never read (§4c.3, 3S-7, when the
     // floor is the confinement root; hygiene for any other).
-    if (!isWithinRoot(rootDir, directory)) continue; // eslint-disable-line no-continue
+    if (!isWithinRoot(rootDir, directory)) continue;
     const packageFilePath = pathUtils.join(directory, 'package.json');
     let packageContent = opts.resolverCache.get(packageFilePath);
     if (packageContent === undefined) {
@@ -292,7 +292,7 @@ function* expandFile(
       // normalizeAliasFilePath and would pass a raw prefix test.
       const confineRoot = effectiveConfinement(opts);
       if (confineRoot && !isWithinRoot(confineRoot, pathUtils.normalize(f))) {
-        continue; // eslint-disable-line no-continue
+        continue;
       }
       const exists = yield* isFile(f, opts.isFile);
       if (exists) {

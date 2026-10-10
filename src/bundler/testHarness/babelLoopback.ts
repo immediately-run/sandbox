@@ -67,7 +67,6 @@ function preloadRefreshChainPlugins(): void {
   const registry = (babel as unknown as { availablePlugins: Record<string, unknown> }).availablePlugins;
   for (const name of ['react-refresh/babel', '@babel/plugin-proposal-explicit-resource-management']) {
     if (!registry[name]) {
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
       const loaded = require(name);
       registry[name] = (loaded as { default?: unknown }).default ?? loaded;
     }

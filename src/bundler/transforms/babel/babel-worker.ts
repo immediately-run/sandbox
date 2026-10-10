@@ -22,7 +22,6 @@ import { transformBabel, compileMdx, type ITransformData } from '@immediately-ru
 export type { ITransformData };
 
 function bindMessageBus(endpoint: MessagePort | Worker | typeof self) {
-  // eslint-disable-next-line no-new
   new WorkerMessageBus({
     channel: 'sandpack-babel',
     endpoint,

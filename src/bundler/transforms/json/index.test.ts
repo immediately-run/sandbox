@@ -17,7 +17,7 @@ describe('JSONTransformer', () => {
     const out = (await t.transform(ctx(JSON.stringify(value, null, 2)))) as { code: string };
     // Evaluate the emitted module the way the runtime would.
     const module = { exports: {} as unknown };
-    // eslint-disable-next-line no-new-func
+
     new Function('module', out.code)(module);
     expect(module.exports).toEqual(value);
   });

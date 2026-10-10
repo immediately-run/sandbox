@@ -38,7 +38,7 @@
     "protocol:compat": "node scripts/check-sdk-compat.mjs",
     "format": "prettier --write \"src/**/*.{ts,tsx,js,jsx,json}\" \"scripts/**/*.mjs\"",
     "format:check": "prettier --check \"src/**/*.{ts,tsx,js,jsx,json}\" \"scripts/**/*.mjs\"",
-    "lint": "eslint '**/*.ts?(x)' --max-warnings 0",
+    "lint": "eslint --max-warnings 0",
     "check:pins": "node scripts/check-dependency-pins.mjs --self-test && node scripts/check-dependency-pins.mjs",
     "check:clones": "node scripts/check-clones.mjs",
     "check:unused": "node scripts/check-unused.mjs",
@@ -112,7 +112,7 @@
   "devDependencies": {
     "@immediately-run/prettier-config": "0.1.0",
     "@immediately-run/sdk": "^0.46.0",
-    "@immediately-run/verify-checks": "0.3.0",
+    "@immediately-run/verify-checks": "0.8.3",
     "@octokit/rest": "^18.12.0",
     "@swc-node/jest": "^1.4.3",
     "@types/jest": "^27.4.1",
@@ -122,13 +122,10 @@
     "@types/react-dom": "^19.2.5",
     "@types/url-join": "^4.0.1",
     "@types/uuid": "^8.3.4",
-    "@typescript-eslint/eslint-plugin": "^5.28.0",
-    "@typescript-eslint/parser": "^5.28.0",
     "assert": "^2.0.0",
     "buffer": "^6.0.3",
     "crypto-browserify": "^3.12.0",
-    "eslint": "^7.32.0 || ^8.2.0",
-    "eslint-linter-browserify": "^8.52.0",
+    "eslint": "9.39.4",
     "events": "^3.3.0",
     "fastify": "^3.28.0",
     "fastify-static": "^4.6.1",
@@ -147,7 +144,9 @@
     "stream-browserify": "^3.0.0",
     "typescript": "5.8.3",
     "url": "^0.11.0",
-    "util": "^0.12.4"
+    "util": "^0.12.4",
+    "typescript-eslint": "8.62.1",
+    "eslint-linter-browserify": "9.39.2"
   },
   "resolutions": {
     "@babel/preset-env": "7.27.0",
