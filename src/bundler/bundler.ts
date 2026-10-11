@@ -14,10 +14,12 @@ import type { SandboxMount } from '../mounts/mountState';
 import type { IDisposable } from '../utils/Disposable';
 import { APP_ROOT, MANIFEST_SIDECAR_PATH, underAppRoot } from '../fsLayout';
 import { isTransformable, rootRuntimeDependencies } from '@immediately-run/transpiler';
-import { ArtifactStore, type MdxMetadataAdditive } from './artifacts/artifactStore';
+import { ArtifactStore, type MdxMetadataAdditive, type SeedResult } from './artifacts/artifactStore';
+import { formatStampMismatch } from './artifacts/artifactIndex';
 import { getEmbeddedToolchain } from './artifacts/embeddedToolchain';
 import { BundlerStatus } from '../protocol/message-types';
 import { ResolverCache, resolveAsync } from '../resolver/resolver';
+import { DEFAULT_EXTENSIONS, importerAwareExtensions } from '../resolver/utils/extensions';
 import {
   resolveSelfHostVersionDetailed,
   fetchVendoredModule,
@@ -253,13 +255,16 @@ export class Bundler {
   modules: Map<string, Module> = new Map();
   transformationQueue: TransformationQueue;
   resolverCache: ResolverCache = new Map();
-  // Resolution-RESULT cache (specifier+dir → resolved path), distinct from
-  // resolverCache (which memoizes package.json/tsconfig *content*, not results).
-  // The resolution algorithm is the cold-boot cost — ~3k resolveAsync calls over the
-  // precompiled node_modules closure, each re-running candidate generation + probes
-  // even with cached reads. Node resolution is dir-relative, so two files in the same
-  // dir resolve a given specifier identically: keying by dirname dedups them. Reset
-  // per compile alongside resolverCache, so edits get fresh resolution.
+  // Resolution-RESULT cache ((specifier, dir, extension-order) → resolved path),
+  // distinct from resolverCache (which memoizes package.json/tsconfig *content*, not
+  // results). The resolution algorithm is the cold-boot cost — ~3k resolveAsync calls
+  // over the precompiled node_modules closure, each re-running candidate generation +
+  // probes even with cached reads. Node resolution is dir-relative, so two files in
+  // the same dir resolve a given specifier identically: keying by dirname dedups them
+  // — and the EXTENSION-ORDER component in the key is what lets R3-577's
+  // importer-aware reorder coexist with the cache (a .cjs importer and a .js importer
+  // in one dir resolve the same specifier differently and must not share an entry).
+  // Reset per compile alongside resolverCache, so edits get fresh resolution.
   resolutionCache: Map<string, Promise<string>> = new Map();
   // R3-49d CDN-layout fast path: per-package alias-eligibility verdict (immutable
   // for the closure) + fast-hit/fall-through counters (diagnostic, logged once at
@@ -267,6 +272,17 @@ export class Bundler {
   private cdnLayoutEligibility: Map<string, boolean> = new Map();
   private cdnFastHits = 0;
   private cdnFallThroughs = 0;
+
+  /**
+   * Read-only view of the fast-path counters (R3-577 review: a test that claims an
+   * answer came "through the fast path" must pin it — the registry-backed fs can
+   * also satisfy the full resolver, so the resolved path alone proves nothing about
+   * WHICH path produced it; the boot log prints these same numbers at ir-perf:cdn-resolve).
+   */
+  get cdnFastPathStats(): { fastHits: number; fallThroughs: number } {
+    return { fastHits: this.cdnFastHits, fallThroughs: this.cdnFallThroughs };
+  }
+
   // Filepaths of modules whose evaluation is in progress (synchronous require
   // chain), used by Module.evaluate to detect import cycles instead of
   // recursing into a stack overflow.
@@ -644,11 +660,13 @@ export class Bundler {
     }
   }
 
-  async resolveAsync(
-    specifier: string,
-    filename: string,
-    extensions: string[] = ['.js', '.jsx', '.mjs', '.cjs', '.ts', '.tsx', '.mdx'],
-  ): Promise<string> {
+  async resolveAsync(specifier: string, filename: string, extensions: string[] = DEFAULT_EXTENSIONS): Promise<string> {
+    // R3-577: a `.cjs` importer tries its CJS sibling FIRST (see
+    // resolver/utils/extensions.ts — node-mode interop is only correct when an
+    // extensionless internal require meets the `.cjs` build, and the default order
+    // hands it the ESM sibling). Reorder BEFORE the cache key so a `.cjs` importer
+    // and a `.js` importer in the same dir never share a memoized result.
+    extensions = importerAwareExtensions(filename, extensions);
     // Resolution result is a pure function of (specifier, the dir chain from
     // `filename` up, extensions) for the FS snapshot of this compile — node
     // resolution is dir-relative, so two files in the same dir resolve a specifier
@@ -663,13 +681,13 @@ export class Bundler {
     // directly from the CDN module layout, skipping the resolution algorithm
     // entirely. Null = the fast path can't/shouldn't handle it → fall through to
     // the full resolver below (correctness degrades gracefully, never breaks).
-    const fast = resolveFromCdnLayout(
-      specifier,
-      filename,
-      extensions,
-      this.moduleRegistry.modules,
-      this.cdnLayoutEligibility,
-    );
+    // R3-772: the fast path accepts CROSS-package relatives (any package under
+    // /node_modules), which the confined resolver refuses — under a confinement
+    // root the two must agree, so a confined frame skips the fast path (a
+    // snapshot program pays the full resolver; correctness over cold-boot).
+    const fast = this.resolutionConfinement
+      ? null
+      : resolveFromCdnLayout(specifier, filename, extensions, this.moduleRegistry.modules, this.cdnLayoutEligibility);
     if (fast !== null) {
       this.cdnFastHits++;
       const fastPromise = Promise.resolve(fast);
@@ -683,6 +701,9 @@ export class Bundler {
       isFile: this.fs.isFile,
       readFile: this.fs.readFile,
       resolverCache: this.resolverCache,
+      // R3-772: the snapshot chroot rides every resolution when the host
+      // confined this frame (snapshot mounts only); absent otherwise.
+      ...(this.resolutionConfinement ? { confineToRoot: this.resolutionConfinement } : {}),
     });
     this.resolutionCache.set(key, promise);
     promise.catch(() => this.resolutionCache.delete(key));
@@ -765,7 +786,20 @@ export class Bundler {
     // §5.3 write-through: cache a live-transpiled covered source so an in-session
     // re-read that didn't reset THIS module hits the tmpfs instead of the chain.
     if (module.compiled != null && module.compilationError == null && isTransformable(path)) {
-      await this.artifactStore.writeThrough(path, module.compiled, [...module.dependencyMap.keys()]);
+      // R3-900: the cache is an optimisation and fails soft. A rejected write is
+      // a missed cache entry — the freshly compiled module above is the result;
+      // it is never thrown away because persisting it failed. Log once, with the
+      // path and the code, and continue.
+      try {
+        await this.artifactStore.writeThrough(path, module.compiled, [...module.dependencyMap.keys()]);
+      } catch (e) {
+        const code = (e as { code?: string })?.code;
+        logger.warn(
+          `transpile-cache write failed for ${path}${code ? ` (${code})` : ''}: ${
+            e instanceof Error ? e.message : String(e)
+          } — continuing with the compiled module`,
+        );
+      }
     }
     for (let dep of module.dependencies) {
       const resolvedDependency = await this.resolveAsync(dep, module.filepath);
@@ -779,10 +813,7 @@ export class Bundler {
    * without adopting writes artifacts into `/transpiled` that a pre-registered module would
    * never read, which is the silent-no-op this pairing exists to prevent.
    */
-  async seedArtifacts(ctx: {
-    dirtySet: ReadonlySet<string>;
-    writableLayer: ReadonlySet<string>;
-  }): Promise<{ seeded: number; securityReject?: 'writable-layer-artifact' }> {
+  async seedArtifacts(ctx: { dirtySet: ReadonlySet<string>; writableLayer: ReadonlySet<string> }): Promise<SeedResult> {
     const result = await this.artifactStore.seed(ctx);
     // An artifact entry a root declared for a path a NESTED root owns is not written, so the
     // inner root's bytes are never served under the outer root's name. Say so: a repo whose
@@ -1339,6 +1370,21 @@ export class Bundler {
     this.configPackageJSON = pkg ?? null;
   }
 
+  // The snapshot chroot (BUNDLE_EMBEDDING §4c.3, R3-772): when set, module
+  // resolution is confined to this root — see IResolveOptionsInput.confineToRoot.
+  // Null (the default) is today's unconfined resolution for every other frame.
+  private resolutionConfinement: string | null = null;
+
+  /** Confine module resolution to `root` (the frame serves a snapshot-mounted
+   *  space program), or lift the confinement with `null`. Drops the resolution
+   *  memo so a confined compile never reuses an unconfined hit. The launch path
+   *  (R3-773) sets this for snapshot mounts only. */
+  setResolutionConfinement(root: string | null): void {
+    if (this.resolutionConfinement === root) return;
+    this.resolutionConfinement = root;
+    this.resolutionCache = new Map();
+  }
+
   /** True if a repo-relative path is dirty (must not be seeded from artifacts). */
   isDirtyPath(repoRelPath: string): boolean {
     return this.dirtyPaths.has(repoRelPath);
@@ -1848,6 +1894,9 @@ export class Bundler {
         // §8.14: a seeding input was present in the writable layer — the whole
         // section is rejected (live transpile for everything this session).
         logger.warn(`Artifact seeding rejected (${seedResult.securityReject}); live transpiling.`);
+        // A security reject on one root must not mute another root's stamp-mismatch
+        // reason (the two aggregate independently) — the loop below runs for both
+        // branches; only the count line is else-scoped.
       } else {
         // `console.info`, not `logger.debug`, and deliberately unconditional (R3-294).
         //
@@ -1864,6 +1913,15 @@ export class Bundler {
           `[ir-artifacts] seeded ${seedResult.seeded} pre-transpiled artifact(s) into /transpiled ` +
             `across ${this.artifactStore.rootCount()} root(s)`,
         );
+      }
+      // R3-843: a stamp mismatch seeds ZERO of a FULL payload — the fail-safe working
+      // as designed, and indistinguishable from "no artifacts shipped" in the count
+      // line alone. The reason is loud for the same R3-294 discipline as the count:
+      // once per root per boot (seed() runs once per root), console.info
+      // (default-visible), and in BOTH the rejected and the clean branches above.
+      for (const { root, mismatch } of seedResult.stampMismatches ?? []) {
+        // eslint-disable-next-line no-console
+        console.info(formatStampMismatch(root, mismatch));
       }
     }
 

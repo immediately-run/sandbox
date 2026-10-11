@@ -106,6 +106,64 @@ describe("a git-mounted library's own artifacts are seeded and consumed", () => 
     expect((await h.bundler.seedArtifacts(EMPTY_DIRTY)).seeded).toBe(0);
   });
 
+  it('a library mismatch still reports when the APP root security-rejects (R3-843 hoist)', async () => {
+    // The bundler logs stampMismatches in BOTH the securityReject and the clean branch
+    // — before the hoist, an app-root writable-layer rejection muted the library's
+    // reason. The store half: both fields aggregate independently.
+    const appWithArtifacts: Record<string, string> = {
+      ...APP_FIXTURE,
+      '.immediately.run/contribute-manifest.json': JSON.stringify({
+        schemaVersion: 1,
+        entries: [{ path: 'src/index.ts', sha: 'sha-index', type: 'blob' }],
+      }),
+      '.immediately.run/artifacts/index.json': JSON.stringify({
+        schemaVersion: 1,
+        toolchain: {
+          transpiler: '@immediately-run/transpiler',
+          version: TRANSPILER_VERSION,
+          toolchainHash: EMBEDDED_TOOLCHAIN_HASH,
+          preset: 'react',
+        },
+        files: {
+          '/src/index.ts': { srcSha: 'sha-index', out: 'transpiled/src/index.ts.js', deps: [] },
+        },
+      }),
+      '.immediately.run/artifacts/transpiled/src/index.ts.js': '/* app */ export default 1;\n',
+    };
+    // The app fixture is baked at harness creation, so this case builds its own —
+    // and the beforeEach harness still holds /app, so it goes down first (h takes
+    // h2's place so afterEach tears down exactly one harness).
+    await h.teardown();
+    const h2 = await createBundlerHarness(appWithArtifacts, { forCompile: true });
+    h = h2;
+    let unmount2: (() => void) | null = null;
+    try {
+      unmount2 = await mountInMemoryFs('/mnt/testlib', libraryRepo({ toolchainHash: 'not-our-toolchain' }));
+      await h2.bundler.registerGitLibraryMount('@scope/lib', '/mnt/testlib');
+      const result = await h2.bundler.seedArtifacts({
+        dirtySet: new Set(),
+        writableLayer: new Set(['/.immediately.run/artifacts/transpiled/src/index.ts.js']),
+      });
+      expect(result.securityReject).toBe('writable-layer-artifact');
+      expect(result.stampMismatches).toHaveLength(1);
+      expect(result.stampMismatches![0].root).toBe('/node_modules/@scope/lib');
+    } finally {
+      unmount2?.();
+    }
+  });
+
+  it('attributes a library-root stamp mismatch to the library root (R3-843)', async () => {
+    // The app fixture ships no artifact section (the ordinary case — silent), the
+    // library ships one with a stale stamp: the mismatch must name the LIBRARY's
+    // root, and the app root must not appear.
+    await register(libraryRepo({ toolchainHash: 'not-our-toolchain' }));
+    const result = await h.bundler.seedArtifacts(EMPTY_DIRTY);
+    expect(result.seeded).toBe(0);
+    expect(result.stampMismatches).toHaveLength(1);
+    expect(result.stampMismatches![0].root).toBe('/node_modules/@scope/lib');
+    expect(result.stampMismatches![0].mismatch.fields).toEqual(['toolchainHash']);
+  });
+
   it('skips a library built with a different toolchain WITHOUT costing the app its own', async () => {
     // §4.4 is per-root: a stale library must degrade to live transpile for itself alone.
     await register(libraryRepo({ toolchainHash: 'not-our-toolchain' }));

@@ -2,6 +2,7 @@ import { TRANSPILER_VERSION } from '@immediately-run/transpiler';
 
 import { createBundlerHarness, type BundlerHarness } from '../testHarness/bundlerHarness';
 import { EMBEDDED_TOOLCHAIN_HASH } from './embeddedToolchainHash';
+import { formatStampMismatch } from './artifactIndex';
 
 // G2-5 [harness]: end-to-end seeding / consult / write-through / reset-delete
 // (PRETRANSPILED_ARTIFACTS_SPEC §5.1, §5.3). Drives the REAL bundler over the
@@ -11,7 +12,9 @@ import { EMBEDDED_TOOLCHAIN_HASH } from './embeddedToolchainHash';
 const UTIL_ARTIFACT = '/* pre-transpiled util */ exports.x = 42;\n';
 const EMPTY_DIRTY = { dirtySet: new Set<string>(), writableLayer: new Set<string>() };
 
-const baseFixture = (over: { toolchainHash?: string; srcShaUtil?: string } = {}): Record<string, string> => ({
+const baseFixture = (
+  over: { toolchainHash?: string; toolchainVersion?: string; srcShaUtil?: string } = {},
+): Record<string, string> => ({
   'package.json': JSON.stringify({ name: 'g25', main: 'src/index.ts' }),
   'src/index.ts': `import { x } from './util';\nexport const y = x + 1;\n`,
   'src/util.ts': `export const x = 42;\n`,
@@ -26,7 +29,7 @@ const baseFixture = (over: { toolchainHash?: string; srcShaUtil?: string } = {})
     schemaVersion: 1,
     toolchain: {
       transpiler: '@immediately-run/transpiler',
-      version: TRANSPILER_VERSION,
+      version: over.toolchainVersion ?? TRANSPILER_VERSION,
       toolchainHash: over.toolchainHash ?? EMBEDDED_TOOLCHAIN_HASH,
       preset: 'react',
     },
@@ -83,6 +86,62 @@ describe('G2-5 artifact seeding + consult', () => {
     h = await createBundlerHarness(baseFixture({ toolchainHash: 'deadbeef'.repeat(8) }), { forCompile: true });
     const result = await h.bundler.artifactStore.seed(EMPTY_DIRTY);
     expect(result.seeded).toBe(0);
+  });
+
+  // R3-843 — the mismatch must not just refuse; it must say WHY (the refusal was
+  // silent at the default level, and the cache→consume round trip went dark).
+  it('a stamped-mismatch index seeds zero AND carries the reason (R3-843)', async () => {
+    h = await createBundlerHarness(baseFixture({ toolchainHash: 'deadbeef'.repeat(8) }), { forCompile: true });
+    const result = await h.bundler.artifactStore.seed(EMPTY_DIRTY);
+    expect(result.seeded).toBe(0);
+    expect(result.stampMismatches).toHaveLength(1);
+    const { root, mismatch } = result.stampMismatches![0];
+    expect(root).toBe('/app');
+    // Same version, wrong bytes: the report names ONLY the hash field.
+    expect(mismatch.fields).toEqual(['toolchainHash']);
+    expect(mismatch.stamped.toolchainHash).toBe('deadbeef'.repeat(8));
+    expect(mismatch.embedded.toolchainHash).toBe(EMBEDDED_TOOLCHAIN_HASH);
+  });
+
+  it('a version-only drift is reported as the version field (a stale pipeline pin)', async () => {
+    h = await createBundlerHarness(baseFixture({ toolchainVersion: '0.0.0-OLD' }), { forCompile: true });
+    const result = await h.bundler.artifactStore.seed(EMPTY_DIRTY);
+    expect(result.seeded).toBe(0);
+    expect(result.stampMismatches![0].mismatch.fields).toEqual(['version']);
+  });
+
+  it('a version+hash drift reports both fields', async () => {
+    h = await createBundlerHarness(
+      baseFixture({ toolchainVersion: '0.0.0-OLD', toolchainHash: 'deadbeef'.repeat(8) }),
+      { forCompile: true },
+    );
+    const result = await h.bundler.artifactStore.seed(EMPTY_DIRTY);
+    expect(result.stampMismatches![0].mismatch.fields).toEqual(['version', 'toolchainHash']);
+  });
+
+  it('formatStampMismatch pins the line a drill greps for', () => {
+    const line = formatStampMismatch('/app', {
+      stamped: {
+        transpiler: '@immediately-run/transpiler',
+        version: '0.9.0',
+        toolchainHash: 'cb2772e6' + '0'.repeat(56),
+        preset: 'react',
+      },
+      embedded: { version: '0.9.1', toolchainHash: '1780f8e8' + '0'.repeat(56) },
+      fields: ['version', 'toolchainHash'],
+    });
+    expect(line).toBe(
+      '[ir-artifacts] /app: toolchain stamp mismatch ' +
+        '(version: zip 0.9.0 ≠ runtime 0.9.1; toolchainHash: zip cb2772e60000… ≠ runtime 1780f8e80000…) — ' +
+        "the zip's artifacts are ignored; live-transpiling",
+    );
+  });
+
+  it('a matching stamp still seeds (the reason path did not narrow the gate)', async () => {
+    h = await createBundlerHarness(baseFixture(), { forCompile: true });
+    const result = await h.bundler.artifactStore.seed(EMPTY_DIRTY);
+    expect(result.seeded).toBe(1);
+    expect(result.stampMismatches).toBeUndefined();
   });
 
   it('a srcSha mismatch skips that file (its source changed vs the artifact)', async () => {
