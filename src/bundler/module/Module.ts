@@ -138,6 +138,25 @@ export class Module {
       return this.evaluation;
     }
 
+    // R3-899 — a module whose COMPILATION failed must not be evaluated at all.
+    // Before this guard, `module.compiled` was `null` for a failed compile, and
+    // `new Evaluation` happily ran the string "null" as no-op code, handing the
+    // module's dependents EMPTY exports: a missing `./avatar.jpg` surfaced as
+    // `TypeError: Cannot read properties of undefined (reading 'map')` in an
+    // unrelated component, with neither the user nor an in-browser agent ever
+    // told which import failed (the owner report's exact 44-tool-call rabbit
+    // hole). Fail HERE, carrying the original cause — the dependent's require
+    // then throws it, so the FIRST error shown is the FIRST error that happened.
+    if (this.compilationError != null) {
+      throw this.compilationError;
+    }
+    if (this.compiled == null) {
+      throw new BundlerError(
+        `Module "${this.filepath}" cannot be evaluated — it was never compiled ` +
+          `(its source likely failed to load, or its transform never ran).`,
+      );
+    }
+
     // Detect an import cycle BEFORE re-entering evaluation. `new Evaluation`
     // runs this module's code synchronously, which require()s its deps; if one
     // of them require()s back into a module already mid-evaluation (this one),

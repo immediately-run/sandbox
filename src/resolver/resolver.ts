@@ -17,12 +17,55 @@ export interface IResolveOptionsInput {
   readFile: FnReadFile;
   moduleDirectories?: string[];
   resolverCache?: ResolverCache;
+  /**
+   * R3-772 (BUNDLE_EMBEDDING §4c.3) — the snapshot chroot. When set (an absolute,
+   * normalized root, e.g. the app root of a snapshot-mounted program), module
+   * resolution is confined to it: a relative specifier that escapes the root or
+   * an absolute specifier outside it fails with ModuleNotFoundError (the
+   * resolver's ENOENT), the package.json/tsconfig discovery walks stop at the
+   * root (never probing outside it), and a root-`/tsconfig.json` is not read.
+   *
+   * The bare-specifier PACKAGE channel is not confined by this option: a
+   * `node_modules` walk product is dependency content, pinned by the recorded
+   * closure at offer time (host-side), not app-authored space content. When the
+   * walk enters a package, the recursion RE-CONFINES to that package's root, so
+   * a package's own internals resolve within its subtree exactly as before.
+   *
+   * Callers pass a NORMALIZED absolute root (pathUtils-normal form); the
+   * containment check normalizes every candidate before comparing — this is
+   * never a prefix test on an unnormalized spelling.
+   */
+  confineToRoot?: string;
 }
 
 interface IResolveOptions extends IResolveOptionsInput {
   moduleDirectories: string[];
   resolverCache: ResolverCache;
 }
+
+/** Containment in the confinement root, on an already-normalized absolute path
+ *  (`pathUtils.join` output). `/app2/x` is NOT inside `/app`. */
+export const isWithinRoot = (root: string, absPath: string): boolean =>
+  absPath === root || absPath.startsWith(root.endsWith('/') ? root : `${root}/`);
+
+/** The `…/node_modules/<pkg>` root a file lives in (scoped names included), or
+ *  null for a file outside the package channel. The confinement root for a
+ *  package's own internals (R3-772): a package's relative imports resolve
+ *  WITHIN its subtree — never across packages, never out of node_modules. */
+const packageSubtreeRoot = (filename: string): string | null => {
+  const marker = '/node_modules/';
+  const at = filename.lastIndexOf(marker);
+  if (at === -1) return null;
+  const rest = filename.slice(at + marker.length);
+  const segments = rest.split('/');
+  const nameLength = segments[0]?.startsWith('@') ? 2 : 1;
+  if (segments.length < nameLength || segments.slice(0, nameLength).some((s) => s === '')) return null;
+  return filename.slice(0, at + marker.length) + segments.slice(0, nameLength).join('/');
+};
+
+/** The root `filename`'s resolutions are confined to, or null when unconfined. */
+const effectiveConfinement = (opts: IResolveOptions): string | null =>
+  opts.confineToRoot ? packageSubtreeRoot(opts.filename) ?? opts.confineToRoot : null;
 
 function normalizeResolverOptions(opts: IResolveOptionsInput): IResolveOptions {
   const normalizedModuleDirectories: Set<string> = opts.moduleDirectories
@@ -37,6 +80,12 @@ function normalizeResolverOptions(opts: IResolveOptionsInput): IResolveOptions {
     readFile: opts.readFile,
     moduleDirectories: [...normalizedModuleDirectories],
     resolverCache: opts.resolverCache || new Map(),
+    // Normal form for the root: absolute, `.`/`..` resolved, and NO trailing
+    // slash — pathUtils.normalize preserves one ('/app/'), which would stop the
+    // discovery walk one level early and break isWithinRoot(root, root).
+    ...(opts.confineToRoot
+      ? { confineToRoot: pathUtils.normalize(opts.confineToRoot).replace(/\/+$/, '') || '/' }
+      : {}),
   };
 }
 
@@ -48,10 +97,23 @@ interface IFoundPackageJSON {
 function* loadPackageJSON(
   filepath: string,
   opts: IResolveOptions,
-  rootDir: string = '/',
+  // The walk floor: under confinement the walk stops at the importer's
+  // EFFECTIVE root (the app root, or the package's own subtree when resolving
+  // a package's internals — otherwise an entered package's own manifest would
+  // be skipped and its main/browser/alias fields silently lost). A parent
+  // package.json ABOVE the floor is never read (§4c.3, review 3S-7: every read
+  // the resolver performs for resolution is confined, not only the resolved
+  // module paths).
+  rootDir: string = effectiveConfinement(opts) ?? '/',
 ): Generator<any, IFoundPackageJSON | null, any> {
   const directories = getParentDirectories(filepath, rootDir);
   for (const directory of directories) {
+    // Boundary-safe floor: getParentDirectories' prefix test admits a
+    // prefix-sharing sibling of the floor (`/app2` under `/app`,
+    // `/node_modules/react2` under `/node_modules/react`) — such a directory is
+    // outside the floor and its manifest is never read (§4c.3, 3S-7, when the
+    // floor is the confinement root; hygiene for any other).
+    if (!isWithinRoot(rootDir, directory)) continue; // eslint-disable-line no-continue
     const packageFilePath = pathUtils.join(directory, 'package.json');
     let packageContent = opts.resolverCache.get(packageFilePath);
     if (packageContent === undefined) {
@@ -154,6 +216,10 @@ function* resolveNodeModule(moduleSpecifier: string, opts: IResolveOptions): Gen
         const pkgJson = yield* loadPackageJSON(pkgFilePath, opts, rootDir);
         if (pkgJson) {
           try {
+            // No explicit re-confinement here: resolve()'s effective root is
+            // derived from the importer's filename, and `pkgJson.filepath`
+            // sits inside this package's subtree — so package internals
+            // confine to the package, automatically.
             return yield* resolver(pkgFilePath, {
               ...opts,
               filename: pkgJson.filepath,
@@ -216,6 +282,18 @@ function* expandFile(
     const f = filepath + ext;
     const aliasedPath = resolveAlias(pkg, f);
     if (aliasedPath === f) {
+      // R3-772: under confinement an outside-root candidate is not probed at
+      // all — the read itself is confined (§4c.3, 3S-7), so a hostile
+      // `browser`/`alias` remap cannot reach outside bytes, not even as an
+      // existence oracle. The root is the importer's effective root (the app
+      // root, or the package's own subtree for package internals). The
+      // candidate is normalized BEFORE the check: an alias value like
+      // '/app/../firestore/x.js' is returned verbatim by
+      // normalizeAliasFilePath and would pass a raw prefix test.
+      const confineRoot = effectiveConfinement(opts);
+      if (confineRoot && !isWithinRoot(confineRoot, pathUtils.normalize(f))) {
+        continue; // eslint-disable-line no-continue
+      }
       const exists = yield* isFile(f, opts.isFile);
       if (exists) {
         return f;
@@ -249,6 +327,13 @@ export function normalizeModuleSpecifier(specifier: string): string {
 
 const TS_CONFIG_CACHE_KEY = '__root_tsconfig';
 function* getTSConfig(opts: IResolveOptions): Generator<any, ProcessedTSConfig | false, any> {
+  // R3-772: `/tsconfig.json` sits at the FILESYSTEM root — outside any
+  // confinement root — so a confined resolution does not read it (3S-7). A
+  // snapshot program's path mappings are therefore unsupported; the import
+  // fails as unresolved rather than resolving through an outside-root map.
+  if (opts.confineToRoot) {
+    return false;
+  }
   const cachedConfig = opts.resolverCache.get(TS_CONFIG_CACHE_KEY);
   if (cachedConfig != null) {
     return cachedConfig;
@@ -283,6 +368,25 @@ export const resolver = gensync<(moduleSpecifier: string, inputOpts: IResolveOpt
   const normalizedSpecifier = normalizeModuleSpecifier(moduleSpecifier);
   const opts = normalizeResolverOptions(inputOpts);
   const modulePath = yield* resolveModule(normalizedSpecifier, opts);
+
+  // R3-772 (BUNDLE_EMBEDDING §4c.3) — the chroot: for a snapshot-mounted
+  // program, a module resolution that leaves its confinement root — a `..`
+  // escape (`../../firestore/x`), an absolute specifier (`/repository/x`), or an
+  // alias remap landing outside — is ENOENT, BEFORE any probe touches the path.
+  // The root is PER-IMPORTER: an app file confines to the app root; a file
+  // inside a `node_modules` package confines to that package's own subtree
+  // (dependency content is pinned by the host-side closure, not app-authored
+  // space content — but a package still cannot reach OUT of its subtree).
+  if (opts.confineToRoot && modulePath[0] === '/') {
+    const effectiveRoot = packageSubtreeRoot(opts.filename) ?? opts.confineToRoot;
+    // Normalize BEFORE comparing: resolveFile returns a '/'-leading specifier
+    // verbatim, so '/app/../firestore/x' would otherwise pass the containment
+    // check on its string prefix (the item's "never a prefix test on an
+    // unnormalized spelling" rule).
+    if (!isWithinRoot(effectiveRoot, pathUtils.normalize(modulePath))) {
+      throw new ModuleNotFoundError(normalizedSpecifier, opts.filename);
+    }
+  }
 
   if (modulePath[0] !== '/') {
     // This isn't a node module, we can attempt to resolve using a tsconfig/jsconfig
