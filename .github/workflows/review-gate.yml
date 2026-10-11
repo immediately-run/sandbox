@@ -20,6 +20,11 @@ permissions:
   checks: write
   pull-requests: read
 
+# One run per PR at a time (round 1, backend#112): a synchronize plus the skill's
+# dispatch is a realistic trigger pair, and two overlapping runs would double-POST.
+concurrency:
+  group: review-gate-${{ github.event.pull_request.number || inputs.pr }}
+
 jobs:
   verdict:
     runs-on: ubuntu-latest
