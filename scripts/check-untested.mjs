@@ -23,19 +23,32 @@
 // changed comment would become a finding.
 //
 // The logic paths are the TypeScript sources: what jest can instrument.
-// collectCoverageFrom lists the same files, so one that no suite imports is
-// in the report with zero hits on its real statements. HTML documents, JSON
-// and JavaScript fixtures under src/ are not logic paths: no coverage report
-// can speak for them. Declaration files and the two type-only modules are
-// excluded by name below, because jest emits no coverage record for a module
-// with no runtime statement. A new type-only module is absent from the report
-// the same way, and the check counts every line of an absent file as
-// uncovered; it needs an `Untested:` trailer saying it has no runtime path.
+// collectCoverageFrom lists every non-test TypeScript file under src/, a
+// superset of the logic paths, so a logic file that no suite imports is in
+// the report with zero hits on its real statements. HTML documents, JSON and
+// JavaScript files under src/, and everything under the resolver's fixture
+// tree, are not logic paths: no coverage report can speak for them (the
+// resolver tests read the fixture files by path and never execute them).
+// Declaration files and the two type-only modules are excluded by name below,
+// because jest emits no coverage record for a module with no runtime
+// statement. A new type-only module is absent from the report the same way.
+// The check cannot measure an absent file, so it fails the branch that adds
+// one as NEW ("the test run never loads it"); that file needs an `Untested:`
+// trailer saying it has no runtime path, or an entry in the exclusions below.
 //
-// The ratchet is verify-baselines/untested.json: seeded once with
-// --write-baseline, shrunk by hand as gaps close. Seed only from a run in
-// which every suite passed: a jest worker that crashes can exit 0 and drop
-// its suites' coverage, and the seed then records covered lines as gaps.
+// The ratchet is verify-baselines/untested.json: one count per file, the
+// number of its executable lines the suite never runs ("unloaded" for a file
+// the report has no record of). A changed logic file fails as NEW when its
+// count is above the recorded one; an entry is STALE when the count dropped,
+// and the message names the number to write. No line number is stored, so an
+// edit that changes no coverage changes no verdict. Seed with
+// --write-baseline (the file must not exist), and only from a run in which
+// every suite passed: a jest worker that crashes can exit 0 and drop its
+// suites' coverage, and the seed then records covered lines as gaps.
+//
+// What the skip costs: a branch that changes only tests has no coverage run,
+// so when it closes a recorded gap it is not told to lower the entry. The
+// next branch that changes a logic file gets that STALE line instead.
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
@@ -62,6 +75,9 @@ const LOGIC_PATHS = {
     'src/**/*.d.ts',
     'src/types.ts',
     'src/protocol/message-types.ts',
+    // Resolver fixtures: read by path, never executed. Two of them are
+    // (empty) TypeScript files and would match the include.
+    'src/resolver/fixture/**',
     // Written by `npm run gen:authoring-bundles` and gitignored, so never in a
     // diff; excluded so that seeding, which globs the disk, skips them too.
     'src/services/authoring/bundled-libs.generated.ts',
@@ -93,8 +109,9 @@ if (seeding || changedLogic.length > 0) {
     { stdio: ['ignore', 'inherit', 'inherit'] },
   );
 } else {
-  // No logic file changed, so there are no changed lines to check; the
-  // stale-entry pass for deleted files still runs over the empty report.
+  // No logic file changed, so no file can be NEW. Over the empty report the
+  // check still reports an entry whose file is gone or left the logic paths;
+  // it compares no count, because the report has no record of any file.
   mkdirSync(dirname(REPORT), { recursive: true });
   writeFileSync(REPORT, '{}\n');
 }
