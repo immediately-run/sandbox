@@ -6,21 +6,31 @@
 // executed by the test run?", against jest's coverage-final.json.
 //
 // The coverage pass is the full suite, through `npm test` so the pretest leg
-// generates the authoring bundles the suites import. A subset run
-// (--findRelatedTests) would be faster, but the baseline is seeded from a full
-// run, and a line that only an unrelated suite covers would then read as a new
-// gap. A diff that changes no logic file skips the run.
+// generates the authoring bundles the suites import. Three cheaper shapes were
+// weighed. A related-tests subset (--findRelatedTests) is out: the baseline is
+// seeded from a full run, and a line that only an unrelated suite covers would
+// read as a new gap. Instrumenting only the changed files (a narrower
+// collectCoverageFrom over the same full suite) gives the same answer for
+// those files, but saved nothing measurable: on the 8-core dev machine, under
+// load from other jobs, full-suite runs took 96-221 s with coverage and
+// 123-320 s without, so instrumentation cost is inside the noise and the one
+// glob that seeding needs anyway is kept. CI-only instrumentation is out for
+// the same reason: there is no local cost to avoid, and local == CI keeps the
+// gate honest. A diff that changes no logic file skips the run.
 //
 // The coverage provider is jest's default (babel/istanbul). The v8 provider
 // reports every source line as a statement here, comments included, so every
 // changed comment would become a finding.
 //
-// collectCoverageFrom lists every non-test TypeScript file under src/, so a
-// file no suite imports is in the report with zero hits on its real
-// statements. A logic-path file that is not TypeScript (src/index.html, the
-// resolver fixtures) is absent from the report; the check counts every line of
-// an absent file as uncovered, so the baseline records such a file whole.
-// Adding lines to one needs an `Untested:` trailer, as the name check did.
+// The logic paths are the TypeScript sources: what jest can instrument.
+// collectCoverageFrom lists the same files, so one that no suite imports is
+// in the report with zero hits on its real statements. HTML documents, JSON
+// and JavaScript fixtures under src/ are not logic paths: no coverage report
+// can speak for them. Declaration files and the two type-only modules are
+// excluded by name below, because jest emits no coverage record for a module
+// with no runtime statement. A new type-only module is absent from the report
+// the same way, and the check counts every line of an absent file as
+// uncovered; it needs an `Untested:` trailer saying it has no runtime path.
 //
 // The ratchet is verify-baselines/untested.json: seeded once with
 // --write-baseline, shrunk by hand as gaps close. Seed only from a run in
@@ -41,13 +51,17 @@ const REPORT = 'coverage/coverage-final.json';
 // `npm run dev` see it without a build; check:toolchain-hash asserts the
 // committed copy equals the generated one.
 const LOGIC_PATHS = {
-  include: ['src/**'],
+  include: ['src/**/*.{ts,tsx}'],
   exclude: [
     'src/index.ts',
     'src/services/authoring/authoring-worker.ts',
     'src/services/authoring/worker-lib-host.ts',
     'src/services/authoring/worker-lint-host.ts',
     'src/bundler/artifacts/embeddedToolchainHash.ts',
+    // No runtime statement, so no coverage record (see the header).
+    'src/**/*.d.ts',
+    'src/types.ts',
+    'src/protocol/message-types.ts',
     // Written by `npm run gen:authoring-bundles` and gitignored, so never in a
     // diff; excluded so that seeding, which globs the disk, skips them too.
     'src/services/authoring/bundled-libs.generated.ts',
@@ -75,7 +89,6 @@ if (seeding || changedLogic.length > 0) {
       '--coverageReporters=json',
       '--collectCoverageFrom=src/**/*.{ts,tsx}',
       '--collectCoverageFrom=!src/**/*.test.{ts,tsx}',
-      '--collectCoverageFrom=!src/**/*.d.ts',
     ],
     { stdio: ['ignore', 'inherit', 'inherit'] },
   );
