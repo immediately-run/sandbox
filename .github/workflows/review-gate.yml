@@ -23,10 +23,15 @@ permissions:
 jobs:
   verdict:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
       - name: Compute and post the review-gate verdict
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr }}
+          REPO_NAME: ${{ github.event.repository.name }}
         # The pinned package, not the PR: the verdict rule is code the PR cannot edit.
-        run: npm exec --yes --package @immediately-run/verify-checks@0.9.0 -- review-gate "$GITHUB_REPOSITORY_OWNER" "$GITHUB_REPOSITORY_NAME" "$PR_NUMBER"
+        run: npm exec --yes --package @immediately-run/verify-checks@0.9.0 -- review-gate "$GITHUB_REPOSITORY_OWNER" "$REPO_NAME" "$PR_NUMBER"
