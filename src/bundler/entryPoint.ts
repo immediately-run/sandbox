@@ -82,17 +82,27 @@ export function classifyDeclaredEntry(resolvedPath: string, source: string | und
 }
 
 /**
- * Whether the module calls a render API: a bare `createRoot`/`hydrateRoot`
- * identifier, or the SDK boot specifier in any string (the `import { boot } from
- * '@immediately-run/sdk/boot'` form — the call site check stays specifier-based
- * because `boot` alone is a common word).
+ * Whether the module CALLS a render API: `createRoot`/`hydrateRoot` followed by a
+ * call's open paren (a leftover import binding alone is not a call — the boot
+ * specifier check beside it stays specifier-based because `boot` alone is a
+ * common word).
  */
 function hasRenderCall(source: string): boolean {
   let found = false;
+  let pendingRenderIdent = false;
   scanSourceTokens(source, (token) => {
+    if (token.kind === 'comment') return;
+    if (pendingRenderIdent) {
+      pendingRenderIdent = false;
+      if (token.kind === 'punct' && token.c === '(') {
+        found = true;
+        return false;
+      }
+      // Not a call site — keep scanning (a later use may still call it).
+    }
     if (token.kind === 'ident' && RENDER_APIS.has(token.word)) {
-      found = true;
-      return false;
+      pendingRenderIdent = true;
+      return;
     }
     if (token.kind === 'string' && token.raw.includes(BOOT_MODULE_SPECIFIER)) {
       found = true;

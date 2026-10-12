@@ -34,6 +34,20 @@ describe('classifyDeclaredEntry (BOOT_SCAFFOLDING_SPEC §4.1)', () => {
     expect(classifyDeclaredEntry('/app/src/main.tsx', vite)).toBe('entry');
     expect(classifyDeclaredEntry('/app/index.tsx', BOOT_INDEX)).toBe('entry');
     expect(classifyDeclaredEntry('/app/src/legacy.tsx', 'hydrateRoot(el, <App />);')).toBe('entry');
+    expect(classifyDeclaredEntry('/app/src/legacy.tsx', 'const el = hydrateRoot /* pinned */ (container);')).toBe(
+      'entry',
+    );
+  });
+
+  it('does not count a leftover createRoot import binding as a render call', () => {
+    // The binding without a call site is the exact leftover a refactor leaves
+    // behind — the file still renders nothing as an entry.
+    expect(
+      classifyDeclaredEntry(
+        '/app/src/pages/Widget.tsx',
+        "import { createRoot } from 'react-dom/client';\nexport default function Widget() {\n  return <p />;\n}\n",
+      ),
+    ).toBe('refuse');
   });
 
   it('does not mistake a render API in a comment or a string for a call', () => {
