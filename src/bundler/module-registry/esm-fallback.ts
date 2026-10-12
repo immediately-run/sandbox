@@ -1,5 +1,6 @@
-import { ESM_ORIGIN } from '../moduleOrigins';
+import { ESM_ORIGIN, UNPKG_ROOT } from '../moduleOrigins';
 import { ICDNModule } from './module-cdn';
+import { retryFetch } from '../../utils/fetch';
 
 // esm.sh fallback for packages the primary dependency CDN (blazingly.io) cannot
 // resolve — most often a version newer than its npm mirror has ingested. esm.sh
@@ -141,3 +142,74 @@ export function synthesizeEsmFallbackModule(
     m: [],
   };
 }
+
+/**
+ * Split a BARE specifier with a subpath (`name/sub`, `@scope/name/sub`) into its
+ * package name and the package-relative subpath. Null for everything else: a
+ * bare package ROOT (`name`, `@scope/name` — no subpath to materialize),
+ * relative (`./x`, `../y`), absolute (`/x`), `node:` builtins, and URL schemes
+ * (`https:`, `data:`). The esm.sh fallback synthesizes ONLY the package root
+ * (`synthesizeEsmFallbackModule`), so a bare subpath of a fallback package is
+ * the one resolution shape whose target can still be missing — this predicate
+ * names exactly that case for the resolution-retry hook.
+ */
+export function parseBareSubpath(specifier: string): { name: string; subpath: string } | null {
+  if (!specifier || specifier.startsWith('.') || specifier.startsWith('/') || specifier.startsWith('node:')) {
+    return null;
+  }
+  if (/^[a-z][a-z0-9+.-]*:/i.test(specifier)) return null; // URL scheme (https:, data:, …)
+  const segs = specifier.split('/');
+  let name: string;
+  let rest: string[];
+  if (segs[0].startsWith('@')) {
+    if (segs.length < 3 || !segs[1]) return null; // '@scope' or the package root — no subpath
+    name = `${segs[0]}/${segs[1]}`;
+    rest = segs.slice(2);
+  } else {
+    if (segs.length < 2 || !segs[0]) return null; // the package root
+    name = segs[0];
+    rest = segs.slice(1);
+  }
+  const subpath = rest.join('/');
+  if (!subpath) return null;
+  return { name, subpath };
+}
+
+/**
+ * Raw-tarball file loader for subpaths of an esm.sh-fallback package. esm.sh
+ * serves a package's SUBPATH as a re-export stub whose real chunk imports
+ * esm.sh-internal `/node/*.mjs` shims — a multi-chunk shape the single-module
+ * fallback refuses by design. The npm tarball carries the same file RAW
+ * (`sql.js/dist/sql-asm.js` is the published Emscripten CJS itself), so the
+ * subpath rail fetches from unpkg exactly the bytes the primary CDN would have
+ * served had it carried the version.
+ */
+export type EsmFallbackSubpathLoader = (name: string, range: string, subpath: string) => Promise<string>;
+
+// Range → exact version, resolved once per package per frame (immutable fact;
+// the file fetches below pin it so unpkg's range redirect can never skew the
+// subpath onto a different release than a later re-fetch).
+const exactVersions = new Map<string, Promise<string>>();
+
+async function resolveExactVersion(name: string, range: string): Promise<string> {
+  const key = `${name}@${range}`;
+  let promise = exactVersions.get(key);
+  if (!promise) {
+    promise = (async () => {
+      const response = await retryFetch(`${UNPKG_ROOT}${name}@${range}/package.json`, { maxRetries: 5 });
+      const pkg = JSON.parse(await response.text()) as { version?: string };
+      if (!pkg.version) throw new Error(`unpkg package.json for ${name}@${range} carries no version`);
+      return pkg.version;
+    })();
+    exactVersions.set(key, promise);
+    promise.catch(() => exactVersions.delete(key)); // a failed resolution is not a fact — re-try next time
+  }
+  return promise;
+}
+
+export const nativeEsmFallbackSubpathLoader: EsmFallbackSubpathLoader = async (name, range, subpath) => {
+  const version = await resolveExactVersion(name, range);
+  const response = await retryFetch(`${UNPKG_ROOT}${name}@${version}/${subpath}`, { maxRetries: 5 });
+  if (!response.ok) throw new Error(`HTTP ${response.status} fetching unpkg ${name}@${version}/${subpath}`);
+  return response.text();
+};

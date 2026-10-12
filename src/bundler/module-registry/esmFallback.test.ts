@@ -10,6 +10,7 @@ import {
   fetchEsmFallbackSource,
   importedSpecifiers,
   isEsmInternal,
+  parseBareSubpath,
   parseReexportStub,
   synthesizeEsmFallbackModule,
 } from './esm-fallback';
@@ -49,6 +50,28 @@ describe('esm.sh source helpers', () => {
     );
     expect(parseReexportStub(LUCIDE_MJS)).toBeNull(); // real module, not a stub
     expect(parseReexportStub('export * from "/a.mjs"; export * from "/b.mjs";')).toBeNull(); // multi-target
+  });
+});
+
+describe('parseBareSubpath — the subpath-retry predicate', () => {
+  it('splits a bare subpath specifier, scoped and plain', () => {
+    expect(parseBareSubpath('sql.js/dist/sql-asm.js')).toEqual({ name: 'sql.js', subpath: 'dist/sql-asm.js' });
+    expect(parseBareSubpath('@scope/pkg/lib/thing.js')).toEqual({ name: '@scope/pkg', subpath: 'lib/thing.js' });
+  });
+
+  it('a bare package ROOT is not a subpath (the synthesis already covers it)', () => {
+    expect(parseBareSubpath('react')).toBeNull();
+    expect(parseBareSubpath('@scope/pkg')).toBeNull();
+    expect(parseBareSubpath('')).toBeNull();
+  });
+
+  it('relative, absolute, node: and URL specifiers are out of scope', () => {
+    expect(parseBareSubpath('./x.js')).toBeNull();
+    expect(parseBareSubpath('../y.js')).toBeNull();
+    expect(parseBareSubpath('/chunk.mjs')).toBeNull();
+    expect(parseBareSubpath('node:fs')).toBeNull();
+    expect(parseBareSubpath('https://esm.sh/x.mjs')).toBeNull();
+    expect(parseBareSubpath('data:text/plain,x')).toBeNull();
   });
 });
 
