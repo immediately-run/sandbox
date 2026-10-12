@@ -42,6 +42,7 @@ import { WorkerMessageBus } from '../utils/WorkerMessageBus';
 import { NamedPromiseQueue } from '../utils/NamedPromiseQueue';
 import { nullthrows } from '../utils/nullthrows';
 import { ModuleRegistry } from './module-registry';
+import { esmFallbackSubpathPath, parseBareSubpath } from './module-registry/esm-fallback';
 import { resolveFromCdnLayout } from './module-registry/cdnLayoutResolve';
 import { LocksetSection, locksetEchoContextFor, validateLockset } from './module-registry/lockset';
 import { collectLocalEntrySideEffects } from './sideEffectImports';
@@ -660,7 +661,12 @@ export class Bundler {
     }
   }
 
-  async resolveAsync(specifier: string, filename: string, extensions: string[] = DEFAULT_EXTENSIONS): Promise<string> {
+  async resolveAsync(
+    specifier: string,
+    filename: string,
+    extensions: string[] = DEFAULT_EXTENSIONS,
+    retriedEsmFallbackSubpath = false,
+  ): Promise<string> {
     // R3-577: a `.cjs` importer tries its CJS sibling FIRST (see
     // resolver/utils/extensions.ts — node-mode interop is only correct when an
     // extensionless internal require meets the `.cjs` build, and the default order
@@ -710,6 +716,29 @@ export class Bundler {
     try {
       return await promise;
     } catch (err) {
+      // R3-820 — an esm.sh-fallback package's DEEP SUBPATH import (e.g.
+      // `sql.js/dist/sql-asm.js`) fails here because the fallback synthesis
+      // registers only the package root: the file map has no subpath file for
+      // the resolver to find. Materialize the subpath once (raw tarball file
+      // from unpkg, the same bytes the primary CDN would have served), then
+      // retry the resolution — the recursion flag makes this fire at most once
+      // per call so a subpath that STILL fails keeps its original error.
+      if (!retriedEsmFallbackSubpath) {
+        const bareSubpath = parseBareSubpath(specifier);
+        if (
+          bareSubpath !== null &&
+          this.moduleRegistry.hasEsmFallback(bareSubpath.name) &&
+          (await this.moduleRegistry.ensureEsmFallbackSubpath(bareSubpath.name, bareSubpath.subpath))
+        ) {
+          // The failed probe memoized the subpath as absent (CachedFS negatives
+          // persist per compile; node_modules is exempt from watcher
+          // invalidation) — drop that one path so the retry consults the
+          // registry-backed mount, which now carries the file. The path is the
+          // SAME symbol the registry materialized at, by construction.
+          this.fs.dropCachesFor(esmFallbackSubpathPath(bareSubpath.name, bareSubpath.subpath));
+          return await this.resolveAsync(specifier, filename, extensions, true);
+        }
+      }
       // Resolution failure is re-thrown for the caller to handle. Some callers
       // probe for *optional* files (e.g. the `src/main`/`main` local-entry
       // convention in collectLocalEntrySideEffects) and catch this as expected

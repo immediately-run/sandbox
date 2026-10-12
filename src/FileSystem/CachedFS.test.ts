@@ -210,6 +210,27 @@ describe('CachedFS (G0-2 — read memoization + change invalidation)', () => {
     expect(events).toEqual([{ path: '/a.js', eventType: 'rename' }]);
   });
 
+  it('dropCachesFor clears a memoized NEGATIVE for a node_modules path (R3-820)', async () => {
+    // A failed resolution probe memoizes isFile=false. invalidate() skips
+    // node_modules (registry content is immutable per compile) — the one
+    // sanctioned exception is a lazily materialized esm-fallback subpath, whose
+    // rail drops exactly that path so the retried resolution re-stats.
+    let exists = false;
+    const stat = jest.fn(async () => ({ isFile: () => exists }));
+    const { context } = makeContext({ stat });
+    const fs = new CachedFS(context);
+
+    expect(await fs.isFileAsync('/node_modules/sql.js/dist/sql-asm.js')).toBe(false); // probe memoizes the miss
+    expect(await fs.isFileAsync('/node_modules/sql.js/dist/sql-asm.js')).toBe(false);
+    expect(stat).toHaveBeenCalledTimes(1);
+
+    exists = true; // the file materializes in the registry-backed mount
+    expect(await fs.isFileAsync('/node_modules/sql.js/dist/sql-asm.js')).toBe(false); // stale negative still served
+    fs.dropCachesFor('/node_modules/sql.js/dist/sql-asm.js');
+    expect(await fs.isFileAsync('/node_modules/sql.js/dist/sql-asm.js')).toBe(true); // re-stat sees the file
+    expect(stat).toHaveBeenCalledTimes(2);
+  });
+
   it('isFileAsync memoizes stat and treats a cached read as a known file', async () => {
     const stat = jest.fn(async () => ({ isFile: () => true }));
     const { context, readFile } = makeContext({ stat });

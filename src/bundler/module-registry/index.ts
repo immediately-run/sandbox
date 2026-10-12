@@ -18,13 +18,17 @@ import { bundledIndexPath, bundledPackagePath, decodeBundledModule, parseBundled
 import { SELF_HOST_BASES } from '../moduleOrigins';
 import {
   EsmFallbackFetcher,
+  EsmFallbackSubpathLoader,
   esmFallbackEntryUrl,
   esmFallbackModulePath,
+  esmFallbackSubpathPath,
   fetchEsmFallbackSource,
   nativeEsmFallbackFetcher,
+  nativeEsmFallbackSubpathLoader,
   synthesizeEsmFallbackModule,
 } from './esm-fallback';
 import { NodeModule } from './NodeModule';
+import { scanCjsModule } from '../transforms/raw-cjs/scan';
 
 // dependency => version range
 export type DepMap = { [depName: string]: string };
@@ -60,7 +64,16 @@ export class ModuleRegistry {
   // the primary CDN actually drops a package; on failure (esm.sh down, a
   // multi-chunk package) it throws the clear `assertDependenciesResolved`-style
   // error. Pass `null` to disable, or a stub fetcher in tests.
-  constructor(bundler: Bundler, private esmFallbackFetcher: EsmFallbackFetcher | null = nativeEsmFallbackFetcher) {
+  //
+  // The SUBPATH loader materializes deep imports of a fallback package
+  // (`sql.js/dist/sql-asm.js`) — the synthesis covers only the package root, so
+  // the subpath rail fetches the raw tarball file from unpkg. `null` disables
+  // the rail (subpath imports keep the resolution error).
+  constructor(
+    bundler: Bundler,
+    private esmFallbackFetcher: EsmFallbackFetcher | null = nativeEsmFallbackFetcher,
+    private esmFallbackSubpathLoader: EsmFallbackSubpathLoader | null = nativeEsmFallbackSubpathLoader,
+  ) {
     this.bundler = bundler;
   }
 
@@ -303,6 +316,111 @@ export class ModuleRegistry {
     this.modules.set(name, processedNodeModule);
     logger.debug('resolved module via esm.sh fallback (shared-React transpile)', name, range, entryUrl);
     return processedNodeModule;
+  }
+
+  /** Whether `name` is a package the primary CDN dropped (esm.sh-fallback). */
+  hasEsmFallback(name: string): boolean {
+    return this.esmFallbacks.has(name);
+  }
+
+  /** Test seam for the subpath rail — mirrors the bundler's `setRegistryFetcher`. */
+  setEsmFallbackSubpathLoader(loader: EsmFallbackSubpathLoader | null): void {
+    this.esmFallbackSubpathLoader = loader;
+  }
+
+  /** Test seam for the root fallback fetcher (same rationale as the loader seam). */
+  setEsmFallbackFetcher(fetcher: EsmFallbackFetcher | null): void {
+    this.esmFallbackFetcher = fetcher;
+  }
+
+  // In-flight subpath materializations, deduped per (name, subpath) so two
+  // resolutions racing on the same deep import share one unpkg fetch.
+  private esmFallbackSubpathPromises: Map<string, Promise<boolean>> = new Map();
+
+  /**
+   * Materialize a DEEP SUBPATH of an esm.sh-fallback package into its synthetic
+   * module, so `name/sub` resolves the way the primary CDN would have served it.
+   *
+   * The root synthesis (`synthesizeEsmFallbackModule`) registers only
+   * `package.json` + `index.js`, so an app importing `name/sub` (sql.js's
+   * `dist/sql-asm.js`, the shape that killed sqlite-studio's live boot) fails
+   * resolution: the file map has no such file and RegistryFS answers from it.
+   * This fetches the RAW tarball file from unpkg (esm.sh's own subpath URL is a
+   * multi-chunk stub the single-module fallback refuses), passes published CJS
+   * through byte-for-byte with its require() graph scanned (the raw-cjs
+   * convention) or transpiles ESM through the shared chain, then inlines the
+   * file and precompiles its module — identical to what `loadModuleDependencies`
+   * does for the files a CDN module inlines.
+   *
+   * Scope: SINGLE FILE per call — exactly the subpath the app imported. A
+   * relative require INSIDE that file for a sibling the tarball also carries is
+   * NOT materialized by this rail (it maps to the R3-411 stub that throws on
+   * call), where a primary-CDN package would have its whole file map served.
+   *
+   * Returns TRUE when the subpath is resolvable after the call — including when
+   * it was already materialized (the early return; nothing is fetched). Returns
+   * FALSE when nothing was materialized: not a fallback package, the rail is
+   * disabled, the module is missing from the registry, or the fetch/transpile
+   * failed (a warning naming the package, subpath and cause is logged first) —
+   * the caller keeps the original resolution error.
+   */
+  async ensureEsmFallbackSubpath(name: string, subpath: string): Promise<boolean> {
+    if (!this.esmFallbacks.has(name) || !this.esmFallbackSubpathLoader) return false;
+    const nodeModule = this.modules.get(name);
+    if (!nodeModule) return false;
+    if (nodeModule.files[subpath] != null) return true; // already materialized
+    const key = `${name}\0${subpath}`;
+    let promise = this.esmFallbackSubpathPromises.get(key);
+    if (!promise) {
+      promise = this._materializeEsmFallbackSubpath(name, subpath, nodeModule).finally(() =>
+        this.esmFallbackSubpathPromises.delete(key),
+      );
+      this.esmFallbackSubpathPromises.set(key, promise);
+    }
+    return promise;
+  }
+
+  private async _materializeEsmFallbackSubpath(
+    name: string,
+    subpath: string,
+    nodeModule: NodeModule,
+  ): Promise<boolean> {
+    const range = this.esmFallbacks.get(name)!;
+    let code: string;
+    try {
+      code = await this.esmFallbackSubpathLoader!(name, range, subpath);
+    } catch (err) {
+      logger.warn(
+        `esm.sh fallback subpath fetch failed for ${name}@${range}/${subpath}; the resolution error stands`,
+        err,
+      );
+      return false;
+    }
+    const path = esmFallbackSubpathPath(name, subpath);
+    let compiled: string;
+    let deps: string[];
+    const scan = scanCjsModule(code);
+    if (scan.isEsm) {
+      // ESM tarball file → the shared ESM→CJS chain (the CJS require-runtime
+      // cannot evaluate import/export statements).
+      const transformed = await transformFile({ path, code });
+      if ('error' in transformed) {
+        logger.warn(`esm.sh fallback subpath transpile failed for ${name}@${range}/${subpath}`, transformed.error);
+        return false;
+      }
+      compiled = transformed.code;
+      deps = transformed.deps;
+    } else {
+      // Published CJS is browser-ready as-is — the raw-cjs convention: the code
+      // passes through byte-for-byte and only its require() graph is collected.
+      compiled = code;
+      deps = scan.requires;
+    }
+    const file: ICDNModuleFile = { c: compiled, d: deps, t: true };
+    nodeModule.files[subpath] = file;
+    const callbacks = this._writePrecompiledModule(path, file);
+    await Promise.all(callbacks.map((fn) => fn()));
+    return true;
   }
 
   async fetchNodeModule(name: string, version: string): Promise<NodeModule> {

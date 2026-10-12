@@ -158,7 +158,7 @@ describe('ModuleRegistry.fetchManifest with a lockset', () => {
     // out of `resolved`. The echo matches and closure passes (closure only rejects
     // INJECTED roots), so this would silently skip before — now the guard fires on
     // the lockset path too. (With the fallback enabled it would instead route the
-    // dropped dep to esm.sh; that path is covered in esmFallback.test.ts.)
+    // dropped dep to esm.sh; that path is covered in esm-fallback.test.ts.)
     const r = new ModuleRegistry({} as Bundler, null);
     const deps = { ...DEPS, 'lucide-react': '^1.21.0' };
     const incomplete = lockset({ dependencies: { ...deps } }); // resolved=RESOLVED lacks lucide-react
