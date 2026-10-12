@@ -10,10 +10,10 @@ import { createBundlerHarness, type BundlerHarness } from './testHarness/bundler
 // manifest as `r3-775-drill@dae3d4e` `src/App.tsx` writes it (its BUNDLE_PKG is
 // `JSON.stringify(pkg, null, 2) + '\n'`, fetched 2026-10-12) — the manifest whose
 // `main: src/App.tsx` used to blank the self-run stage. The file is the producer's
-// recorded output, not a hand-typed literal; `defaultExportsComponent`-style edits
-// to this suite must not re-type it.
+// recorded output, not a hand-typed literal; it lives under /test-fixtures (frozen
+// producer data, outside the src logic paths) and this suite must not re-type it.
 const DRILL_BUNDLE_PKG = readFileSync(
-  join(__dirname, 'testHarness', 'fixtures', 'r3-775-drill.bundle-package.json'),
+  join(__dirname, '..', '..', 'test-fixtures', 'r3-775-drill.bundle-package.json'),
   'utf-8',
 );
 
