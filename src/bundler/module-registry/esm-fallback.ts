@@ -1,4 +1,4 @@
-import { ESM_ORIGIN, UNPKG_ROOT } from '../moduleOrigins';
+import { ESM_ORIGIN, unpkgFileUrl } from '../moduleOrigins';
 import { ICDNModule } from './module-cdn';
 import { retryFetch } from '../../utils/fetch';
 
@@ -121,6 +121,11 @@ export async function fetchEsmFallbackSource(
  *  selects the PLAIN chain — under /node_modules, so no react-refresh wrap). */
 export const esmFallbackModulePath = (name: string): string => `/node_modules/${name}/index.js`;
 
+/** Path a materialized fallback SUBPATH lands at — the one spelling shared by
+ *  the registry's materialization write and the bundler's CachedFS negative
+ *  drop, whose byte-for-byte agreement the retry depends on (R3-820 round 1). */
+export const esmFallbackSubpathPath = (name: string, subpath: string): string => `/node_modules/${name}/${subpath}`;
+
 /**
  * Shape the transpiled fallback as an `ICDNModule` so it flows through the normal
  * NodeModule → RegistryFS → resolution path. `code` is already CJS (transpiled by
@@ -186,9 +191,14 @@ export function parseBareSubpath(specifier: string): { name: string; subpath: st
  */
 export type EsmFallbackSubpathLoader = (name: string, range: string, subpath: string) => Promise<string>;
 
-// Range → exact version, resolved once per package per frame (immutable fact;
-// the file fetches below pin it so unpkg's range redirect can never skew the
-// subpath onto a different release than a later re-fetch).
+// Range → exact version, memoized for this worker's lifetime — a deliberate
+// pin: every subpath file fetch of the frame reuses it, so unpkg's range
+// redirect can never skew two files of one package onto different releases
+// mid-boot. The PROBE itself must stay out of the persistent immutable cache
+// (`bypassImmutableCache`): a `name@^range/package.json` URL does not encode
+// the exact version, and caching it would freeze the floating resolution
+// across sessions. A failed resolution is not a fact — the memo entry is
+// dropped so the next materialization re-probes.
 const exactVersions = new Map<string, Promise<string>>();
 
 async function resolveExactVersion(name: string, range: string): Promise<string> {
@@ -196,20 +206,28 @@ async function resolveExactVersion(name: string, range: string): Promise<string>
   let promise = exactVersions.get(key);
   if (!promise) {
     promise = (async () => {
-      const response = await retryFetch(`${UNPKG_ROOT}${name}@${range}/package.json`, { maxRetries: 5 });
+      const response = await retryFetch(`${unpkgFileUrl(name, range, 'package.json')}`, {
+        maxRetries: 5,
+        bypassImmutableCache: true,
+      });
+      // No ok check needed here: bypassing the immutable cache routes through
+      // retryFetchUncached, which throws a FetchError on any non-ok response.
       const pkg = JSON.parse(await response.text()) as { version?: string };
       if (!pkg.version) throw new Error(`unpkg package.json for ${name}@${range} carries no version`);
       return pkg.version;
     })();
     exactVersions.set(key, promise);
-    promise.catch(() => exactVersions.delete(key)); // a failed resolution is not a fact — re-try next time
+    promise.catch(() => exactVersions.delete(key));
   }
   return promise;
 }
 
 export const nativeEsmFallbackSubpathLoader: EsmFallbackSubpathLoader = async (name, range, subpath) => {
   const version = await resolveExactVersion(name, range);
-  const response = await retryFetch(`${UNPKG_ROOT}${name}@${version}/${subpath}`, { maxRetries: 5 });
+  // Exact-version URLs are immutable — this fetch MAY ride the persistent cache.
+  const response = await retryFetch(unpkgFileUrl(name, version, subpath), { maxRetries: 5 });
+  // Not strictly dead: the parent-forwarded immutable bridge can hand back a
+  // non-ok Response with the status passed through (utils/fetch.ts).
   if (!response.ok) throw new Error(`HTTP ${response.status} fetching unpkg ${name}@${version}/${subpath}`);
   return response.text();
 };

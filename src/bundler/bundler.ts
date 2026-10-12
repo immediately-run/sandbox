@@ -42,7 +42,7 @@ import { WorkerMessageBus } from '../utils/WorkerMessageBus';
 import { NamedPromiseQueue } from '../utils/NamedPromiseQueue';
 import { nullthrows } from '../utils/nullthrows';
 import { ModuleRegistry } from './module-registry';
-import { parseBareSubpath } from './module-registry/esm-fallback';
+import { esmFallbackSubpathPath, parseBareSubpath } from './module-registry/esm-fallback';
 import { resolveFromCdnLayout } from './module-registry/cdnLayoutResolve';
 import { LocksetSection, locksetEchoContextFor, validateLockset } from './module-registry/lockset';
 import { collectLocalEntrySideEffects } from './sideEffectImports';
@@ -733,8 +733,9 @@ export class Bundler {
           // The failed probe memoized the subpath as absent (CachedFS negatives
           // persist per compile; node_modules is exempt from watcher
           // invalidation) — drop that one path so the retry consults the
-          // registry-backed mount, which now carries the file.
-          this.fs.dropCachesFor(`/node_modules/${bareSubpath.name}/${bareSubpath.subpath}`);
+          // registry-backed mount, which now carries the file. The path is the
+          // SAME symbol the registry materialized at, by construction.
+          this.fs.dropCachesFor(esmFallbackSubpathPath(bareSubpath.name, bareSubpath.subpath));
           return await this.resolveAsync(specifier, filename, extensions, true);
         }
       }

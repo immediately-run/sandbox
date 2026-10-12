@@ -21,6 +21,7 @@ import {
   EsmFallbackSubpathLoader,
   esmFallbackEntryUrl,
   esmFallbackModulePath,
+  esmFallbackSubpathPath,
   fetchEsmFallbackSource,
   nativeEsmFallbackFetcher,
   nativeEsmFallbackSubpathLoader,
@@ -351,10 +352,17 @@ export class ModuleRegistry {
    * file and precompiles its module — identical to what `loadModuleDependencies`
    * does for the files a CDN module inlines.
    *
-   * Returns false when nothing was materialized (not a fallback package, the
-   * rail is disabled, the file already exists, or the fetch/transpile failed) —
-   * the caller keeps the original resolution error. Fetch/transpile failures
-   * log a warning naming the package, subpath and cause first.
+   * Scope: SINGLE FILE per call — exactly the subpath the app imported. A
+   * relative require INSIDE that file for a sibling the tarball also carries is
+   * NOT materialized by this rail (it maps to the R3-411 stub that throws on
+   * call), where a primary-CDN package would have its whole file map served.
+   *
+   * Returns TRUE when the subpath is resolvable after the call — including when
+   * it was already materialized (the early return; nothing is fetched). Returns
+   * FALSE when nothing was materialized: not a fallback package, the rail is
+   * disabled, the module is missing from the registry, or the fetch/transpile
+   * failed (a warning naming the package, subpath and cause is logged first) —
+   * the caller keeps the original resolution error.
    */
   async ensureEsmFallbackSubpath(name: string, subpath: string): Promise<boolean> {
     if (!this.esmFallbacks.has(name) || !this.esmFallbackSubpathLoader) return false;
@@ -388,7 +396,7 @@ export class ModuleRegistry {
       );
       return false;
     }
-    const path = `/node_modules/${name}/${subpath}`;
+    const path = esmFallbackSubpathPath(name, subpath);
     let compiled: string;
     let deps: string[];
     const scan = scanCjsModule(code);
