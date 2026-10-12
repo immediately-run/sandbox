@@ -60,6 +60,13 @@ const FIXTURE = {
   // The ESM-transpile case uses the other dist name — its own subpath, so the
   // file map never conflates it with the CJS case.
   'src/esm.ts': "const esm = import('sql.js/dist/sql-asm.js');\nexport default esm;\n",
+  // The concurrent pair shares one subpath from two directories (different
+  // dirs → different resolution-cache keys, so BOTH resolutions run and fail
+  // before the file exists, both enter the retry hook, and exactly ONE unpkg
+  // fetch may serve them — the in-flight dedup). Same-dir entries would alias
+  // on the per-dir resolution cache and one would eat the other's rejection.
+  'src/conc-a.ts': "const a = import('sql.js/dist/concurrent.js');\nexport default a;\n",
+  'src/nested2/conc-b.ts': "const b = import('sql.js/dist/concurrent.js');\nexport default b;\n",
   'src/miss.ts': "const miss = import('sql.js/dist/nope.js');\nexport default miss;\n",
 };
 
@@ -121,6 +128,51 @@ describe('R3-820 — esm.sh-fallback deep subpaths materialize and resolve', () 
     const second = await h.bundler.transformModule(underAppRoot('/src/nested/second.ts'));
     expect(second.dependencyMap.get('sql.js/dist/sql-wasm.js')).toBe('/node_modules/sql.js/dist/sql-wasm.js');
     expect(subpathLoaderOf(h)).not.toHaveBeenCalled(); // file-map hit, no second fetch
+  }, 60000);
+
+  it('two CONCURRENT resolutions of one subpath share a single fetch (the in-flight dedup)', async () => {
+    const CJS = 'module.exports = { concurrent: true };\n';
+    let releaseFetch: (value: string) => void = () => {};
+    const heldFetch = new Promise<string>((resolve) => {
+      releaseFetch = resolve;
+    });
+    subpathLoaderOf(h)
+      .mockClear()
+      .mockImplementation(() => heldFetch);
+
+    // Both entries transform concurrently; both resolutions fail while the file
+    // is absent, both enter the retry hook, and both call ensure — the FIRST
+    // starts the materialization (its promise lives in the dedup map until it
+    // settles), the SECOND must receive that same in-flight promise, not start
+    // a second unpkg fetch. Any interleaving is safe ONLY under the dedup.
+    const both = Promise.all([
+      h.bundler.transformModule(underAppRoot('/src/conc-a.ts')),
+      h.bundler.transformModule(underAppRoot('/src/nested2/conc-b.ts')),
+    ]);
+    await new Promise((r) => setTimeout(r, 150)); // both are now parked on the held fetch
+    expect(subpathLoaderOf(h).mock.calls.length).toBe(1); // one in-flight fetch
+    releaseFetch(CJS);
+    const [a, b] = await both;
+    expect(a.dependencyMap.get('sql.js/dist/concurrent.js')).toBe('/node_modules/sql.js/dist/concurrent.js');
+    expect(b.dependencyMap.get('sql.js/dist/concurrent.js')).toBe('/node_modules/sql.js/dist/concurrent.js');
+    expect(subpathLoaderOf(h).mock.calls.length).toBe(1); // still one fetch after both settled
+  }, 60000);
+
+  it('ensureEsmFallbackSubpath is idempotent: a re-entry after materialization returns true with no fetch', async () => {
+    subpathLoaderOf(h).mockClear();
+    // dist/sql-wasm.js was materialized by the first test — the hook's contract
+    // is that a later ensure (e.g. a concurrent straggler arriving after the
+    // dedup entry was reaped) answers true from the file map, fetch-free.
+    await expect(h.bundler.moduleRegistry.ensureEsmFallbackSubpath('sql.js', 'dist/sql-wasm.js')).resolves.toBe(true);
+    expect(subpathLoaderOf(h)).not.toHaveBeenCalled();
+    // And a subpath whose fetch fails is NOT claimed as materialized (the
+    // mock's standing implementation must not leak a success into this case).
+    subpathLoaderOf(h)
+      .mockClear()
+      .mockImplementation(async () => {
+        throw new Error('HTTP 404 fetching unpkg sql.js@1.14.2/dist/never.js');
+      });
+    await expect(h.bundler.moduleRegistry.ensureEsmFallbackSubpath('sql.js', 'dist/never.js')).resolves.toBe(false);
   }, 60000);
 
   it('an ESM tarball file transpiles through the shared chain instead of passing through raw', async () => {
