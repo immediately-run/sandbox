@@ -144,15 +144,21 @@ describe('R3-820 — esm.sh-fallback deep subpaths materialize and resolve', () 
     // is absent, both enter the retry hook, and both call ensure — the FIRST
     // starts the materialization (its promise lives in the dedup map until it
     // settles), the SECOND must receive that same in-flight promise, not start
-    // a second unpkg fetch. Any interleaving is safe ONLY under the dedup.
+    // a second unpkg fetch. The barrier POLLS the ensure spy until both callers
+    // have entered (no wall-clock sleep to mis-synchronize on a loaded machine).
+    const ensureCalls = jest.spyOn(h.bundler.moduleRegistry, 'ensureEsmFallbackSubpath');
     const both = Promise.all([
       h.bundler.transformModule(underAppRoot('/src/conc-a.ts')),
       h.bundler.transformModule(underAppRoot('/src/nested2/conc-b.ts')),
     ]);
-    await new Promise((r) => setTimeout(r, 150)); // both are now parked on the held fetch
+    for (let i = 0; i < 500 && ensureCalls.mock.calls.length < 2; i += 1) {
+      await new Promise((r) => setTimeout(r, 10)); // both are parked on the held fetch
+    }
+    expect(ensureCalls.mock.calls.length).toBe(2); // BOTH callers entered the hook
     expect(subpathLoaderOf(h).mock.calls.length).toBe(1); // one in-flight fetch
     releaseFetch(CJS);
     const [a, b] = await both;
+    ensureCalls.mockRestore();
     expect(a.dependencyMap.get('sql.js/dist/concurrent.js')).toBe('/node_modules/sql.js/dist/concurrent.js');
     expect(b.dependencyMap.get('sql.js/dist/concurrent.js')).toBe('/node_modules/sql.js/dist/concurrent.js');
     expect(subpathLoaderOf(h).mock.calls.length).toBe(1); // still one fetch after both settled
