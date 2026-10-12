@@ -104,10 +104,11 @@ function hasRenderCall(source: string): boolean {
 
 /**
  * Whether the source carries JSX tags — a closing `</` or self-closing `/>`
- * outside strings and comments. Comparisons never produce those pairs; regex
- * literals are not skipped (only the CJS scanner does that) but a regex bearing
- * an unescaped `/>` or `</` is rarer than a component, which is the trade the
- * heuristic is allowed to make.
+ * outside strings and comments, a pair broken by either (a `<` or `/` on one
+ * side of a comment or string is not a tag). Comparisons never produce those
+ * pairs; regex literals are not skipped (only the CJS scanner does that) but a
+ * regex bearing an unescaped `/>` or `</` is rarer than a component, which is
+ * the trade the heuristic is allowed to make.
  */
 function hasJsxTags(source: string): boolean {
   let prevPunct = '';
@@ -121,7 +122,7 @@ function hasJsxTags(source: string): boolean {
       prevPunct = token.c;
       return;
     }
-    if (token.kind !== 'comment') prevPunct = '';
+    prevPunct = '';
   });
   return found;
 }
@@ -130,12 +131,13 @@ const isUpperCase = (c: string): boolean => c >= 'A' && c <= 'Z';
 
 /**
  * Whether the module's `export default` exports a React-style component: a
- * capitalized named function/class, or a capitalized identifier, in a file whose
- * body carries JSX (a constants module's uppercase default is not a component).
- * An anonymous or arrow default is indeterminate and deliberately NOT matched —
- * the heuristic refuses only the clear case, because the refusal blocks a program
- * that today (mis)resolves. Every `export default` in the file is checked, not
- * just the first.
+ * capitalized named function/class (an `async` modifier in between stays
+ * transparent), or a capitalized identifier, in a file whose body carries JSX (a
+ * constants module's uppercase default is not a component). An anonymous or
+ * arrow default is indeterminate and deliberately NOT matched — the heuristic
+ * refuses only the clear case, because the refusal blocks a program that today
+ * (mis)resolves. Every `export default` in the file is checked, not just the
+ * first.
  */
 function defaultExportsComponent(source: string): boolean {
   if (!hasJsxTags(source)) return false;
@@ -144,22 +146,26 @@ function defaultExportsComponent(source: string): boolean {
   //   `function`/`class` keyword (looking for its name).
   let state = 0;
   let matched = false;
+  // Last significant character of the PREVIOUS token — the `.` test that tells
+  // the `export` keyword from an `.export` member access.
+  let prevSignificant = '';
   const settle = (verdict: boolean): void => {
     if (verdict) matched = true;
     state = 0;
   };
   scanSourceTokens(source, (token: SourceToken) => {
     if (token.kind === 'comment') return;
-    const significant = tokenSignificantChar(token);
     if (state === 0) {
-      if (token.kind === 'ident' && token.word === 'export' && significant !== '.') state = 1;
+      if (token.kind === 'ident' && token.word === 'export' && prevSignificant !== '.') state = 1;
     } else if (state === 1) {
       if (token.kind === 'ident' && token.word === 'default') state = 2;
       else state = 0;
     } else if (state === 2) {
       if (token.kind === 'ident') {
         if (token.word === 'function' || token.word === 'class') state = 3;
-        else settle(isUpperCase(token.word[0]));
+        else if (token.word !== 'async') settle(isUpperCase(token.word[0]));
+        // `async` is the modifier of an async declaration or arrow: transparent —
+        // what follows answers (a named async function, or an anonymous arrow).
       } else {
         // `export default <expr>` — an arrow, a literal, a member access:
         // indeterminate, not a named component.
@@ -172,6 +178,7 @@ function defaultExportsComponent(source: string): boolean {
       if (token.kind === 'ident' && token.word !== 'extends') settle(isUpperCase(token.word[0]));
       else settle(false);
     }
+    prevSignificant = tokenSignificantChar(token) ?? prevSignificant;
     return matched ? false : undefined;
   });
   return matched;

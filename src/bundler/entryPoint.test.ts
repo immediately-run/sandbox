@@ -1,25 +1,21 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
 import { BundlerError } from '../errors/BundlerError';
 import { underAppRoot } from '../fsLayout';
 import { BOOT_DISPATCH_CANDIDATES, classifyDeclaredEntry } from './entryPoint';
 import { createBundlerHarness, type BundlerHarness } from './testHarness/bundlerHarness';
 
-// The real producer: the standing drill's self bundle manifest
-// (immediately-run-worker/r3-775-drill@dae3d4e, src/App.tsx BUNDLE_PKG) — the
-// manifest whose `main: src/App.tsx` used to blank the self-run stage.
-const DRILL_BUNDLE_PKG =
-  JSON.stringify(
-    {
-      name: 'self-drill',
-      main: 'src/App.tsx',
-      dependencies: {
-        react: '^19.2.5',
-        'react-dom': '^19.2.5',
-        '@immediately-run/sdk': '0.54.0',
-      },
-    },
-    null,
-    2,
-  ) + '\n';
+// The real producer, vendored byte-for-byte: the standing drill's self bundle
+// manifest as `r3-775-drill@dae3d4e` `src/App.tsx` writes it (its BUNDLE_PKG is
+// `JSON.stringify(pkg, null, 2) + '\n'`, fetched 2026-10-12) — the manifest whose
+// `main: src/App.tsx` used to blank the self-run stage. The file is the producer's
+// recorded output, not a hand-typed literal; `defaultExportsComponent`-style edits
+// to this suite must not re-type it.
+const DRILL_BUNDLE_PKG = readFileSync(
+  join(__dirname, 'testHarness', 'fixtures', 'r3-775-drill.bundle-package.json'),
+  'utf-8',
+);
 
 const APP_TSX = 'export default function App() {\n  return <h1>SELF-RUN-OK v1</h1>;\n}\n';
 const BOOT_INDEX = "import { boot } from '@immediately-run/sdk/boot';\nboot();";
@@ -71,6 +67,22 @@ describe('classifyDeclaredEntry (BOOT_SCAFFOLDING_SPEC §4.1)', () => {
     expect(
       classifyDeclaredEntry('/app/src/pages/Custom.tsx', 'const Custom = () => <p />;\nexport default Custom;\n'),
     ).toBe('refuse');
+    // The async modifier is transparent: an async component default is still a
+    // component default, not an indeterminate expression.
+    expect(
+      classifyDeclaredEntry(
+        '/app/src/pages/Custom.tsx',
+        'export default async function Custom() {\n  return <p />;\n}\n',
+      ),
+    ).toBe('refuse');
+  });
+
+  it('does not let a comparison pair straddling a comment pose as a JSX tag', () => {
+    // `<` ... comment ... `/` is division after a comparison, not a self-closing
+    // tag — an uppercase default in such a file is a constant, not a component.
+    expect(
+      classifyDeclaredEntry('/app/src/lib.ts', 'if (a < /* max */ b / 2) {\n  limit();\n}\nexport default TITLE;\n'),
+    ).toBe('entry');
   });
 
   it('keeps everything the component heuristic cannot clearly claim', () => {
@@ -86,7 +98,15 @@ describe('classifyDeclaredEntry (BOOT_SCAFFOLDING_SPEC §4.1)', () => {
     ).toBe('entry');
     // JSX only inside a string does not make the file a component module.
     expect(classifyDeclaredEntry('/app/src/main.tsx', 'export default TITLE;\nconst tpl = `<p />`;\n')).toBe('entry');
-    // `export` as a member access is not the keyword.
+    // `export` as a member access is not the keyword — the `.` test reads the
+    // PREVIOUS significant character, and `obj.export` in a JSX-bearing file
+    // must not hijack the state machine ahead of the real default.
+    expect(
+      classifyDeclaredEntry(
+        '/app/src/x.tsx',
+        'obj.export = compute();\nexport default function Custom() {\n  return <p />;\n}\n',
+      ),
+    ).toBe('refuse');
     expect(classifyDeclaredEntry('/app/src/x.ts', 'mod.export = 1;\n')).toBe('entry');
     // An unreadable module keeps the historical behaviour rather than refusing.
     expect(classifyDeclaredEntry('/app/src/x.ts', undefined)).toBe('entry');
