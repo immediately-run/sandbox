@@ -50,6 +50,21 @@ describe('classifyDeclaredEntry (BOOT_SCAFFOLDING_SPEC §4.1)', () => {
     ).toBe('refuse');
   });
 
+  it('does not count a leftover boot import as a render call, only a boot() call site', () => {
+    expect(
+      classifyDeclaredEntry(
+        '/app/src/pages/Widget.tsx',
+        "import { boot } from '@immediately-run/sdk/boot';\nexport default function Widget() {\n  return <p />;\n}\n",
+      ),
+    ).toBe('refuse');
+    expect(
+      classifyDeclaredEntry(
+        '/app/src/pages/Widget.tsx',
+        "import { boot } from '@immediately-run/sdk/boot';\nboot();\n",
+      ),
+    ).toBe('entry');
+  });
+
   it('does not mistake a render API in a comment or a string for a call', () => {
     expect(
       classifyDeclaredEntry(

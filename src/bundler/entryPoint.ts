@@ -13,9 +13,9 @@
  *    anyway (the program-component candidates below) is skipped — the bundle entry
  *    stays the boot scaffolding `index.tsx`, and the manifest selects the
  *    component it renders;
- *  - a declared entry that calls a render API (`createRoot`/`hydrateRoot`, or the
- *    SDK boot specifier) IS the render entry — a repository that ships its own
- *    keeps working;
+ *  - a declared entry that calls a render API — `createRoot`/`hydrateRoot` at a
+ *    call site, or `boot()` from an `@immediately-run/sdk/boot` import — IS the
+ *    render entry — a repository that ships its own keeps working;
  *  - a declared entry that default-exports a component — a capitalized name in a
  *    file that carries JSX tags — and calls no render API can never render;
  *    refused with a diagnostic instead of a blank, ready-reporting frame. The JSX
@@ -83,13 +83,16 @@ export function classifyDeclaredEntry(resolvedPath: string, source: string | und
 
 /**
  * Whether the module CALLS a render API: `createRoot`/`hydrateRoot` followed by a
- * call's open paren (a leftover import binding alone is not a call — the boot
- * specifier check beside it stays specifier-based because `boot` alone is a
- * common word).
+ * call's open paren, or `boot` followed by one after a boot-specifier import was
+ * seen. A leftover import binding alone — either kind — is not a call: the file
+ * still renders nothing as an entry, which is the classification the call site
+ * answers for.
  */
 function hasRenderCall(source: string): boolean {
   let found = false;
   let pendingRenderIdent = false;
+  let sawBootImport = false;
+  let pendingBootCall = false;
   scanSourceTokens(source, (token) => {
     if (token.kind === 'comment') return;
     if (pendingRenderIdent) {
@@ -100,13 +103,20 @@ function hasRenderCall(source: string): boolean {
       }
       // Not a call site — keep scanning (a later use may still call it).
     }
-    if (token.kind === 'ident' && RENDER_APIS.has(token.word)) {
-      pendingRenderIdent = true;
+    if (pendingBootCall) {
+      pendingBootCall = false;
+      if (token.kind === 'punct' && token.c === '(') {
+        found = true;
+        return false;
+      }
+    }
+    if (token.kind === 'ident') {
+      if (RENDER_APIS.has(token.word)) pendingRenderIdent = true;
+      else if (sawBootImport && token.word === 'boot') pendingBootCall = true;
       return;
     }
     if (token.kind === 'string' && token.raw.includes(BOOT_MODULE_SPECIFIER)) {
-      found = true;
-      return false;
+      sawBootImport = true;
     }
   });
   return found;
