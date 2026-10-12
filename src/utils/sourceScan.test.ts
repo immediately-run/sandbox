@@ -7,7 +7,8 @@ import {
   skipStringFrom,
 } from './sourceScan';
 
-// The two production consumers (`extractSideEffectImports`, `scanCjsModule`) drive
+// The production consumers (`extractSideEffectImports`, `scanCjsModule`, and the
+// shared `scanSourceTokens` walk those and the entry-point classifier sit on) drive
 // these through whole files; the cases below pin the edges those files only reach
 // occasionally — an escape before the closing quote, an unterminated literal, a
 // comment sitting between a keyword and its argument.
