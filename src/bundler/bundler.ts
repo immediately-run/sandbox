@@ -46,6 +46,7 @@ import { esmFallbackSubpathPath, parseBareSubpath } from './module-registry/esm-
 import { resolveFromCdnLayout } from './module-registry/cdnLayoutResolve';
 import { LocksetSection, locksetEchoContextFor, validateLockset } from './module-registry/lockset';
 import { collectLocalEntrySideEffects } from './sideEffectImports';
+import { classifyDeclaredEntry } from './entryPoint';
 import { Module } from './module/Module';
 import { CRYPTO_MODULE_CODE, UNSUPPORTED_BUILTIN_MODULE_CODE } from './shims';
 import { Preset } from './presets/Preset';
@@ -549,42 +550,83 @@ export class Bundler {
       throw new BundlerError('Preset has not been loaded yet');
     }
 
+    const parsed = this.parsedPackageJSON;
+    // The manifest's own declarations — the only candidates the BOOT_SCAFFOLDING_SPEC
+    // §4.1 classification applies to; the preset defaults below are the boot
+    // scaffolding's and always resolve to what they resolve to.
+    const declaredEntries = new Set([parsed.main, parsed.source, parsed.module].filter((e) => typeof e === 'string'));
     const potentialEntries = new Set(
-      [
-        this.parsedPackageJSON.main,
-        this.parsedPackageJSON.source,
-        this.parsedPackageJSON.module,
-        ...this.preset.defaultEntryPoints,
-      ].filter((e) => typeof e === 'string'),
+      [parsed.main, parsed.source, parsed.module, ...this.preset.defaultEntryPoints].filter(
+        (e) => typeof e === 'string',
+      ),
     );
 
     for (let potentialEntry of potentialEntries) {
-      if (typeof potentialEntry === 'string') {
-        try {
-          // Entry paths from package.json (and preset defaults) are
-          // repo-relative. The bundler fs is now rooted at `/`, so anchor them
-          // to `APP_ROOT`: an absolute entry like `/index.tsx` means the repo's
-          // `/app/index.tsx`, and relative/bare entries resolve against an
-          // `APP_ROOT` base.
-          const entryPoint =
-            potentialEntry[0] === '/'
-              ? underAppRoot(potentialEntry)
-              : potentialEntry[0] !== '.'
-              ? `./${potentialEntry}`
-              : potentialEntry;
-          const resolvedEntryPont = await this.resolveAsync(entryPoint, underAppRoot('/index.js'));
-          return resolvedEntryPont;
-        } catch (err) {
-          logger.debug(`Could not resolve entrypoint ${potentialEntry}`);
-          logger.debug(err);
+      if (typeof potentialEntry !== 'string') continue;
+
+      let resolvedEntryPoint: string;
+      try {
+        // Entry paths from package.json (and preset defaults) are
+        // repo-relative. The bundler fs is now rooted at `/`, so anchor them
+        // to `APP_ROOT`: an absolute entry like `/index.tsx` means the repo's
+        // `/app/index.tsx`, and relative/bare entries resolve against an
+        // `APP_ROOT` base.
+        const entryPoint =
+          potentialEntry[0] === '/'
+            ? underAppRoot(potentialEntry)
+            : potentialEntry[0] !== '.'
+            ? `./${potentialEntry}`
+            : potentialEntry;
+        resolvedEntryPoint = await this.resolveAsync(entryPoint, underAppRoot('/index.js'));
+      } catch (err) {
+        logger.debug(`Could not resolve entrypoint ${potentialEntry}`);
+        logger.debug(err);
+        continue;
+      }
+
+      if (declaredEntries.has(potentialEntry)) {
+        const verdict = classifyDeclaredEntry(resolvedEntryPoint, await this.readEntrySource(resolvedEntryPoint));
+        if (verdict === 'dispatch') {
+          // The manifest names a file the boot-defaults entry dispatches anyway —
+          // it selects the component, it is not the bundle entry. Skip it so the
+          // preset defaults resolve the boot scaffolding `index.tsx`.
+          logger.debug(
+            `Entrypoint ${potentialEntry} is the boot-dispatched program component; keeping the boot-defaults entry`,
+          );
+          continue;
+        }
+        if (verdict === 'refuse') {
+          const field = (['main', 'source', 'module'] as const).find((f) => parsed[f] === potentialEntry);
+          throw new BundlerError(
+            `package.json "${
+              field ?? 'main'
+            }" names ${potentialEntry}, which default-exports a component but calls no render API, so evaluating it as the entry renders nothing. ` +
+              `Name the program component src/App.tsx (the boot entry dispatches it), or mount it from an entry that calls createRoot/boot.`,
+          );
         }
       }
+
+      return resolvedEntryPoint;
     }
     throw new BundlerError(
       `Could not resolve entry point, potential entrypoints: ${Array.from(potentialEntries).join(
         ', ',
       )}. You can define one by changing the "main" field in package.json.`,
     );
+  }
+
+  /**
+   * The declared entry's source for the §4.1 classification, or `undefined` when
+   * unreadable — an unreadable entry is used as-is rather than refused on no
+   * evidence (a read failure is a resolution concern the candidates after this one
+   * may still answer).
+   */
+  private async readEntrySource(resolvedEntryPoint: string): Promise<string | undefined> {
+    try {
+      return await this.fs.readFileAsync(resolvedEntryPoint);
+    } catch {
+      return undefined;
+    }
   }
 
   /**
