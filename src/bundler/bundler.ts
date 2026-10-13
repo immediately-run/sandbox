@@ -48,7 +48,7 @@ import { LocksetSection, locksetEchoContextFor, validateLockset } from './module
 import { collectLocalEntrySideEffects } from './sideEffectImports';
 import { classifyDeclaredEntry } from './entryPoint';
 import { Module } from './module/Module';
-import { CRYPTO_MODULE_CODE, UNSUPPORTED_BUILTIN_MODULE_CODE } from './shims';
+import { CRYPTO_MODULE_CODE, NODE_SHIMMED_BUILTIN_NAMES, UNSUPPORTED_BUILTIN_MODULE_CODE } from './shims';
 import { Preset } from './presets/Preset';
 import { getPreset } from './presets/registry';
 import { emitPerfMarker } from './perfMarkers';
@@ -1029,18 +1029,20 @@ export class Bundler {
   }
 
   async preloadModules(): Promise<void> {
-    await Promise.all([
-      this.addPreloadedModule('path'),
+    // The two shims with their own module sources; every other builtin name in
+    // NODE_SHIMMED_BUILTIN_NAMES loads the default polyfill `getNodeModuleFiles`
+    // generates. The list is single-sourced in shims.ts so the undeclared-import
+    // collector skips exactly these names (R3-1203).
+    const shimSources: Record<string, string> = {
       // `fs` is backed by the shared filesystem (parent window over the Port),
       // not a CDN polyfill — so app-code writes reach the parent and reflect in
       // the editor.
-      this.addPreloadedModule('fs', SHARED_FS_MODULE_CODE),
-      this.addPreloadedModule('util'),
-      this.addPreloadedModule('assert'),
-      this.addPreloadedModule('module'),
-      this.addPreloadedModule('os'),
+      fs: SHARED_FS_MODULE_CODE,
       // WebCrypto-backed subset; unshimmable APIs throw only when called (R3-411).
-      this.addPreloadedModule('crypto', CRYPTO_MODULE_CODE),
+      crypto: CRYPTO_MODULE_CODE,
+    };
+    await Promise.all([
+      ...NODE_SHIMMED_BUILTIN_NAMES.map((name) => this.addPreloadedModule(name, shimSources[name])),
       // R3-411: the landing spot for a precompiled package's UNRESOLVABLE
       // builtin require (node:child_process, node:worker_threads, …) — a
       // guarded require in an un-imported file must not fail the app.
@@ -1588,7 +1590,7 @@ export class Bundler {
    * it MUST be stripped here. (Runs in `loadNodeModules`, after
    * `processPackageJSON`, so `parsedPackageJSON` is available.)
    */
-  private registryResolvedNames(): Set<string> {
+  registryResolvedNames(): Set<string> {
     const names = new Set(Object.keys(SELF_HOST_BASES));
     // R3-289: read through the root-peer merge so a git-form PEER mounts (and is
     // stripped from the CDN query) exactly like a git-form dependency.

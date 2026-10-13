@@ -28,7 +28,10 @@ const REACT_RESOLVED: IResolvedDependency[] = [
 ];
 
 describe('ModuleRegistry esm.sh fallback (transpile-through)', () => {
-  const registry = (fetcher: EsmFallbackFetcher | null) => new ModuleRegistry({} as Bundler, fetcher);
+  // The bundler stub carries registryResolvedNames — the rescue consults it on
+  // every preloadModules (R3-1203); the real Bundler always has the method.
+  const registry = (fetcher: EsmFallbackFetcher | null) =>
+    new ModuleRegistry({ registryResolvedNames: () => new Set() } as unknown as Bundler, fetcher);
 
   beforeEach(() => {
     mockedFetchManifest.mockReset();
@@ -108,7 +111,7 @@ describe('ModuleRegistry esm.sh fallback (transpile-through)', () => {
 // the package, refuses a surviving prerelease, and never applies a lockset that
 // carries one.
 describe('ModuleRegistry unrequested-prerelease guard (R3-600)', () => {
-  const registry = () => new ModuleRegistry({} as Bundler, null);
+  const registry = () => new ModuleRegistry({ registryResolvedNames: () => new Set() } as unknown as Bundler, null);
   const CANARY = '19.3.0-canary-ff7445e6-20260831';
 
   beforeEach(() => {
