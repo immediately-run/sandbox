@@ -27,6 +27,7 @@ import { ICDNModuleFile } from './module-cdn';
 import type { EsmFallbackFetcher } from './esm-fallback';
 import { fetchManifest, fetchModule, IResolvedDependency } from './module-cdn';
 import { collectUndeclaredImports, UNDECLARED_IMPORT_RESCUE_BUDGET } from './undeclared-transitive';
+import { NODE_SHIMMED_BUILTIN_NAMES } from '../shims';
 
 jest.mock('./module-cdn', () => ({
   ...jest.requireActual('./module-cdn'),
@@ -78,8 +79,11 @@ const recordedEsmSh: EsmFallbackFetcher = async (url) => {
   throw new Error(`unexpected esm.sh url ${url}`);
 };
 
-/** The registry under test: CDN stubs per case, one esm.sh fetcher seam. */
-const registry = (esm: EsmFallbackFetcher | null) => new ModuleRegistry({} as Bundler, esm);
+/** The registry under test: CDN stubs per case, one esm.sh fetcher seam, and a
+ * bundler stub carrying the registry-resolved names (git mounts) the rescue
+ * consults — `{}` by default (the real Bundler always has the method). */
+const registry = (esm: EsmFallbackFetcher | null, gitNames: string[] = []) =>
+  new ModuleRegistry({ registryResolvedNames: () => new Set(gitNames) } as unknown as Bundler, esm);
 
 beforeEach(() => {
   mockedFetchManifest.mockReset();
@@ -112,6 +116,9 @@ describe('ModuleRegistry dist-declared transitive rescue (R3-1203)', () => {
     expect(index.d).toEqual([]); // a pure leaf — nothing left to resolve
     // The manifest records the resolution (later fallback externals lists read it).
     expect(r.manifest).toContainEqual({ n: '@codemirror/streamparser', v: '*', d: 1 });
+    // And the esmFallbacks slot — the subpath rail serves deep imports of the
+    // rescued package exactly like a dropped top-level dep's.
+    expect(r.hasEsmFallback('@codemirror/streamparser')).toBe(true);
     // The operator is told, naming the importer and the action.
     expect(warn).toHaveBeenCalledWith(
       expect.stringContaining('"@codemirror/language" imports "@codemirror/streamparser"'),
@@ -191,6 +198,96 @@ describe('ModuleRegistry dist-declared transitive rescue (R3-1203)', () => {
     await expect(r.preloadModules()).resolves.toBeUndefined();
     expect(r.modules.has('@codemirror/streamparser')).toBe(false);
   });
+
+  it('a package.json re-edit that re-runs the boot does not re-rescue (already-registered names are known)', async () => {
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const esmCalls: string[] = [];
+    const esm: EsmFallbackFetcher = async (url) => {
+      esmCalls.push(url);
+      if (url.includes('/@codemirror/streamparser@*')) return STREAMPARSER_REEXPORT_STUB;
+      if (url.endsWith('/es2022/streamparser.mjs')) return STREAMPARSER_ESM;
+      throw new Error(`unexpected esm.sh url ${url}`);
+    };
+    mockedFetchManifest.mockResolvedValue(LANGUAGE_CARET_TREE.map((d) => ({ ...d })));
+    mockedFetchModule.mockImplementation(async (name) => ({
+      f: {},
+      m: name === '@codemirror/language' ? [...LANGUAGE_6130_IMPORTS] : [],
+    }));
+    const r = registry(esm);
+
+    // Boot, then the package.json re-edit path: fetchManifest reassigns the
+    // manifest from a fresh /dep_tree answer (no rescued entries in it) and
+    // the boot re-runs preloadModules.
+    await r.fetchManifest({ '@codemirror/language': '^6.11.0' });
+    await r.preloadModules();
+    await r.fetchManifest({ '@codemirror/language': '^6.11.0' });
+    await r.preloadModules();
+
+    expect(esmCalls.filter((u) => u.includes('streamparser@*'))).toHaveLength(1); // rescued once, not re-fetched
+    expect(r.manifest.filter((d) => d.n === '@codemirror/streamparser')).toHaveLength(1);
+    warn.mockRestore();
+  });
+
+  it('a git-form mount name in a package m list is known — no esm.sh duplicate of the mounted library', async () => {
+    mockedFetchManifest.mockResolvedValue([{ n: 'consumer-pkg', v: '1.0.0', d: 0 }]);
+    mockedFetchModule.mockResolvedValue({ f: {}, m: ['some-git-lib'] });
+    const esm: EsmFallbackFetcher = async () => {
+      throw new Error('no rescue may be attempted');
+    };
+    const r = registry(esm, ['some-git-lib']);
+
+    await r.fetchManifest({ 'consumer-pkg': '^1.0.0' });
+    await r.preloadModules();
+
+    expect(r.modules.has('some-git-lib')).toBe(false);
+    expect(r.hasEsmFallback('some-git-lib')).toBe(false);
+  });
+
+  it('a failing name does not starve the rest of the batch, is named in a warning, and is not retried', async () => {
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const failUrlHits: string[] = [];
+    mockedFetchManifest.mockResolvedValue([{ n: 'parent-pkg', v: '1.0.0', d: 0 }]);
+    mockedFetchModule.mockResolvedValue({ f: {}, m: ['pkg-fails', 'pkg-succeeds'] });
+    const esm: EsmFallbackFetcher = async (url) => {
+      if (url.includes('/pkg-fails@*')) {
+        failUrlHits.push(url);
+        throw new Error('HTTP 404');
+      }
+      if (url.includes('/pkg-succeeds@*')) return 'export const ok = 1;\n';
+      throw new Error(`unexpected esm.sh url ${url}`);
+    };
+    const r = registry(esm);
+
+    await r.fetchManifest({ 'parent-pkg': '^1.0.0' });
+    await r.preloadModules();
+
+    expect(r.modules.has('pkg-succeeds')).toBe(true);
+    expect(r.modules.has('pkg-fails')).toBe(false);
+    expect(failUrlHits).toHaveLength(1); // not retried in a later wave
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('could not resolve: pkg-fails'));
+    warn.mockRestore();
+  });
+
+  it('when every name fails, one warning names them all and the loop terminates without retries', async () => {
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const urlHits: string[] = [];
+    mockedFetchManifest.mockResolvedValue([{ n: 'parent-pkg', v: '1.0.0', d: 0 }]);
+    mockedFetchModule.mockResolvedValue({ f: {}, m: ['fail-a', 'fail-b'] });
+    const esm: EsmFallbackFetcher = async (url) => {
+      urlHits.push(url);
+      throw new Error('HTTP 404');
+    };
+    const r = registry(esm);
+
+    await r.fetchManifest({ 'parent-pkg': '^1.0.0' });
+    await r.preloadModules();
+
+    expect(urlHits).toHaveLength(2); // each name attempted exactly once
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringMatching(/could not resolve: fail-a, fail-b|could not resolve: fail-b, fail-a/),
+    );
+    warn.mockRestore();
+  });
 });
 
 describe('collectUndeclaredImports (the pure collector)', () => {
@@ -208,11 +305,14 @@ describe('collectUndeclaredImports (the pure collector)', () => {
     expect(candidates).toEqual([{ name: '@codemirror/streamparser', importer: '@codemirror/language' }]);
   });
 
-  it('skips builtin spellings, the shimmed names, self-references and known names', () => {
+  it('skips builtin spellings, every shimmed name (derived from the constant), self-references and known names', () => {
+    // The shimmed-name class is derived from the export the code consumes
+    // (R2: the producer, not a favourite subset typed by hand).
+    const shimmed = [...NODE_SHIMMED_BUILTIN_NAMES, ...NODE_SHIMMED_BUILTIN_NAMES.map((n) => `node:${n}`)];
     const modules = new Map<string, NodeModule>([
       [
         'emscripten-pkg',
-        nodeModule('emscripten-pkg', ['node:fs', 'node:child_process', 'fs', 'crypto', 'emscripten-pkg', 'known-pkg']),
+        nodeModule('emscripten-pkg', [...shimmed, 'node:child_process', 'emscripten-pkg', 'known-pkg']),
       ],
     ]);
     expect(collectUndeclaredImports(modules, new Set(['known-pkg']))).toEqual([]);

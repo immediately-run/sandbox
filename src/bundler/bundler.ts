@@ -1590,7 +1590,7 @@ export class Bundler {
    * it MUST be stripped here. (Runs in `loadNodeModules`, after
    * `processPackageJSON`, so `parsedPackageJSON` is available.)
    */
-  private registryResolvedNames(): Set<string> {
+  registryResolvedNames(): Set<string> {
     const names = new Set(Object.keys(SELF_HOST_BASES));
     // R3-289: read through the root-peer merge so a git-form PEER mounts (and is
     // stripped from the CDN query) exactly like a git-form dependency.

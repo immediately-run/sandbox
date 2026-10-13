@@ -288,22 +288,47 @@ export class ModuleRegistry {
   private async rescueUndeclaredImports(): Promise<void> {
     if (!this.esmFallbackFetcher) return;
     let rescued = 0;
+    const failed = new Set<string>();
+    const unrescuedNames = (current: UndeclaredImport[]): string =>
+      [...new Set([...failed, ...current.map((c) => c.name)])].join(', ');
     for (;;) {
-      const known = new Set([...Object.keys(SELF_HOST_BASES), ...this.manifest.map((dep) => dep.n)]);
-      const candidates = collectUndeclaredImports(this.modules, known);
-      if (candidates.length === 0) return;
+      // What counts as resolved: the manifest, the self-hosted bases, every
+      // registered package (so a package.json re-edit that re-runs the boot
+      // does not re-rescue), and the registry-resolved names (git-form deps —
+      // the mount provides them; a rescue would fetch an esm.sh duplicate).
+      const known = new Set([
+        ...this.bundler.registryResolvedNames(),
+        ...this.manifest.map((dep) => dep.n),
+        ...this.modules.keys(),
+      ]);
+      const candidates = collectUndeclaredImports(this.modules, known).filter((c) => !failed.has(c.name));
+      if (candidates.length === 0) {
+        if (failed.size > 0) {
+          logger.warn(
+            `Undeclared-import rescue could not resolve: ${[...failed].join(', ')}; ` +
+              `left unresolved. These surface as module-not-found if actually imported.`,
+          );
+        }
+        return;
+      }
       if (rescued >= UNDECLARED_IMPORT_RESCUE_BUDGET) {
-        const unrescued = [...new Set(candidates.map((c) => c.name))].join(', ');
         logger.warn(
           `Undeclared-import rescue stopped at its ${UNDECLARED_IMPORT_RESCUE_BUDGET}-package budget; ` +
-            `not resolved: ${unrescued}. These surface as module-not-found if actually imported.`,
+            `not resolved: ${unrescuedNames(candidates)}. These surface as module-not-found if actually imported.`,
         );
         return;
       }
       const batch = candidates.slice(0, UNDECLARED_IMPORT_RESCUE_BUDGET - rescued);
-      const outcomes = await Promise.all(batch.map((candidate) => this.rescueOneUndeclared(candidate)));
+      const outcomes = await Promise.all(
+        batch.map((candidate) =>
+          this.rescueOneUndeclared(candidate).then((ok) => {
+            if (!ok) failed.add(candidate.name);
+            return ok;
+          }),
+        ),
+      );
       const registered = outcomes.filter((outcome) => outcome);
-      if (registered.length === 0) return; // no progress possible — degrade, don't loop
+      if (registered.length === 0) continue; // all of this batch failed — the next pass warns and stops
       rescued += registered.length;
     }
   }
@@ -327,9 +352,12 @@ export class ModuleRegistry {
     }
     const index = mod.files['index.js'];
     if (typeof index === 'object') mod.modules.push(...index.d);
-    // Honest bookkeeping: the registry HAS resolved this name, and later
-    // fallback externals lists read the manifest. Depth is genuinely ≥1 — a
-    // dist-declared transitive by construction.
+    // Register exactly like a dropped top-level dependency: the manifest entry
+    // (honest bookkeeping — the registry HAS resolved this name, depth ≥1 by
+    // construction) and the esmFallbacks slot, so the SUBPATH rail
+    // (`hasEsmFallback`-gated materialization) serves deep imports of the
+    // rescued package too.
+    this.esmFallbacks.set(candidate.name, '*');
     this.manifest.push({ n: candidate.name, v: '*', d: 1 });
     logger.warn(
       `"${candidate.importer}" imports "${candidate.name}", which no declared dependency resolves and the ` +

@@ -56,10 +56,11 @@ const SHIMMED = new Set(NODE_SHIMMED_BUILTIN_NAMES);
 /**
  * Every bare package name the loaded packages' metadata (`NodeModule.modules`,
  * the CDN's package-level import list) names that no already-resolved source
- * covers. `known` carries the manifest's names plus anything already registered
- * (self-hosted names included by the caller). Relative/absolute specifiers,
- * `node:`-prefixed builtins (the shims and the R3-411 stub own those), the
- * shimmed builtin names, and a package's self-reference are not candidates.
+ * covers. `known` is the caller's resolved-name set — the manifest's names,
+ * every registered package, and the registry-resolved names (self-hosted bases
+ * and git-form mounts). Relative/absolute specifiers, `node:`-prefixed builtins
+ * (the shims and the R3-411 stub own those), the shimmed builtin names, and a
+ * package's self-reference are not candidates.
  */
 export function collectUndeclaredImports(
   modules: Map<string, NodeModule>,
