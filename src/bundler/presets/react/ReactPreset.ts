@@ -15,7 +15,7 @@ import { StyleTransformer } from '../../transforms/style';
 import { JSONTransformer } from '../../transforms/json';
 import { RawCjsTransformer } from '../../transforms/raw-cjs';
 import { isPassthroughCjs } from '../../transforms/raw-cjs/scan';
-import { Preset } from '../Preset';
+import { Preset, isJsFamilyFile } from '../Preset';
 
 const ASSET_REGEX = new RegExp(`\\.(${ASSET_EXTENSIONS.join('|')})$`, 'i');
 
@@ -53,7 +53,7 @@ export class ReactPreset extends Preset {
       return transfomers;
     }
 
-    if (/\.(m|c)?(t|j)sx?$/.test(module.filepath) && !module.filepath.endsWith('.d.ts')) {
+    if (isJsFamilyFile(module.filepath)) {
       // A CommonJS `/node_modules` dependency is browser-ready as published — the
       // Sandpack CDN only resolves its dependency graph, it does not transform
       // code. Pass it through untouched (deps scanned out by RawCjsTransformer)
