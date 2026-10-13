@@ -11,6 +11,15 @@
 export const UNSUPPORTED_BUILTIN_MODULE_PATH = '/node_modules/__node-unsupported/index.js';
 
 /**
+ * The node builtins the sandbox preloads as shim modules (`Bundler.preloadModules`
+ * writes one `/node_modules/<name>` package per entry). Single-sourced here so
+ * the undeclared-import collector (`module-registry/undeclared-transitive.ts`)
+ * skips exactly these names — a package's metadata naming `fs` must resolve to
+ * the shim, never to a registry rescue.
+ */
+export const NODE_SHIMMED_BUILTIN_NAMES: readonly string[] = ['path', 'fs', 'util', 'assert', 'module', 'os', 'crypto'];
+
+/**
  * Source for the sandbox's `crypto` builtin shim (R3-411). Backed by WebCrypto
  * where an equivalent exists (`randomBytes`/`randomFillSync`/`getRandomValues`/
  * `randomUUID`/`webcrypto`); everything else (`createHash`, `createHmac`, …)

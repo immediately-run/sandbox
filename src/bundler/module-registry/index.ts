@@ -28,6 +28,7 @@ import {
   synthesizeEsmFallbackModule,
 } from './esm-fallback';
 import { NodeModule } from './NodeModule';
+import { collectUndeclaredImports, UNDECLARED_IMPORT_RESCUE_BUDGET, UndeclaredImport } from './undeclared-transitive';
 import { scanCjsModule } from '../transforms/raw-cjs/scan';
 
 // dependency => version range
@@ -69,6 +70,12 @@ export class ModuleRegistry {
   // (`sql.js/dist/sql-asm.js`) — the synthesis covers only the package root, so
   // the subpath rail fetches the raw tarball file from unpkg. `null` disables
   // the rail (subpath imports keep the resolution error).
+  //
+  // With the esm.sh fallback ENABLED, the registry also runs the dist-declared
+  // transitive rescue (R3-1203, see undeclared-transitive.ts): a package whose
+  // dist imports a name no declared dependency resolves is fetched through the
+  // same fallback. `null` (the fallback off) disables the rescue with it — the
+  // pre-R3-1203 behaviour, the boot dies on the first such import.
   constructor(
     bundler: Bundler,
     private esmFallbackFetcher: EsmFallbackFetcher | null = nativeEsmFallbackFetcher,
@@ -257,6 +264,79 @@ export class ModuleRegistry {
         return this.fetchNodeModule(dep.n, dep.v);
       }),
     );
+    await this.rescueUndeclaredImports();
+  }
+
+  /**
+   * R3-1203 — reconcile the loaded packages' ACTUAL imports (their `m` list,
+   * the CDN's package-level answer computed from the real dist) against what
+   * the boot resolved, and fetch anything the whole chain left unnamed through
+   * the esm.sh fallback: a dist-declared transitive the resolved version's
+   * package.json does not declare (the recorded case:
+   * `@codemirror/language@6.13.0` importing `@codemirror/streamparser`,
+   * declared only from 6.13.1) is resolved at esm.sh's `*` (latest — no range
+   * was ever declared for it) with the already-resolved deps externalized, and
+   * registered like any fallback package. Runs to a fixpoint so a rescued
+   * package's own bare imports get the same treatment.
+   *
+   * Never throws: a name the fallback cannot answer is warned about and left
+   * alone, preserving the R3-411 bar (a guarded require in a file the app never
+   * imports must not fail the boot — the module-not-found surfaces exactly if
+   * the import is reached). The budget bounds the boot's fallback round-trips
+   * against metadata naming unbounded unknowns.
+   */
+  private async rescueUndeclaredImports(): Promise<void> {
+    if (!this.esmFallbackFetcher) return;
+    let rescued = 0;
+    for (;;) {
+      const known = new Set([...Object.keys(SELF_HOST_BASES), ...this.manifest.map((dep) => dep.n)]);
+      const candidates = collectUndeclaredImports(this.modules, known);
+      if (candidates.length === 0) return;
+      if (rescued >= UNDECLARED_IMPORT_RESCUE_BUDGET) {
+        const unrescued = [...new Set(candidates.map((c) => c.name))].join(', ');
+        logger.warn(
+          `Undeclared-import rescue stopped at its ${UNDECLARED_IMPORT_RESCUE_BUDGET}-package budget; ` +
+            `not resolved: ${unrescued}. These surface as module-not-found if actually imported.`,
+        );
+        return;
+      }
+      const batch = candidates.slice(0, UNDECLARED_IMPORT_RESCUE_BUDGET - rescued);
+      const outcomes = await Promise.all(batch.map((candidate) => this.rescueOneUndeclared(candidate)));
+      const registered = outcomes.filter((outcome) => outcome);
+      if (registered.length === 0) return; // no progress possible — degrade, don't loop
+      rescued += registered.length;
+    }
+  }
+
+  // Fetch one rescued package through the esm.sh fallback at `*`. The
+  // synthesized NodeModule's `modules` (its `m` slot) is seeded with the
+  // transpiled entry's bare specifiers so the fixpoint loop picks them up on
+  // its next pass exactly like a CDN package's import list.
+  private async rescueOneUndeclared(candidate: UndeclaredImport): Promise<boolean> {
+    let mod: NodeModule;
+    try {
+      mod = await this._fetchEsmFallbackModule(candidate.name, '*');
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      logger.warn(
+        `Could not rescue the undeclared import "${candidate.name}" through the esm.sh fallback ` +
+          `(${reason}); leaving it unresolved`,
+        { name: candidate.name },
+      );
+      return false;
+    }
+    const index = mod.files['index.js'];
+    if (typeof index === 'object') mod.modules.push(...index.d);
+    // Honest bookkeeping: the registry HAS resolved this name, and later
+    // fallback externals lists read the manifest. Depth is genuinely ≥1 — a
+    // dist-declared transitive by construction.
+    this.manifest.push({ n: candidate.name, v: '*', d: 1 });
+    logger.warn(
+      `"${candidate.importer}" imports "${candidate.name}", which no declared dependency resolves and the ` +
+        `package CDN has not indexed; resolved ${candidate.name} at latest through the esm.sh fallback. ` +
+        `Pin the package in package.json to make the dependency explicit.`,
+    );
+    return true;
   }
 
   private async _fetchModule(name: string, version: string): Promise<NodeModule> {
