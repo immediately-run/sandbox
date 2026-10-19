@@ -20,8 +20,8 @@ permissions:
   checks: write
   pull-requests: read
 
-# One run per PR at a time (round 1, backend#112): a synchronize plus the skill's
-# dispatch is a realistic trigger pair, and two overlapping runs would double-POST.
+# One run per PR at a time: a synchronize plus the skill's dispatch is a realistic
+# trigger pair, and two overlapping runs would double-POST.
 concurrency:
   group: review-gate-${{ github.event.pull_request.number || inputs.pr }}
 
@@ -30,8 +30,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      # Pinned by commit SHA (round-2 finding 2-r2-0): this job holds checks: write, so a
-      # moved tag could post a `review-gate` success on any head. cache.yml pins the same way.
+      # Pinned by commit SHA: this job holds checks: write, so a moved action tag could
+      # post a `review-gate` success on any head.
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: '24'
@@ -41,7 +41,7 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr }}
           REPO_NAME: ${{ github.event.repository.name }}
           # A future dependency of verify-checks must not run an install script with this
-          # job's checks: write token (round-2 finding 2-r2-0; cache.yml does the same).
+          # job's checks: write token.
           npm_config_ignore_scripts: 'true'
         # The pinned package, not the PR: the verdict rule is code the PR cannot edit.
         # 0.11.0 is the first published release whose bin updates the head's open run in
