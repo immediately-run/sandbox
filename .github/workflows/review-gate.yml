@@ -1,0 +1,49 @@
+# review-gate (R3-1166) — the deterministic gate verdict as a required check.
+#
+# Base-branch workflow by design: `pull_request_target` runs THIS repo's copy, never the
+# PR's. The job checks out nothing from the PR, reads reviews and threads by GraphQL, and
+# writes the `review-gate` check run on the PR's head SHA. `wait` maps to in_progress, so
+# a PR with no review on its current head reads as pending, never as green.
+
+name: review-gate
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: PR number
+        required: true
+        type: number
+
+permissions:
+  checks: write
+  pull-requests: read
+
+# One run per PR at a time: a synchronize plus the skill's dispatch is a realistic
+# trigger pair, and two overlapping runs would double-POST.
+concurrency:
+  group: review-gate-${{ github.event.pull_request.number || inputs.pr }}
+
+jobs:
+  verdict:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # Pinned by commit SHA: this job holds checks: write, so a moved action tag could
+      # post a `review-gate` success on any head.
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: '24'
+      - name: Compute and post the review-gate verdict
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr }}
+          REPO_NAME: ${{ github.event.repository.name }}
+          # A future dependency of verify-checks must not run an install script with this
+          # job's checks: write token.
+          npm_config_ignore_scripts: 'true'
+        # The pinned package, not the PR: the verdict rule is code the PR cannot edit.
+        # 0.11.0 is the first published release whose bin updates the head's open run in
+        # place (verify-checks#20); 0.9.0 POSTs a twin on every dispatch.
+        run: npm exec --yes --package @immediately-run/verify-checks@0.11.0 -- review-gate "$GITHUB_REPOSITORY_OWNER" "$REPO_NAME" "$PR_NUMBER"
