@@ -668,7 +668,11 @@ export class Bundler {
     // `IMPLICIT_SDK_PEERS` (selfHostPeers.ts). The root wins every name it declares.
     // Merged before the emptiness gate so a root with no dependencies at all still
     // fetches them.
-    let dependencies = { ...(await this.selfHostPeerDependencies()), ...rootDependencies };
+    const sdkPeers = await this.selfHostPeerDependencies();
+    // The names only the SDK supplied (the root did not declare them), so a git library's
+    // differing range is reported as losing to the SDK's peer, not to an app pin.
+    const implicitPeerNames = new Set(Object.keys(sdkPeers).filter((name) => !(name in rootDependencies)));
+    let dependencies = { ...sdkPeers, ...rootDependencies };
     if (Object.keys(dependencies).length > 0) {
       // R3-844: the lockset echo the CLI writes mirrors the PRE-strip input —
       // `computeInputDepMap` over the root runtime deps, git-form entries
@@ -679,9 +683,16 @@ export class Bundler {
       // Without this, a git-library consumer's lockset could never match its
       // own echo and the boot always needed the /dep_tree CDN call — a CDN
       // outage blanked exactly the apps the library-mount rail serves.
-      // The echo input is the root map alone, as the CLI computes it: a repo relying on
-      // the SDK's peers misses the echo and takes the /dep_tree/ path (slower, correct).
-      const locksetEcho = locksetEchoContextFor(rootDependencies);
+      // R3-1318: the echo input is the MERGED map (SDK peers + root), not the root alone.
+      // The CLI's echo is `computeInputDepMap(rootRuntimeDependencies(pkg))`, root only,
+      // and its lockset was resolved without the SDK's peers. A root that declares every
+      // SDK peer itself gives a merged map equal to the root map (the root wins every
+      // overlap), so its sidecar lockset still matches and applies. A root missing one
+      // (omnibox declares react but not react-dom) gives a merged map with that peer
+      // added, so the echo misses and the bundler resolves live through /dep_tree/.
+      // Echoing the root alone would match, apply a lockset without react-dom, and fail
+      // `assertDependenciesResolved`.
+      const locksetEcho = locksetEchoContextFor(dependencies);
       // Self-hosted (resolveFromRegistry) modules are already registered as
       // local modules by addLocalModules; strip them so the CDN /dep_tree/ query
       // never has to resolve them (immune to npm→CDN replication lag). Their own
@@ -697,7 +708,7 @@ export class Bundler {
       // resolves from a mount or the self-host) and BEFORE the preset augmentation (so they
       // get the same react/core-js treatment every other dependency does). App-wins on a
       // clash — see `libraryContributedDependencies`.
-      const contributed = this.libraryContributedDependencies(dependencies);
+      const contributed = this.libraryContributedDependencies(dependencies, implicitPeerNames);
       if (Object.keys(contributed).length) {
         dependencies = { ...contributed, ...dependencies };
       }
@@ -1344,16 +1355,21 @@ export class Bundler {
    * has to serve both. Taking the app's keeps the version its author tested. A differing
    * pin is logged once per name rather than resolved silently, because "the library asked
    * for something else and got yours" is exactly the kind of thing that surfaces later as
-   * a mystery.
+   * a mystery. A name in `implicitPeerNames` came from the vendored SDK's peers, not the
+   * app's manifest (R3-1318), and the warning says so.
    */
-  private libraryContributedDependencies(appDependencies: Record<string, string>): Record<string, string> {
+  private libraryContributedDependencies(
+    appDependencies: Record<string, string>,
+    implicitPeerNames: ReadonlySet<string> = new Set(),
+  ): Record<string, string> {
     const contributed: Record<string, string> = {};
     for (const [libName, deps] of this.gitLibraryDependencies) {
       for (const [name, range] of Object.entries(deps)) {
         if (name in appDependencies) {
           if (appDependencies[name] !== range) {
+            const winner = implicitPeerNames.has(name) ? "the SDK's implicit peer" : 'the app pins';
             logger.warn(
-              `Git-library '${libName}' asks for ${name}@${range}; the app pins ` +
+              `Git-library '${libName}' asks for ${name}@${range}; ${winner} ` +
                 `${name}@${appDependencies[name]}, which wins (one flat dependency closure).`,
             );
           }

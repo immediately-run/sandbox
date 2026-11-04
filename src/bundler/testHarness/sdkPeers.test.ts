@@ -1,3 +1,8 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
+import { SandpackLogLevel, setLogLevel } from '../../utils/logger';
+import { MANIFEST_SIDECAR_PATH, underAppRoot } from '../../fsLayout';
 import {
   createBundlerHarness,
   COMPILE_FIXTURE,
@@ -87,6 +92,36 @@ describe('R3-1318 — the implicit SDK brings its peers', () => {
     expect(sent?.['react-dom']).toBe('^19.0.0');
   });
 
+  it("a git library's differing react range is reported as losing to the SDK's implicit peer, not an app pin", async () => {
+    (
+      h.bundler as unknown as { gitLibraryDependencies: Map<string, Record<string, string>> }
+    ).gitLibraryDependencies.set('@scope/lib', { react: '^18.3.0' });
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const sent = await depsSentToCdn({ dependencies: { jose: '^6.2.12' } });
+      expect(sent?.react).toBe('^19.0.0');
+      const said = warn.mock.calls.map((c) => String(c[0])).find((m) => m.includes("Git-library '@scope/lib'"));
+      expect(said).toContain("the SDK's implicit peer react@^19.0.0");
+      expect(said).not.toContain('the app pins');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('the same clash against a root that declares react still says the app pins it', async () => {
+    (
+      h.bundler as unknown as { gitLibraryDependencies: Map<string, Record<string, string>> }
+    ).gitLibraryDependencies.set('@scope/lib', { react: '^18.3.0' });
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      await depsSentToCdn({ dependencies: { react: '^19.2.5' } });
+      const said = warn.mock.calls.map((c) => String(c[0])).find((m) => m.includes("Git-library '@scope/lib'"));
+      expect(said).toContain('the app pins react@^19.2.5');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('an unparseable vendored manifest contributes nothing and warns', async () => {
     await h.bundler.fs.writeFile(SDK_MANIFEST_PATH, '{ not json');
     const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
@@ -97,5 +132,93 @@ describe('R3-1318 — the implicit SDK brings its peers', () => {
     } finally {
       warn.mockRestore();
     }
+  });
+});
+
+/**
+ * R3-1318 round 2: the SDK's peers against a cached sidecar lockset. The CLI's lockset
+ * echo is computed over the root's runtime dependencies alone, and its lockset was
+ * resolved without the SDK's peers. The fixture is the recorded zip sidecar of omnibox
+ * at 55ca65d (its live gh-pages sidecar, recorded by the round-2 reviewer 2026-11-04):
+ * its lockset carries react but not react-dom. These cases run the real `fetchManifest`;
+ * only the live `/dep_tree/` call (`resolveManifestGuarded`) and the module loading after
+ * it are stubbed.
+ */
+describe('R3-1318 — SDK peers and the sidecar lockset', () => {
+  const OMNIBOX_SIDECAR = readFileSync(join(__dirname, 'fixtures', 'sidecar', 'omnibox-55ca65d.sidecar.json'), 'utf-8');
+  /** omnibox's package.json at 55ca65d. */
+  const OMNIBOX_PKG = { peerDependencies: { '@immediately-run/sdk': '>=0.60.0 <1.0.0', react: '^19.2.5' } };
+  type Resolved = { n: string; v: string; d: number };
+
+  let h: BundlerHarness;
+
+  beforeEach(async () => {
+    h = await createBundlerHarness(COMPILE_FIXTURE);
+    await h.bundler.fs.writeFile('/node_modules/@immediately-run/sdk/package.json', SELF_HOSTED_SDK_PACKAGE_JSON);
+  });
+
+  afterEach(async () => {
+    jest.restoreAllMocks();
+    await h.teardown();
+  });
+
+  /** Run `loadNodeModules` over `pkg` with `sidecar` in place; report whether the lockset
+   *  was applied, the map the live path was asked for (if it ran) and the manifest. */
+  async function boot(pkg: unknown, sidecar: string) {
+    await h.bundler.fs.writeFile(underAppRoot(MANIFEST_SIDECAR_PATH), sidecar);
+    const b = h.bundler as unknown as {
+      parsedPackageJSON: unknown;
+      loadNodeModules: () => Promise<void>;
+      moduleRegistry: {
+        manifest: Resolved[];
+        setEsmFallbackFetcher: (f: null) => void;
+        resolveManifestGuarded: (deps: Record<string, string>) => Promise<Resolved[]>;
+        preloadModules: () => Promise<void>;
+        loadModuleDependencies: () => Promise<void>;
+      };
+    };
+    b.parsedPackageJSON = pkg;
+    await h.bundler.initPreset('create-react-app');
+    const reg = b.moduleRegistry;
+    reg.setEsmFallbackFetcher(null);
+    let liveInput: Record<string, string> | undefined;
+    jest.spyOn(reg, 'resolveManifestGuarded').mockImplementation(async (deps) => {
+      liveInput = { ...deps };
+      return Object.keys(deps).map((n) => ({ n, v: '0.0.0-stub', d: 0 }));
+    });
+    jest.spyOn(reg, 'preloadModules').mockImplementation(async () => undefined);
+    jest.spyOn(reg, 'loadModuleDependencies').mockImplementation(async () => undefined);
+    // `logger.debug` writes through `console.log` at the Debug level; pin the level so
+    // the "Using sidecar lockset" line is observable.
+    setLogLevel(SandpackLogLevel.Debug);
+    const debug = jest.spyOn(console, 'log').mockImplementation(() => undefined);
+    jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    await b.loadNodeModules();
+    const usedLockset = debug.mock.calls.some((c) => String(c[0]).includes('Using sidecar lockset'));
+    return { usedLockset, liveInput, manifest: reg.manifest };
+  }
+
+  it('omnibox (declares react, not react-dom) skips the lockset and resolves react-dom through /dep_tree/', async () => {
+    const { usedLockset, liveInput, manifest } = await boot(OMNIBOX_PKG, OMNIBOX_SIDECAR);
+    expect(usedLockset).toBe(false);
+    expect(liveInput?.['react-dom']).toBe('^19.0.0');
+    expect(liveInput?.react).toBe('^19.2.5');
+    expect(manifest.some((r) => r.n === 'react-dom')).toBe(true);
+  });
+
+  it('a root declaring react and react-dom at its own ranges still uses the sidecar lockset', async () => {
+    // The omnibox sidecar as the CLI would write it for a root that also declares
+    // react-dom: the same file with react-dom added to the echo and the resolved set.
+    const sidecar = JSON.parse(OMNIBOX_SIDECAR) as {
+      lockset: { dependencies: Record<string, string>; resolved: Resolved[] };
+    };
+    sidecar.lockset.dependencies['react-dom'] = '^19.2.5';
+    sidecar.lockset.resolved.push({ n: 'react-dom', v: '19.2.5', d: 0 }, { n: 'scheduler', v: '0.27.0', d: 1 });
+    const pkg = { peerDependencies: { ...OMNIBOX_PKG.peerDependencies, 'react-dom': '^19.2.5' } };
+
+    const { usedLockset, liveInput, manifest } = await boot(pkg, JSON.stringify(sidecar));
+    expect(usedLockset).toBe(true);
+    expect(liveInput).toBeUndefined();
+    expect(manifest.find((r) => r.n === 'react-dom')?.v).toBe('19.2.5');
   });
 });

@@ -9,7 +9,7 @@ import { rootRuntimeDependencies, type RootPackageShape } from '@immediately-run
  * types }`, so no published self-hosted version carries `peerDependencies` (checked
  * 0.16.0 to 0.57.0, 2026-11-04). These are the peers every published SDK declares on npm
  * (`npm view @immediately-run/sdk@<v> peerDependencies` for 0.16.0, 0.46.0 and latest all
- * give exactly these). This is their one home in the sandbox; `sdkPeers.test.ts` fails
+ * give exactly these). This is their one home in the sandbox; `selfHostPeers.test.ts` fails
  * if the installed npm SDK's peers drift from it.
  */
 export const IMPLICIT_SDK_PEERS: Readonly<Record<string, string>> = Object.freeze({
