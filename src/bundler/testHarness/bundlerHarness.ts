@@ -35,11 +35,22 @@ import { createBabelLoopback, type BabelLoopback } from './babelLoopback';
  * in `bundlerHarness.nodeModules.test.ts`.
  */
 
-/** The `package.json` of the SDK this repo installs — the same file the SDK's release
- *  CI publishes into the self-host manifest that `vendorModuleFrom` writes under
- *  `/node_modules/@immediately-run/sdk/`. Tests read it rather than typing its peers. */
+/** The npm `package.json` of the SDK this repo installs. It is NOT what production
+ *  vendors: `vendorModuleFrom` writes the self-host manifest (`SELF_HOSTED_SDK_PACKAGE_JSON`
+ *  below) under `/node_modules/@immediately-run/sdk/`. Tests read this one only to pin
+ *  `IMPLICIT_SDK_PEERS` to the peers the SDK declares on npm. */
 export const INSTALLED_SDK_PACKAGE_JSON: string = readFileSync(
   join(__dirname, '..', '..', '..', 'node_modules', '@immediately-run', 'sdk', 'package.json'),
+  'utf-8',
+);
+
+/** The bytes `vendorModuleFrom` writes to `/node_modules/@immediately-run/sdk/package.json`
+ *  for the default SDK: a recorded copy of
+ *  https://immediately-run.github.io/immediately-run-sdk/v/0.16.0/package.json, fetched
+ *  2026-11-04. The SDK's self-host build writes only `{ name, main, module, types }`, so it
+ *  carries no `peerDependencies`. */
+export const SELF_HOSTED_SDK_PACKAGE_JSON: string = readFileSync(
+  join(__dirname, 'fixtures', 'sdk-selfhost', 'v0.16.0.package.json'),
   'utf-8',
 );
 

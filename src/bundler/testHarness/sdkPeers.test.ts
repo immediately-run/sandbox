@@ -1,28 +1,29 @@
 import {
   createBundlerHarness,
   COMPILE_FIXTURE,
-  INSTALLED_SDK_PACKAGE_JSON,
+  SELF_HOSTED_SDK_PACKAGE_JSON,
   type BundlerHarness,
 } from './bundlerHarness';
 
 /**
  * R3-1318 at the `loadNodeModules` seam, driven the way `rootPeers.test.ts` drives it
  * (`parsedPackageJSON` set directly; `fetchManifest` spied, no network). The vendored
- * SDK manifest is written where `vendorModuleFrom` writes it, with the bytes of the SDK
- * this repo installs.
+ * SDK manifest is written where `vendorModuleFrom` writes it, with the bytes production
+ * writes there: the recorded self-host manifest for the default SDK 0.16.0, which has
+ * no `peerDependencies`. The peers therefore come from `IMPLICIT_SDK_PEERS`; the drift
+ * guard pinning that constant to the npm SDK's peers is in `selfHostPeers.test.ts`.
  *
- * Before the change, (a) sent no react and (c) never reached `fetchManifest`.
+ * Before the change, (a) sent no react and (c) never reached `fetchManifest`. Removing
+ * the `IMPLICIT_SDK_PEERS` fallback fails (a) and (c).
  */
 describe('R3-1318 — the implicit SDK brings its peers', () => {
   const SDK_MANIFEST_PATH = '/node_modules/@immediately-run/sdk/package.json';
-  const sdkPeers = (JSON.parse(INSTALLED_SDK_PACKAGE_JSON) as { peerDependencies: Record<string, string> })
-    .peerDependencies;
 
   let h: BundlerHarness;
 
   beforeEach(async () => {
     h = await createBundlerHarness(COMPILE_FIXTURE);
-    await h.bundler.fs.writeFile(SDK_MANIFEST_PATH, INSTALLED_SDK_PACKAGE_JSON);
+    await h.bundler.fs.writeFile(SDK_MANIFEST_PATH, SELF_HOSTED_SDK_PACKAGE_JSON);
   });
 
   afterEach(async () => {
@@ -51,29 +52,39 @@ describe('R3-1318 — the implicit SDK brings its peers', () => {
     return sent;
   }
 
-  it('(a) a manifest declaring only jose (baton) sends react and react-dom at the SDK ranges', async () => {
+  it('(a) the self-host manifest and a root declaring only jose (baton) send react and react-dom at ^19.0.0', async () => {
     const sent = await depsSentToCdn({ dependencies: { jose: '^6.2.12' } });
     expect(sent?.jose).toBe('^6.2.12');
-    expect(sent?.react).toBe(sdkPeers.react);
-    expect(sent?.['react-dom']).toBe(sdkPeers['react-dom']);
+    expect(sent?.react).toBe('^19.0.0');
+    expect(sent?.['react-dom']).toBe('^19.0.0');
   });
 
-  it('(b) a root declaring react keeps its own range', async () => {
+  it('(b) a vendored manifest that declares peerDependencies wins over IMPLICIT_SDK_PEERS', async () => {
+    const declaring = { ...JSON.parse(SELF_HOSTED_SDK_PACKAGE_JSON), peerDependencies: { react: '^20.0.0' } };
+    await h.bundler.fs.writeFile(SDK_MANIFEST_PATH, JSON.stringify(declaring));
+    const sent = await depsSentToCdn({ dependencies: { jose: '^6.2.12' } });
+    expect(sent?.react).toBe('^20.0.0');
+    expect(sent?.['react-dom']).toBeUndefined();
+  });
+
+  it("(c) a root declaring react keeps its own range over the SDK's", async () => {
     const sent = await depsSentToCdn({ dependencies: { react: '^18.3.0' } });
     expect(sent?.react).toBe('^18.3.0');
-    expect(sent?.['react-dom']).toBe(sdkPeers['react-dom']);
+    expect(sent?.['react-dom']).toBe('^19.0.0');
   });
 
-  it('(b) a root peer declaration of react-dom also wins over the SDK range', async () => {
-    const sent = await depsSentToCdn({ peerDependencies: { 'react-dom': '^18.3.0' } });
-    expect(sent?.['react-dom']).toBe('^18.3.0');
+  it("(c) the root's range also wins over a manifest-declared peer", async () => {
+    const declaring = { ...JSON.parse(SELF_HOSTED_SDK_PACKAGE_JSON), peerDependencies: { react: '^20.0.0' } };
+    await h.bundler.fs.writeFile(SDK_MANIFEST_PATH, JSON.stringify(declaring));
+    const sent = await depsSentToCdn({ peerDependencies: { react: '^18.3.0' } });
+    expect(sent?.react).toBe('^18.3.0');
   });
 
-  it('(c) a manifest with no dependencies key still queries the CDN with the peers', async () => {
+  it('a manifest with no dependencies key still queries the CDN with the peers', async () => {
     const sent = await depsSentToCdn({});
     expect(sent).toBeDefined();
-    expect(sent?.react).toBe(sdkPeers.react);
-    expect(sent?.['react-dom']).toBe(sdkPeers['react-dom']);
+    expect(sent?.react).toBe('^19.0.0');
+    expect(sent?.['react-dom']).toBe('^19.0.0');
   });
 
   it('an unparseable vendored manifest contributes nothing and warns', async () => {

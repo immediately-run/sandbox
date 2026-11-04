@@ -664,8 +664,10 @@ export class Bundler {
     // R3-1318: the SDK is vendored implicitly (`addLocalModules`), so its peers are
     // supplied implicitly too — a repo whose manifest never chose the SDK has no reason
     // to declare react, yet the boot-default entry imports `react-dom/client` through
-    // it. The root wins every name it declares. Merged before the emptiness gate so a
-    // root with no dependencies at all still fetches them.
+    // it. The self-host manifest carries no peers, so they default to
+    // `IMPLICIT_SDK_PEERS` (selfHostPeers.ts). The root wins every name it declares.
+    // Merged before the emptiness gate so a root with no dependencies at all still
+    // fetches them.
     let dependencies = { ...(await this.selfHostPeerDependencies()), ...rootDependencies };
     if (Object.keys(dependencies).length > 0) {
       // R3-844: the lockset echo the CLI writes mirrors the PRE-strip input —
@@ -1313,10 +1315,12 @@ export class Bundler {
   }
 
   /**
-   * The non-optional `peerDependencies` of every self-hosted module, read from the
-   * `package.json` `vendorModuleFrom` wrote under `/node_modules/<name>/`. An unreadable
-   * or unparseable manifest contributes nothing and is logged: vendoring has already
-   * failed loudly if the files were missing, so this path is defensive.
+   * The peers every self-hosted module brings, per `sdkPeerDependencies`: the non-optional
+   * `peerDependencies` of the `package.json` `vendorModuleFrom` wrote under
+   * `/node_modules/<name>/` when it declares that field, else `IMPLICIT_SDK_PEERS` (the
+   * self-host manifest is `{ name, main, module, types }` only). An unreadable or
+   * unparseable manifest contributes nothing and is logged: vendoring has already failed
+   * loudly if the files were missing, so this path is defensive.
    */
   private async selfHostPeerDependencies(): Promise<Record<string, string>> {
     const peers: Record<string, string> = {};

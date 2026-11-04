@@ -1,0 +1,6 @@
+{
+  "name": "@immediately-run/sdk",
+  "main": "./index.js",
+  "module": "./index.js",
+  "types": "./index.d.ts"
+}
