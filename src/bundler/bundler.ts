@@ -53,6 +53,7 @@ import { Preset } from './presets/Preset';
 import { getPreset } from './presets/registry';
 import { emitPerfMarker } from './perfMarkers';
 import { SELF_HOST_BASES } from './moduleOrigins';
+import { sdkPeerDependencies } from './selfHostPeers';
 import { retryFetch, registerImmutableUrlPrefix } from '../utils/fetch';
 import { basename, dirname } from '../utils/path';
 import { FrontmatterParseResult, parseFrontmatter } from '@immediately-run/transpiler';
@@ -659,7 +660,13 @@ export class Bundler {
     // naming react-error-boundary, and a peer-only SDK pin silently self-hosts the
     // (very stale) default. The merge is the transpiler's shared
     // `rootRuntimeDependencies` so the CLI's lockset echo matches (§4.4).
-    let dependencies = rootRuntimeDependencies(this.parsedPackageJSON);
+    const rootDependencies = rootRuntimeDependencies(this.parsedPackageJSON);
+    // R3-1318: the SDK is vendored implicitly (`addLocalModules`), so its peers are
+    // supplied implicitly too — a repo whose manifest never chose the SDK has no reason
+    // to declare react, yet the boot-default entry imports `react-dom/client` through
+    // it. The root wins every name it declares. Merged before the emptiness gate so a
+    // root with no dependencies at all still fetches them.
+    let dependencies = { ...(await this.selfHostPeerDependencies()), ...rootDependencies };
     if (Object.keys(dependencies).length > 0) {
       // R3-844: the lockset echo the CLI writes mirrors the PRE-strip input —
       // `computeInputDepMap` over the root runtime deps, git-form entries
@@ -670,7 +677,9 @@ export class Bundler {
       // Without this, a git-library consumer's lockset could never match its
       // own echo and the boot always needed the /dep_tree CDN call — a CDN
       // outage blanked exactly the apps the library-mount rail serves.
-      const locksetEcho = locksetEchoContextFor(dependencies);
+      // The echo input is the root map alone, as the CLI computes it: a repo relying on
+      // the SDK's peers misses the echo and takes the /dep_tree/ path (slower, correct).
+      const locksetEcho = locksetEchoContextFor(rootDependencies);
       // Self-hosted (resolveFromRegistry) modules are already registered as
       // local modules by addLocalModules; strip them so the CDN /dep_tree/ query
       // never has to resolve them (immune to npm→CDN replication lag). Their own
@@ -1301,6 +1310,25 @@ export class Bundler {
       deps = {};
     }
     this.gitLibraryDependencies.set(moduleName, deps);
+  }
+
+  /**
+   * The non-optional `peerDependencies` of every self-hosted module, read from the
+   * `package.json` `vendorModuleFrom` wrote under `/node_modules/<name>/`. An unreadable
+   * or unparseable manifest contributes nothing and is logged: vendoring has already
+   * failed loudly if the files were missing, so this path is defensive.
+   */
+  private async selfHostPeerDependencies(): Promise<Record<string, string>> {
+    const peers: Record<string, string> = {};
+    for (const moduleName of Object.keys(SELF_HOST_BASES)) {
+      const path = `/node_modules/${moduleName}/package.json`;
+      try {
+        Object.assign(peers, sdkPeerDependencies(JSON.parse(await this.fs.readFileAsync(path))));
+      } catch (err) {
+        logger.warn(`Could not read ${moduleName}'s peerDependencies from ${path}; none are added.`, err);
+      }
+    }
+    return peers;
   }
 
   /**

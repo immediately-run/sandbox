@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
 import { fs, mount, umount, resolveMountConfig, InMemory } from '@zenfs/core';
 
 import { Bundler } from '../bundler';
@@ -31,6 +34,14 @@ import { createBabelLoopback, type BabelLoopback } from './babelLoopback';
  * "node_modules off the mount, zero `/app` Port traffic" + lazy-fetch assertions live
  * in `bundlerHarness.nodeModules.test.ts`.
  */
+
+/** The `package.json` of the SDK this repo installs — the same file the SDK's release
+ *  CI publishes into the self-host manifest that `vendorModuleFrom` writes under
+ *  `/node_modules/@immediately-run/sdk/`. Tests read it rather than typing its peers. */
+export const INSTALLED_SDK_PACKAGE_JSON: string = readFileSync(
+  join(__dirname, '..', '..', '..', 'node_modules', '@immediately-run', 'sdk', 'package.json'),
+  'utf-8',
+);
 
 /** A local-only fixture: an entry `.ts` importing one local `.ts`. `.ts` files get the
  *  babel transform ONLY (no react-refresh HMR runtime — that is `.tsx`/`.jsx`-only,
