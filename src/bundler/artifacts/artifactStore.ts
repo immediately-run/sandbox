@@ -255,6 +255,20 @@ export class ArtifactStore {
   }
 
   /**
+   * The path the PUBLISHER transpiled `modulePath` at: its root-relative path re-rooted at
+   * `/app`, which is the `runtimePath` the CLI's `emitArtifacts` passes to `transformFile`
+   * (`immediately-run-cli:src/artifacts.ts`). An artifact's bytes are a function of that
+   * path — the react preset gives app-root `.tsx`/`.jsx`/`.js`/`.mdx` the react-refresh
+   * variant and `/node_modules/**` the plain one — so a git-library module, mounted at
+   * `/node_modules/<name>/…`, must be re-transpiled here, not at its mounted path (R3-1343).
+   * The identity for the `/app` root; null for a path no root owns.
+   */
+  private publisherPathFor(modulePath: string): string | null {
+    const root = this.rootFor(modulePath);
+    return root === null ? null : `${APP_ROOT}${modulePath.slice(root.length)}`;
+  }
+
+  /**
    * Seed `/transpiled` from each root's `.immediately.run/artifacts/index.json` (§5.1). Returns
    * the count seeded; a no-op (0) when the index is absent/invalid, the toolchain
    * stamp mismatches, or the readable-layer-only gate fails. Per-file failures
@@ -698,7 +712,10 @@ export class ArtifactStore {
         // artifact-served; nothing to verify.
         continue;
       }
-      const result = await transformFile({ path: appModulePath, code: source });
+      // Re-transpile at the path the publisher used, not the mounted one (R3-1343).
+      const publisherPath = this.publisherPathFor(appModulePath);
+      if (publisherPath === null) continue; // no root owns it — it cannot have been seeded
+      const result = await transformFile({ path: publisherPath, code: source });
       if ('error' in result || result.code !== consumedArtifact) {
         this.discardAll();
         return { tampered: true, path: appModulePath, sampled: sample.length, reason: 'transpile-mismatch' };
