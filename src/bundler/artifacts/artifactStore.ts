@@ -14,6 +14,7 @@ import {
   outWithinArtifacts,
   parseArtifactIndex,
   readableLayerOnly,
+  selectSeedVariant,
   toolchainMismatch,
   type ToolchainStampMismatch,
   validateSeedEntry,
@@ -73,6 +74,20 @@ export interface SeedResult {
    *  result and the bundler logged it. Absent/invalid indexes are NOT here (a repo
    *  with no artifacts is the ordinary case, not a mismatch). */
   stampMismatches?: { root: string; mismatch: ToolchainStampMismatch }[];
+  /** Library-root entries not seeded because the zip carries no `library` variant at
+   *  all (every zip built before the CLI's opt-in flag existed) — counted for every
+   *  non-`/app` entry whose index entry carries no `library` block, any extension
+   *  (`selectSeedVariant` takes no path or chain condition); a block the entry CARRIES
+   *  but the runtime cannot serve counts in {@link libraryVariantRejected} instead.
+   *  Those modules live-transpile — a cache miss, never a distrust — and the count
+   *  says WHY a library is cold where the seeded count alone reads as a bug. */
+  libraryVariantMissing?: number;
+  /** Library-root entries whose variant the zip CARRIES but the runtime cannot serve —
+   *  malformed at parse (R3-843 reject-in-place) or an `out` escaping the artifacts
+   *  dir. Also a cache miss, counted apart from {@link libraryVariantMissing}: a
+   *  non-zero value on a zip that opted into variants is an emission or confinement
+   *  bug, not an old zip. */
+  libraryVariantRejected?: number;
 }
 
 /** The result of a spot-verification pass (§5.7). */
@@ -268,11 +283,15 @@ export class ArtifactStore {
     let seeded = 0;
     let securityReject: SeedResult['securityReject'];
     let stampMismatches: SeedResult['stampMismatches'];
+    let libraryVariantMissing = 0;
+    let libraryVariantRejected = 0;
     for (const root of this.roots) {
       if (this.seededRoots.has(root)) continue;
       this.seededRoots.add(root);
       const result = await this.seedRoot(root, ctx);
       seeded += result.seeded;
+      libraryVariantMissing += result.libraryVariantMissing ?? 0;
+      libraryVariantRejected += result.libraryVariantRejected ?? 0;
       // A rejection anywhere is worth surfacing; the app root's is the one that can
       // actually fire (see `addRoot` on why the gate is app-scoped), so first wins.
       securityReject ??= result.securityReject;
@@ -282,6 +301,8 @@ export class ArtifactStore {
       seeded,
       ...(securityReject ? { securityReject } : {}),
       ...(stampMismatches ? { stampMismatches } : {}),
+      ...(libraryVariantMissing ? { libraryVariantMissing } : {}),
+      ...(libraryVariantRejected ? { libraryVariantRejected } : {}),
     };
   }
 
@@ -328,17 +349,12 @@ export class ArtifactStore {
     // the user edited in their own repo.
     const dirtySet = isAppRoot ? ctx.dirtySet : EMPTY_DIRTY_SET;
     let seeded = 0;
+    let libraryVariantMissing = 0;
+    let libraryVariantRejected = 0;
     const notOwned: string[] = [];
     for (const [rawKey, entry] of Object.entries(index.files)) {
       const v = validateSeedEntry(rawKey, entry, { manifestShas, dirtySet });
       if (!v.ok) continue;
-      let content: string;
-      try {
-        // v.out is the confined `.immediately.run/artifacts/...` path; read it from the root.
-        content = await this.fs.readFileAsync(`${root}/${v.out}`);
-      } catch {
-        continue;
-      }
       const modulePath = `${root}${v.path}`;
       // Only the root that OWNS this path may seed it. Roots may nest (`addRoot` permits it),
       // and `/mnt/w` + `/sub/x.ts` and `/mnt/w/sub` + `/x.ts` are the same module — so without
@@ -348,6 +364,28 @@ export class ArtifactStore {
       // order. With no nesting it is always true and nothing changes.
       if (this.rootFor(modulePath) !== root) {
         notOwned.push(modulePath);
+        continue;
+      }
+      // R3-1343: a root other than `/app` serves the entry's `library` variant or
+      // nothing — the base artifact is the `/app` compile, and no `/app` compile can
+      // byte-match a mounted-path compile (the react preset branches the chain by
+      // path, and the transpiler minifies `/node_modules/**`). Seeding the base
+      // anyway would serve foreign bytes AND fail the §5.7 spot-check at the mounted
+      // path (a distrust, the false alarm this item ends); a missing variant is a
+      // cache miss — the module live-transpiles.
+      const decision = selectSeedVariant(entry, { isAppRoot });
+      if (decision.kind === 'skip') {
+        if (decision.reason === 'library-variant-rejected') libraryVariantRejected++;
+        else libraryVariantMissing++;
+        continue;
+      }
+      const out = decision.kind === 'library' ? decision.out : v.out;
+      const deps = decision.kind === 'library' ? decision.deps : v.deps;
+      let content: string;
+      try {
+        // `out` is the confined `.immediately.run/artifacts/...` path; read it from the root.
+        content = await this.fs.readFileAsync(`${root}/${out}`);
+      } catch {
         continue;
       }
       // Same per-path chain as writeThrough/invalidate (R3-900) — a seed that
@@ -361,14 +399,17 @@ export class ArtifactStore {
       } catch {
         continue;
       }
-      this.deps.set(modulePath, v.deps);
+      this.deps.set(modulePath, deps);
       this.seededPaths.add(modulePath);
       seeded++;
     }
     if (notOwned.length) {
       this.notOwnedSeeds.push(...notOwned);
     }
-    return { seeded };
+    const result: { seeded: number; libraryVariantMissing?: number; libraryVariantRejected?: number } = { seeded };
+    if (libraryVariantMissing) result.libraryVariantMissing = libraryVariantMissing;
+    if (libraryVariantRejected) result.libraryVariantRejected = libraryVariantRejected;
+    return result;
   }
 
   /**
@@ -698,6 +739,10 @@ export class ArtifactStore {
         // artifact-served; nothing to verify.
         continue;
       }
+      // Re-transpile at the mounted path: for the /app root it is the publisher's
+      // own call, and for a seeded library variant it is the same chain (and the
+      // same bytes, the plain compile being path-independent) the variant was
+      // built with (R3-1343).
       const result = await transformFile({ path: appModulePath, code: source });
       if ('error' in result || result.code !== consumedArtifact) {
         this.discardAll();

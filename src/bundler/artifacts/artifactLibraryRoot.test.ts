@@ -15,8 +15,16 @@ import { EMBEDDED_TOOLCHAIN_HASH } from './embeddedToolchainHash';
 // The security property under test is that the binding check TRANSFERS: an artifact is
 // seeded only when the LIBRARY's own manifest sidecar attests its source blob's sha. A
 // library with no sidecar (REST-fetched rather than zip-delivered) seeds nothing.
+//
+// R3-1343: a library root serves an entry's `library` variant, never the base `/app`
+// artifact (the mounted-path compile differs by chain AND compaction) — so the fixture's
+// greet.ts carries a variant, whose bytes this suite serves without spot-verifying them
+// (the byte-identity cases live in artifactSpotVerifyLibraryRoot.test.ts). The variant
+// bytes are DISTINCT from the base bytes throughout this file: identical bytes would
+// make every case below pass even under a regression to base-artifact seeding.
 
 const LIB_ARTIFACT = '/* pre-transpiled lib */ exports.greet = () => "hi";\n';
+const LIB_VARIANT = '/* pre-transpiled lib, mounted-path variant */ exports.greet = () => "hi";\n';
 const EMPTY_DIRTY = { dirtySet: new Set<string>(), writableLayer: new Set<string>() };
 
 const APP_FIXTURE: Record<string, string> = {
@@ -58,10 +66,12 @@ const libraryRepo = (
         srcSha: over.srcSha ?? 'sha-greet',
         out: 'transpiled/src/greet.ts.js',
         deps: [],
+        library: { out: 'transpiled-lib/src/greet.ts.js', deps: [] },
       },
     },
   }),
   '.immediately.run/artifacts/transpiled/src/greet.ts.js': LIB_ARTIFACT,
+  '.immediately.run/artifacts/transpiled-lib/src/greet.ts.js': LIB_VARIANT,
 });
 
 describe("a git-mounted library's own artifacts are seeded and consumed", () => {
@@ -88,7 +98,8 @@ describe("a git-mounted library's own artifacts are seeded and consumed", () => 
 
     h.babel.resetTransformRequests();
     const mod = await h.bundler.transformModule('/node_modules/@scope/lib/src/greet.ts');
-    expect(mod.compiled).toBe(LIB_ARTIFACT);
+    // The VARIANT bytes, not the base /app compile — the whole point of the variant.
+    expect(mod.compiled).toBe(LIB_VARIANT);
     expect(h.babel.transformRequests).not.toContain('/node_modules/@scope/lib/src/greet.ts');
   });
 
@@ -191,7 +202,7 @@ describe("a git-mounted library's own artifacts are seeded and consumed", () => 
     await h.bundler.seedArtifacts(EMPTY_DIRTY);
     const libPath = '/node_modules/@scope/lib/src/greet.ts';
     expect(await h.bundler.artifactStore.consult(libPath)).toMatchObject({
-      content: LIB_ARTIFACT,
+      content: LIB_VARIANT,
     });
     expect(await h.bundler.artifactStore.consult('/app/node_modules/@scope/lib/src/greet.ts')).toBeNull();
   });
@@ -220,9 +231,12 @@ describe('two artifact roots that NEST resolve to the innermost, not to registra
   });
 
   const INNER_ARTIFACT = '/* inner */ exports.greet = () => "inner";\n';
+  const OUTER_VARIANT = '/* outer, mounted-path variant */ exports.greet = () => "outer";\n';
+  const INNER_VARIANT = '/* inner, mounted-path variant */ exports.greet = () => "inner";\n';
 
   /** A library whose own subtree carries a second, nested library. Both indexes name
-   *  `/node_modules/@scope/lib/nested/src/greet.ts`. */
+   *  `/node_modules/@scope/lib/nested/src/greet.ts`; each entry carries its `library`
+   *  variant (R3-1343), so seeding is live for whichever root owns the path. */
   const nesting = (): Record<string, string> => ({
     'package.json': '{"name":"@scope/lib","version":"1.0.0","main":"src/greet.ts"}',
     'nested/src/greet.ts': 'export const greet = () => "inner";\n',
@@ -238,9 +252,17 @@ describe('two artifact roots that NEST resolve to the innermost, not to registra
         toolchainHash: EMBEDDED_TOOLCHAIN_HASH,
         preset: 'react',
       },
-      files: { '/nested/src/greet.ts': { srcSha: 'sha-outer-view', out: 'transpiled/outer.js', deps: [] } },
+      files: {
+        '/nested/src/greet.ts': {
+          srcSha: 'sha-outer-view',
+          out: 'transpiled/outer.js',
+          deps: [],
+          library: { out: 'transpiled-lib/outer.js', deps: [] },
+        },
+      },
     }),
     '.immediately.run/artifacts/transpiled/outer.js': LIB_ARTIFACT,
+    '.immediately.run/artifacts/transpiled-lib/outer.js': OUTER_VARIANT,
     'nested/.immediately.run/contribute-manifest.json': JSON.stringify({
       schemaVersion: 1,
       entries: [{ path: 'src/greet.ts', sha: 'sha-inner', type: 'blob' }],
@@ -253,9 +275,17 @@ describe('two artifact roots that NEST resolve to the innermost, not to registra
         toolchainHash: EMBEDDED_TOOLCHAIN_HASH,
         preset: 'react',
       },
-      files: { '/src/greet.ts': { srcSha: 'sha-inner', out: 'transpiled/inner.js', deps: [] } },
+      files: {
+        '/src/greet.ts': {
+          srcSha: 'sha-inner',
+          out: 'transpiled/inner.js',
+          deps: [],
+          library: { out: 'transpiled-lib/inner.js', deps: [] },
+        },
+      },
     }),
     'nested/.immediately.run/artifacts/transpiled/inner.js': INNER_ARTIFACT,
+    'nested/.immediately.run/artifacts/transpiled-lib/inner.js': INNER_VARIANT,
   });
 
   it('serves the innermost root`s bytes, and says what the outer root`s index claimed', async () => {
@@ -268,9 +298,9 @@ describe('two artifact roots that NEST resolve to the innermost, not to registra
       await h.bundler.seedArtifacts(EMPTY_DIRTY);
 
       const shared = '/node_modules/@scope/lib/nested/src/greet.ts';
-      // The inner root owns the path, so its artifact is what a consult serves — never the
-      // outer root's bytes under the inner root's name.
-      expect(await h.bundler.artifactStore.consult(shared)).toMatchObject({ content: INNER_ARTIFACT });
+      // The inner root owns the path, so its VARIANT is what a consult serves — never the
+      // inner base bytes, nor any of the outer root's.
+      expect(await h.bundler.artifactStore.consult(shared)).toMatchObject({ content: INNER_VARIANT });
       // …and the outer root's losing entry is reported rather than silently not written.
       const said = warn.mock.calls.map((c) => c.join(' ')).filter((l) => l.includes('nested artifact root owns'));
       expect(said).toHaveLength(1);

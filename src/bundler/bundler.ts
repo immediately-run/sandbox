@@ -2044,6 +2044,27 @@ export class Bundler {
         // eslint-disable-next-line no-console
         console.info(formatStampMismatch(root, mismatch));
       }
+      // R3-1343: library-root entries skipped for want of a `library` variant in the
+      // zip (every zip built before the opt-in flag existed). Those modules
+      // live-transpile — a cache miss, not a failure — but without this line
+      // "seeded 0" reads as the seeding never having run, the same ambiguity the
+      // count line above exists to kill. Unconditional-in-both-branches, like the
+      // stamp-mismatch loop, because a library's cold cache is independent of the
+      // app root's verdict.
+      if (seedResult.libraryVariantMissing) {
+        // eslint-disable-next-line no-console
+        console.info(
+          `[ir-artifacts] ${seedResult.libraryVariantMissing} library module(s) live-transpiled: ` +
+            `no library variant in the zip`,
+        );
+      }
+      if (seedResult.libraryVariantRejected) {
+        // eslint-disable-next-line no-console
+        console.info(
+          `[ir-artifacts] ${seedResult.libraryVariantRejected} library module(s) live-transpiled: ` +
+            `the zip's library variant is malformed or escapes the artifacts dir`,
+        );
+      }
     }
 
     // Resolve entrypoints
