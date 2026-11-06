@@ -74,12 +74,13 @@ export interface SeedResult {
    *  result and the bundler logged it. Absent/invalid indexes are NOT here (a repo
    *  with no artifacts is the ordinary case, not a mismatch). */
   stampMismatches?: { root: string; mismatch: ToolchainStampMismatch }[];
-  /** Library-root entries not seeded because the zip carries no `library` variant
-   *  (every zip built before the CLI's opt-in flag existed). Counted for EVERY
-   *  non-`/app` entry with no servable variant, any extension — the decision takes no
-   *  path or chain condition (`selectSeedVariant`). Those modules live-transpile — a
-   *  cache miss, never a distrust — and the count says WHY a library is cold where the
-   *  seeded count alone reads as a bug. */
+  /** Library-root entries not seeded because the zip carries no `library` variant at
+   *  all (every zip built before the CLI's opt-in flag existed) — counted for every
+   *  non-`/app` entry whose index entry carries no `library` block, any extension
+   *  (`selectSeedVariant` takes no path or chain condition); a block the entry CARRIES
+   *  but the runtime cannot serve counts in {@link libraryVariantRejected} instead.
+   *  Those modules live-transpile — a cache miss, never a distrust — and the count
+   *  says WHY a library is cold where the seeded count alone reads as a bug. */
   libraryVariantMissing?: number;
   /** Library-root entries whose variant the zip CARRIES but the runtime cannot serve —
    *  malformed at parse (R3-843 reject-in-place) or an `out` escaping the artifacts
