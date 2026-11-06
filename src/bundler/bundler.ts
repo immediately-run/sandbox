@@ -2058,6 +2058,13 @@ export class Bundler {
             `no library variant in the zip`,
         );
       }
+      if (seedResult.libraryVariantRejected) {
+        // eslint-disable-next-line no-console
+        console.info(
+          `[ir-artifacts] ${seedResult.libraryVariantRejected} library module(s) live-transpiled: ` +
+            `the zip's library variant is malformed or escapes the artifacts dir`,
+        );
+      }
     }
 
     // Resolve entrypoints

@@ -83,9 +83,11 @@ describe('parseArtifactIndex (§4.2 structural validation)', () => {
         ...validIndex,
         files: { '/src/App.tsx': { srcSha: 'sha-app', out: 'transpiled/src/App.tsx.js', deps: [], library } },
       });
-      // The entry survives; only its variant is gone.
+      // The entry survives; only its variant is gone — and the drop is MARKED, so
+      // seeding can count a rejected variant apart from a zip that carries none.
       expect(idx).not.toBeNull();
       expect(idx!.files['/src/App.tsx'].library).toBeUndefined();
+      expect(idx!.files['/src/App.tsx'].libraryRejected).toBe(true);
     }
   });
 });
@@ -242,13 +244,21 @@ describe('selectSeedVariant (R3-1343 — which bytes a root serves for one entry
     });
   });
 
-  it('a variant whose `out` escapes .immediately.run/artifacts/ is treated as absent', () => {
+  it('a variant whose `out` escapes .immediately.run/artifacts/ is REJECTED, not silently missing', () => {
     // Adversarial row: the escaping variant never seeds — the confinement rule is the
-    // same one `validateSeedEntry` applies to the base `out`.
+    // same one `validateSeedEntry` applies to the base `out`. The skip says WHICH
+    // failure it was: a carried-but-unservable variant is an emission or confinement
+    // bug signal, distinct from a zip that simply predates the emission flag.
     const escaping = base({ library: { out: '../../evil.js', deps: [] } });
     expect(selectSeedVariant(escaping, { isAppRoot: false })).toEqual({
       kind: 'skip',
-      reason: 'library-variant-missing',
+      reason: 'library-variant-rejected',
+    });
+    // The parse-time marker for a shape-invalid block takes the same branch.
+    const malformedAtParse = base({ libraryRejected: true });
+    expect(selectSeedVariant(malformedAtParse, { isAppRoot: false })).toEqual({
+      kind: 'skip',
+      reason: 'library-variant-rejected',
     });
   });
 });

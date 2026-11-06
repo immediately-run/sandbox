@@ -173,6 +173,7 @@ describe('R3-1343 seeding + spot-verify of a library-root artifact', () => {
       const result = await h.bundler.seedArtifacts(EMPTY_DIRTY);
       expect(result.seeded).toBe(0);
       expect(result.libraryVariantMissing).toBe(2);
+      expect(result.libraryVariantRejected).toBeUndefined();
       // The consult MISS is what makes the bundler transpile the module live.
       expect(await h.bundler.artifactStore.consult(LIB_PATH)).toBeNull();
       expect(await h.bundler.artifactStore.consult(TS_PATH)).toBeNull();
@@ -239,7 +240,11 @@ describe('R3-1343 seeding + spot-verify of a library-root artifact', () => {
     );
     const result = await h.bundler.seedArtifacts(EMPTY_DIRTY);
     expect(result.seeded).toBe(1);
-    expect(result.libraryVariantMissing).toBe(1);
+    // The malformed variant counts as REJECTED, not missing — the zip carries one;
+    // the runtime just cannot serve it. On a post-emission zip this count is the
+    // emission-or-confinement bug signal (R3-1343 diagnostics).
+    expect(result.libraryVariantRejected).toBe(1);
+    expect(result.libraryVariantMissing).toBeUndefined();
     expect(await h.bundler.artifactStore.consult(TS_PATH)).not.toBeNull();
     expect(await h.bundler.artifactStore.consult(LIB_PATH)).toBeNull();
   });

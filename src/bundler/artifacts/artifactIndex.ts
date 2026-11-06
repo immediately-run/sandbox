@@ -61,6 +61,11 @@ export interface ArtifactFileEntry {
   deps: string[];
   /** Optional library-mount variant (R3-1343) — see {@link ArtifactLibraryVariant}. */
   library?: ArtifactLibraryVariant;
+  /** Runtime-only marker (never serialized): the entry carried a `library` block that
+   *  failed shape validation, so `parseArtifactIndex` dropped it (R3-843 — reject the
+   *  variant, keep the entry). Carried so seeding can tell a REJECTED variant apart
+   *  from a zip that carries none (R3-1343 diagnostics). */
+  libraryRejected?: true;
 }
 
 export interface ArtifactIndex {
@@ -129,7 +134,10 @@ export function parseArtifactIndex(raw: unknown): ArtifactIndex | null {
     // A malformed `library` drops only THAT entry's variant; the entry stays and
     // `selectSeedVariant` decides without it. One bad block must never reject the
     // whole index — that is R3-843's lesson (one poisoned entry cost every artifact).
+    // The marker keeps the drop VISIBLE: a carried-but-broken variant is a rejection,
+    // not the same thing as a zip that carries no variant at all.
     if (isLibraryVariant(value.library)) entry.library = { out: value.library.out, deps: value.library.deps };
+    else if (value.library !== undefined) entry.libraryRejected = true;
     files[key] = entry;
   }
 
@@ -269,8 +277,11 @@ export type SeedVariantDecision =
   | { kind: 'base' }
   /** Seed the entry's `library` variant (its `out` already confined). */
   | { kind: 'library'; out: string; deps: string[] }
-  /** Seed nothing: the module live-transpiles. A cache miss, never a distrust. */
-  | { kind: 'skip'; reason: 'library-variant-missing' };
+  /** Seed nothing: the module live-transpiles. A cache miss, never a distrust.
+   *  `library-variant-missing` — the zip carries no variant (every pre-flag zip);
+   *  `library-variant-rejected` — the zip carries one the runtime cannot serve
+   *  (malformed at parse, or an `out` escaping the artifacts dir). */
+  | { kind: 'skip'; reason: 'library-variant-missing' | 'library-variant-rejected' };
 
 /**
  * Pick the artifact a root serves for one index entry.
@@ -300,11 +311,15 @@ export function selectSeedVariant(entry: ArtifactFileEntry, opts: { isAppRoot: b
   if (variant) {
     const out = outWithinArtifacts(variant.out);
     if (out) return { kind: 'library', out, deps: variant.deps };
-    // An `out` that escapes `.immediately.run/artifacts/` is a malformed variant:
-    // treat it as absent (R3-843 — reject the variant, not the index) and fall
-    // through to the skip.
+    // An `out` that escapes `.immediately.run/artifacts/` is an unservable variant:
+    // reject it (R3-843 — the variant, not the index) and say WHICH failure it was.
   }
-  return { kind: 'skip', reason: 'library-variant-missing' };
+  // A variant the zip carries but the runtime cannot serve (malformed at parse — the
+  // `libraryRejected` marker — or an escaping `out` above) is a REJECTION, not a
+  // missing variant: once R3-1345's zips carry variants, a rejection count is the
+  // emission-or-confinement bug signal, while `missing` is just an old zip.
+  const carried = variant !== undefined || entry.libraryRejected === true;
+  return { kind: 'skip', reason: carried ? 'library-variant-rejected' : 'library-variant-missing' };
 }
 
 /**

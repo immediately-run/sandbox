@@ -74,11 +74,19 @@ export interface SeedResult {
    *  result and the bundler logged it. Absent/invalid indexes are NOT here (a repo
    *  with no artifacts is the ordinary case, not a mismatch). */
   stampMismatches?: { root: string; mismatch: ToolchainStampMismatch }[];
-  /** Library-root entries not seeded because the zip carries no `library` variant and
-   *  the base artifact's chain differs at the mounted path (R3-1343). Those modules
-   *  live-transpile — a cache miss, never a distrust — and the count says WHY a library
-   *  is cold where the seeded count alone reads as a bug. */
+  /** Library-root entries not seeded because the zip carries no `library` variant
+   *  (every zip built before the CLI's opt-in flag existed). Counted for EVERY
+   *  non-`/app` entry with no servable variant, any extension — the decision takes no
+   *  path or chain condition (`selectSeedVariant`). Those modules live-transpile — a
+   *  cache miss, never a distrust — and the count says WHY a library is cold where the
+   *  seeded count alone reads as a bug. */
   libraryVariantMissing?: number;
+  /** Library-root entries whose variant the zip CARRIES but the runtime cannot serve —
+   *  malformed at parse (R3-843 reject-in-place) or an `out` escaping the artifacts
+   *  dir. Also a cache miss, counted apart from {@link libraryVariantMissing}: a
+   *  non-zero value on a zip that opted into variants is an emission or confinement
+   *  bug, not an old zip. */
+  libraryVariantRejected?: number;
 }
 
 /** The result of a spot-verification pass (§5.7). */
@@ -275,12 +283,14 @@ export class ArtifactStore {
     let securityReject: SeedResult['securityReject'];
     let stampMismatches: SeedResult['stampMismatches'];
     let libraryVariantMissing = 0;
+    let libraryVariantRejected = 0;
     for (const root of this.roots) {
       if (this.seededRoots.has(root)) continue;
       this.seededRoots.add(root);
       const result = await this.seedRoot(root, ctx);
       seeded += result.seeded;
       libraryVariantMissing += result.libraryVariantMissing ?? 0;
+      libraryVariantRejected += result.libraryVariantRejected ?? 0;
       // A rejection anywhere is worth surfacing; the app root's is the one that can
       // actually fire (see `addRoot` on why the gate is app-scoped), so first wins.
       securityReject ??= result.securityReject;
@@ -291,6 +301,7 @@ export class ArtifactStore {
       ...(securityReject ? { securityReject } : {}),
       ...(stampMismatches ? { stampMismatches } : {}),
       ...(libraryVariantMissing ? { libraryVariantMissing } : {}),
+      ...(libraryVariantRejected ? { libraryVariantRejected } : {}),
     };
   }
 
@@ -338,6 +349,7 @@ export class ArtifactStore {
     const dirtySet = isAppRoot ? ctx.dirtySet : EMPTY_DIRTY_SET;
     let seeded = 0;
     let libraryVariantMissing = 0;
+    let libraryVariantRejected = 0;
     const notOwned: string[] = [];
     for (const [rawKey, entry] of Object.entries(index.files)) {
       const v = validateSeedEntry(rawKey, entry, { manifestShas, dirtySet });
@@ -362,7 +374,8 @@ export class ArtifactStore {
       // cache miss — the module live-transpiles.
       const decision = selectSeedVariant(entry, { isAppRoot });
       if (decision.kind === 'skip') {
-        libraryVariantMissing++;
+        if (decision.reason === 'library-variant-rejected') libraryVariantRejected++;
+        else libraryVariantMissing++;
         continue;
       }
       const out = decision.kind === 'library' ? decision.out : v.out;
@@ -392,7 +405,10 @@ export class ArtifactStore {
     if (notOwned.length) {
       this.notOwnedSeeds.push(...notOwned);
     }
-    return libraryVariantMissing ? { seeded, libraryVariantMissing } : { seeded };
+    const result: { seeded: number; libraryVariantMissing?: number; libraryVariantRejected?: number } = { seeded };
+    if (libraryVariantMissing) result.libraryVariantMissing = libraryVariantMissing;
+    if (libraryVariantRejected) result.libraryVariantRejected = libraryVariantRejected;
+    return result;
   }
 
   /**
