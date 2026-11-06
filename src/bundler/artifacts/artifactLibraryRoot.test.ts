@@ -15,6 +15,11 @@ import { EMBEDDED_TOOLCHAIN_HASH } from './embeddedToolchainHash';
 // The security property under test is that the binding check TRANSFERS: an artifact is
 // seeded only when the LIBRARY's own manifest sidecar attests its source blob's sha. A
 // library with no sidecar (REST-fetched rather than zip-delivered) seeds nothing.
+//
+// R3-1343: a library root serves an entry's `library` variant, never the base `/app`
+// artifact (the mounted-path compile differs by chain AND compaction) — so the fixture's
+// greet.ts carries a variant, whose bytes this suite serves without spot-verifying them
+// (the byte-identity cases live in artifactSpotVerifyLibraryRoot.test.ts).
 
 const LIB_ARTIFACT = '/* pre-transpiled lib */ exports.greet = () => "hi";\n';
 const EMPTY_DIRTY = { dirtySet: new Set<string>(), writableLayer: new Set<string>() };
@@ -58,10 +63,12 @@ const libraryRepo = (
         srcSha: over.srcSha ?? 'sha-greet',
         out: 'transpiled/src/greet.ts.js',
         deps: [],
+        library: { out: 'transpiled-lib/src/greet.ts.js', deps: [] },
       },
     },
   }),
   '.immediately.run/artifacts/transpiled/src/greet.ts.js': LIB_ARTIFACT,
+  '.immediately.run/artifacts/transpiled-lib/src/greet.ts.js': LIB_ARTIFACT,
 });
 
 describe("a git-mounted library's own artifacts are seeded and consumed", () => {
@@ -222,7 +229,8 @@ describe('two artifact roots that NEST resolve to the innermost, not to registra
   const INNER_ARTIFACT = '/* inner */ exports.greet = () => "inner";\n';
 
   /** A library whose own subtree carries a second, nested library. Both indexes name
-   *  `/node_modules/@scope/lib/nested/src/greet.ts`. */
+   *  `/node_modules/@scope/lib/nested/src/greet.ts`; each entry carries its `library`
+   *  variant (R3-1343), so seeding is live for whichever root owns the path. */
   const nesting = (): Record<string, string> => ({
     'package.json': '{"name":"@scope/lib","version":"1.0.0","main":"src/greet.ts"}',
     'nested/src/greet.ts': 'export const greet = () => "inner";\n',
@@ -238,9 +246,17 @@ describe('two artifact roots that NEST resolve to the innermost, not to registra
         toolchainHash: EMBEDDED_TOOLCHAIN_HASH,
         preset: 'react',
       },
-      files: { '/nested/src/greet.ts': { srcSha: 'sha-outer-view', out: 'transpiled/outer.js', deps: [] } },
+      files: {
+        '/nested/src/greet.ts': {
+          srcSha: 'sha-outer-view',
+          out: 'transpiled/outer.js',
+          deps: [],
+          library: { out: 'transpiled-lib/outer.js', deps: [] },
+        },
+      },
     }),
     '.immediately.run/artifacts/transpiled/outer.js': LIB_ARTIFACT,
+    '.immediately.run/artifacts/transpiled-lib/outer.js': LIB_ARTIFACT,
     'nested/.immediately.run/contribute-manifest.json': JSON.stringify({
       schemaVersion: 1,
       entries: [{ path: 'src/greet.ts', sha: 'sha-inner', type: 'blob' }],
@@ -253,9 +269,17 @@ describe('two artifact roots that NEST resolve to the innermost, not to registra
         toolchainHash: EMBEDDED_TOOLCHAIN_HASH,
         preset: 'react',
       },
-      files: { '/src/greet.ts': { srcSha: 'sha-inner', out: 'transpiled/inner.js', deps: [] } },
+      files: {
+        '/src/greet.ts': {
+          srcSha: 'sha-inner',
+          out: 'transpiled/inner.js',
+          deps: [],
+          library: { out: 'transpiled-lib/inner.js', deps: [] },
+        },
+      },
     }),
     'nested/.immediately.run/artifacts/transpiled/inner.js': INNER_ARTIFACT,
+    'nested/.immediately.run/artifacts/transpiled-lib/inner.js': INNER_ARTIFACT,
   });
 
   it('serves the innermost root`s bytes, and says what the outer root`s index claimed', async () => {
