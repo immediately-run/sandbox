@@ -1,0 +1,243 @@
+{
+  "schemaVersion": 1,
+  "source": "zip-sidecar",
+  "capturedAt": 1791566214449,
+  "provider": "github",
+  "namespace": "immediately-run",
+  "repository": "omnibox",
+  "ref": "main",
+  "refKind": "branch",
+  "commitSha": "55ca65d12a29c9d84e0ccb2d0d3b5806c41bae03",
+  "treeSha": "61a46f2d669e599bdba2eaa32965ac86ad65f320",
+  "defaultBranch": "main",
+  "truncated": false,
+  "entries": [
+    {
+      "path": ".github/workflows/cache.yml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "62629bf154c0aeb075f0bed7113f753859aa7a3e",
+      "size": 19727
+    },
+    {
+      "path": ".github/workflows/ci.yml",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e902598160af5fd069c699723458affdae2523ff",
+      "size": 3695
+    },
+    {
+      "path": ".gitignore",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "a79a4738da9d29639cdec25ae4acd0b339b93336",
+      "size": 40
+    },
+    {
+      "path": "README.md",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "2e89a2c26a54f4aa92b877b635b87e963c79aca7",
+      "size": 1623
+    },
+    {
+      "path": "eslint.config.js",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "82fb52d120adeaf93e1c499f396f4f14d07f59b6",
+      "size": 295
+    },
+    {
+      "path": "package-lock.json",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "18e49ddf88d892289ad1f42afcafed184ac48461",
+      "size": 173556
+    },
+    {
+      "path": "package.json",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "3e675a70c9b0fd099646ca247baacd06a7cf32ab",
+      "size": 2299
+    },
+    {
+      "path": "scripts/build-css.mjs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "c75cb30c178a05bd62d994d9e8373a86962a6397",
+      "size": 2691
+    },
+    {
+      "path": "scripts/check-css-parity.mjs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "eeb2624bc146279a7dbb30a5c3c3d53a327c849b",
+      "size": 2378
+    },
+    {
+      "path": "scripts/check-dependency-pins.mjs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "afad9dbadcd54aa80959348c788c65675d14a335",
+      "size": 15645
+    },
+    {
+      "path": "scripts/check-no-css-import.mjs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "dd81a9137ea72a0fe9aa857fe9e337445d733550",
+      "size": 6168
+    },
+    {
+      "path": "scripts/check-publish-version.mjs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "3e381935a6cac47bb497ec1b06263872bdd190cd",
+      "size": 13720
+    },
+    {
+      "path": "scripts/fix-cjs-emit.mjs",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "9463c093b222e09d26550ae85b37cf5046aa7f72",
+      "size": 3979
+    },
+    {
+      "path": "src/Omnibox.tsx",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "d043398edbb8cfb45b699ef3baca623581c92c1d",
+      "size": 19495
+    },
+    {
+      "path": "src/cjs-rail.test.ts",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "cb2f4713129c0befa5bc2e8024f7167c75636dda",
+      "size": 5223
+    },
+    {
+      "path": "src/index.ts",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "f4cba34c3231ab0f4dc5020554de010c40ab5562",
+      "size": 423
+    },
+    {
+      "path": "src/launch.test.ts",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "882835c5064e33171bb8be682f64ca7cd167b4b4",
+      "size": 5502
+    },
+    {
+      "path": "src/launch.ts",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "87a7e98b65502f344e27eaae74d869c29a8eec86",
+      "size": 6795
+    },
+    {
+      "path": "src/omnibox.css",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "b29ccb56d40e8f069a205c137c8ab77b58f3239c",
+      "size": 6931
+    },
+    {
+      "path": "src/omnibox.test.tsx",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "32796a10e572cfc2c20a22004be6f3f08ae622d8",
+      "size": 13719
+    },
+    {
+      "path": "src/omniboxFocus.test.ts",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "f318095b282d191787505c16e8da545dbfce8b08",
+      "size": 4621
+    },
+    {
+      "path": "src/omniboxFocus.ts",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "a05fe779a01ef5f3aabf01144a5a2a7950675991",
+      "size": 2568
+    },
+    {
+      "path": "src/omniboxStyles.generated.ts",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "118a73c2dc2565bb2bc5e65acf798360af68b819",
+      "size": 7530
+    },
+    {
+      "path": "src/omniboxStyles.ts",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "ec2aac9243c7a21243368cb438768e10ec44ea47",
+      "size": 3282
+    },
+    {
+      "path": "src/packaging.test.ts",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "4bebb8ce911862a376741c096e7e8b7dc1962ed9",
+      "size": 3693
+    },
+    {
+      "path": "tsconfig.json",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "0defed30791b87b36e4fc4a8294c95df005893a2",
+      "size": 432
+    },
+    {
+      "path": "tsup.config.ts",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "ce5e3d6d2572c2eea75d664502e85bb676e1be94",
+      "size": 1334
+    },
+    {
+      "path": "vitest.config.ts",
+      "mode": "100644",
+      "type": "blob",
+      "sha": "e2135beb25aa16a5cbe7e0282e1e34aa03141130",
+      "size": 573
+    }
+  ],
+  "lockset": {
+    "cdnVersion": 5,
+    "dependencies": {
+      "core-js": "3.22.7",
+      "react": "^19.2.5",
+      "react-error-boundary": "^6.1.0",
+      "react-refresh": "^0.11.0"
+    },
+    "resolved": [
+      {
+        "n": "core-js",
+        "v": "3.22.7",
+        "d": 0
+      },
+      {
+        "n": "react",
+        "v": "19.2.5",
+        "d": 0
+      },
+      {
+        "n": "react-error-boundary",
+        "v": "6.1.5",
+        "d": 0
+      },
+      {
+        "n": "react-refresh",
+        "v": "0.11.0",
+        "d": 0
+      }
+    ]
+  }
+}

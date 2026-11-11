@@ -1,0 +1,9 @@
+{
+  "name": "self-drill",
+  "main": "src/App.tsx",
+  "dependencies": {
+    "react": "^19.2.5",
+    "react-dom": "^19.2.5",
+    "@immediately-run/sdk": "0.54.0"
+  }
+}
