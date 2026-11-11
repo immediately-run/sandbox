@@ -23,6 +23,16 @@ export const CDN_ROOT = 'https://sandpack-cdn-staging.blazingly.io/';
 /** Registry file reads at registry-resolved exact versions (`RegistryFS`). */
 export const UNPKG_ROOT = 'https://unpkg.com/';
 
+/**
+ * The unpkg URL of one registry file at an EXACT version — the one address
+ * shape both unpkg consumers agree on (`RegistryFS.defaultFetchFile` and the
+ * esm-fallback subpath loader). Exact-version URLs are immutable, which is
+ * what makes them eligible for the persistent immutable cache; a RANGE in
+ * place of `version` is NOT — see `bypassImmutableCache` in utils/fetch.ts.
+ */
+export const unpkgFileUrl = (name: string, version: string, relPath: string): string =>
+  `${UNPKG_ROOT}${name}@${version}/${relPath}`;
+
 /** The esm.sh fallback for packages the primary CDN cannot resolve. */
 export const ESM_ORIGIN = 'https://esm.sh';
 
