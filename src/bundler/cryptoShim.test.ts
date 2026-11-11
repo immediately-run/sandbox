@@ -110,8 +110,11 @@ describe.each([
     expect(bytes).toHaveLength(size);
     // Every chunk was filled: an all-zero tail would mean a chunk was skipped.
     expect(bytes.subarray(size - 32).some((b) => b !== 0)).toBe(true);
-    // …including the bytes just past the first chunk boundary.
-    if (size > 65536) expect(bytes.subarray(65536, 65568).some((b) => b !== 0)).toBe(true);
+    // …including the bytes just past the first chunk boundary. Only a window of
+    // 16 bytes or more is asserted on: random bytes are legitimately zero, and
+    // the one-byte window of size 65537 was all-zero one run in 256.
+    const pastBoundary = bytes.subarray(65536, 65568);
+    if (pastBoundary.length >= 16) expect(pastBoundary.some((b) => b !== 0)).toBe(true);
   });
 
   it('randomFillSync fills a >64 KiB buffer, and honours offset/size', () => {
