@@ -54,6 +54,25 @@ describe('frontmatter through transpiler 0.10.0 (R3-1349)', () => {
     expect(warn).not.toHaveBeenCalled();
   });
 
+  // The canon also rejects blocks that ARE valid YAML (review 1-A-0): a value JSON cannot
+  // carry and a block that is not a map. Under 0.9.1 these wrote a row (`weight: Infinity`,
+  // a Set, or an `{ excerpt }`-only row for a list block with `<More />`); under 0.10.0
+  // they write none and warn, like the YAML error above. Declared in sandbox#145.
+  it.each([
+    ['a non-finite number', '---\ntitle: A\nweight: .inf\n---\nbody\n', /`weight` is Infinity/],
+    ['an explicit YAML tag', '---\ntitle: A\ns: !!set {a, b}\n---\nbody\n', /`s` is a Set/],
+    [
+      'a list block with an excerpt',
+      '---\n- a\n- b\n---\nintro\n<More />\nrest\n',
+      /must be a map of keys, not a list/,
+    ],
+  ])('extractMetadata: %s writes no row and warns with the file and the reason', (_name, code, reason) => {
+    expect(extractMetadata({ path: '/app/content/odd.mdx', code })).toBeNull();
+    const [text, err] = warn.mock.calls.find((c) => String(c[0]).includes('odd.mdx')) ?? [];
+    expect(text).toContain('/app/content/odd.mdx');
+    expect((err as Error).message).toMatch(reason);
+  });
+
   describe('through the Bundler scan', () => {
     let h: BundlerHarness;
     afterEach(async () => {
