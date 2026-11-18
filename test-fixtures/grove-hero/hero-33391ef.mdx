@@ -1,0 +1,27 @@
+---
+layoutRole: root
+nav: top
+description: A landing root starter — copy to your content root as _layout.mdx for a full-bleed band over TOP navigation (nav: top; the one arrangement the default shell cannot give you) followed by a short grid. DocList attributes must stay literals — the interpreter drops expressions like limit={n} silently. The picture slot renders the link-graph lattice until cover: lands.
+---
+
+<GroveNav />
+
+<header className="grove-hero">
+
+#### immediately.run
+
+# The site is the repository.
+
+A full-bleed band over top navigation. Replace these words, keep the shape.
+
+</header>
+
+<main className="grove-content">
+
+<DocList shape="grid" limit="4" sort="date" />
+
+<Outlet />
+
+</main>
+
+<GroveFooter />

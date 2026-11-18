@@ -190,7 +190,9 @@ interface IBundlerOpts {
   mounts: MountService;
 }
 
-const extractMetadata = (file: ISandboxFile): FrontmatterParseResult | null => {
+// Exported for its adoption test (R3-1349, `frontmatterAdoption.test.ts`): the test feeds
+// the production function, not a copy.
+export const extractMetadata = (file: ISandboxFile): FrontmatterParseResult | null => {
   if (file.path.endsWith('.mdx')) {
     try {
       const parseResult = parseFrontmatter(file.code);
