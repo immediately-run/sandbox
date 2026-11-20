@@ -4,6 +4,9 @@ import {
   resolveSelfHostVersion,
   resolveSelfHostVersionDetailed,
   fetchVendoredModule,
+  fileHashesOf,
+  unpackSelfHostBundle,
+  SELFHOST_BUNDLE_FILE,
   SelfHostResolutionError,
 } from './registryResolvedModules';
 import { verifyVendoredFiles } from './sdkIntegrity';
@@ -317,5 +320,116 @@ describe('resolveSelfHostVersionDetailed (R3-289 — root peers bind; the defaul
   it('no declaration anywhere reports source "default" — the caller warns', () => {
     const raw = JSON.stringify({ dependencies: { react: '^19.0.0' } });
     expect(resolveDetailed(raw)).toEqual({ version: DEFAULT, source: 'default' });
+  });
+});
+
+// One request instead of one per file: a version that ships `bundle.json` lists it in
+// its pin, and the loader unpacks it. The bundle is transport only — every file that
+// comes out of it is still verified against its own pinned hash.
+describe('fetchVendoredModule — the single-file bundle', () => {
+  const base = 'https://immediately-run.github.io/immediately-run-sdk/v/0.94.0';
+  const files: Record<string, string> = {
+    'manifest.json': JSON.stringify({ files: ['index.js', 'package.json'] }),
+    'index.js': 'export const a = 1;',
+    'package.json': '{"name":"@immediately-run/sdk","main":"./index.js"}',
+  };
+  const pin: Record<string, string> = {
+    'manifest.json': 'sha384-MAN',
+    'index.js': 'sha384-IDX',
+    'package.json': 'sha384-PKG',
+    [SELFHOST_BUNDLE_FILE]: 'sha384-BUNDLE',
+  };
+  // Stands in for sha384: a file's "hash" is its pin while its bytes are the genuine ones.
+  const hashOf = async (content: string) => {
+    const rel = Object.keys(files).find((r) => files[r] === content);
+    return rel ? pin[rel] : 'sha384-OTHER';
+  };
+  const prefix = '/node_modules/@immediately-run/sdk/';
+  const makeFetch = (bundle: string | Error) => {
+    const calls: Array<[string, string | undefined]> = [];
+    const fetchSource = async (url: string, integrity?: string) => {
+      calls.push([url, integrity]);
+      const rel = url.slice(base.length + 1);
+      if (rel === SELFHOST_BUNDLE_FILE) {
+        if (bundle instanceof Error) throw bundle;
+        return bundle;
+      }
+      if (!(rel in files)) throw new Error(`unexpected fetch ${url}`);
+      return files[rel];
+    };
+    return { fetchSource, calls };
+  };
+  const bundleOf = (entries: Record<string, unknown>) => JSON.stringify({ schemaVersion: 1, files: entries });
+
+  it('fetches ONLY the bundle, with its own pin, when the version ships one', async () => {
+    const { fetchSource, calls } = makeFetch(bundleOf(files));
+    const vendored = await fetchVendoredModule('@immediately-run/sdk', base, fetchSource, pin);
+
+    expect(calls).toEqual([[`${base}/${SELFHOST_BUNDLE_FILE}`, 'sha384-BUNDLE']]);
+    expect(vendored.map((v) => v.path).sort()).toEqual([
+      `${prefix}index.js`,
+      `${prefix}manifest.json`,
+      `${prefix}package.json`,
+    ]);
+    expect(vendored.find((v) => v.path.endsWith('/index.js'))).toMatchObject({
+      content: files['index.js'],
+      isModule: true,
+    });
+  });
+
+  it('never vendors the bundle itself, and verification passes against the pin without it', async () => {
+    const { fetchSource } = makeFetch(bundleOf(files));
+    const vendored = await fetchVendoredModule('@immediately-run/sdk', base, fetchSource, pin);
+    expect(vendored.some((v) => v.path.endsWith(`/${SELFHOST_BUNDLE_FILE}`))).toBe(false);
+
+    const result = await verifyVendoredFiles(
+      vendored.map((v) => ({ rel: v.path.slice(prefix.length), content: v.content })),
+      fileHashesOf(pin),
+      hashOf,
+    );
+    expect(result).toEqual({ ok: true, mismatches: [], missing: [] });
+  });
+
+  it('a file tampered INSIDE the bundle still fails its own pinned hash', async () => {
+    const { fetchSource } = makeFetch(bundleOf({ ...files, 'index.js': 'export const a = "evil";' }));
+    const vendored = await fetchVendoredModule('@immediately-run/sdk', base, fetchSource, pin);
+
+    const result = await verifyVendoredFiles(
+      vendored.map((v) => ({ rel: v.path.slice(prefix.length), content: v.content })),
+      fileHashesOf(pin),
+      hashOf,
+    );
+    expect(result.ok).toBe(false);
+    expect(result.mismatches).toEqual(['index.js']);
+  });
+
+  it.each<[string, string | Error]>([
+    ['the fetch fails', new Error('404')],
+    ['the payload is not JSON', 'not json'],
+    ['the schema version is unknown', JSON.stringify({ schemaVersion: 2, files })],
+    ['a pinned file is absent from it', bundleOf({ 'index.js': files['index.js'] })],
+    ['a file is not a string', bundleOf({ ...files, 'index.js': 42 })],
+  ])('falls back to the per-file layout when %s', async (_name, bundle) => {
+    const { fetchSource, calls } = makeFetch(bundle);
+    const vendored = await fetchVendoredModule('@immediately-run/sdk', base, fetchSource, pin);
+
+    expect(vendored).toHaveLength(3);
+    // Each file was fetched singly, with its own pin — and the bundle only once.
+    expect(calls).toContainEqual([`${base}/index.js`, 'sha384-IDX']);
+    expect(calls).toContainEqual([`${base}/manifest.json`, 'sha384-MAN']);
+    expect(calls.filter(([url]) => url.endsWith(`/${SELFHOST_BUNDLE_FILE}`))).toHaveLength(1);
+  });
+
+  it('a version pinned without a bundle never asks for one', async () => {
+    const { [SELFHOST_BUNDLE_FILE]: _bundle, ...withoutBundle } = pin;
+    const { fetchSource, calls } = makeFetch(new Error('must not be fetched'));
+    await fetchVendoredModule('@immediately-run/sdk', base, fetchSource, withoutBundle);
+
+    expect(calls.some(([url]) => url.endsWith(`/${SELFHOST_BUNDLE_FILE}`))).toBe(false);
+    expect(fileHashesOf(withoutBundle)).toBe(withoutBundle);
+  });
+
+  it('does not read a file name off the prototype chain', () => {
+    expect(unpackSelfHostBundle(bundleOf({}), ['toString'])).toBeNull();
   });
 });

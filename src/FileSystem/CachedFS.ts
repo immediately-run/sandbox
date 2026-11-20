@@ -152,6 +152,18 @@ export class CachedFS {
   }
 
   /**
+   * Drop the cached BYTES of one path, keeping its existence memo.
+   *
+   * For a payload that is read once and decoded — a bundled `/package/` msgpack: the
+   * decoded module holds every file as a string, so the encoded bytes are dead weight
+   * for the rest of the session (tens of MB across a dependency closure). A later read
+   * of the same path is still correct; it just crosses the Port again.
+   */
+  releaseBytes(path: string): void {
+    this.bytesCache.delete(withLeadingSlash(path));
+  }
+
+  /**
    * Write THROUGH to the bound context (the mount table) — `/node_modules` writes
    * land on the CopyOnWrite writable side, `/empty.js` on the root tmpfs — then
    * update the read memo. Parent dirs are materialized first (the writable tmpfs

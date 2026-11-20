@@ -287,6 +287,25 @@ describe('CachedFS — batch hydration (R3-49b)', () => {
     expect(readFile).not.toHaveBeenCalled();
   });
 
+  it('releaseBytes drops the cached bytes but not the fact the file exists', async () => {
+    const reread = new Uint8Array([9, 9]);
+    const readFile = jest.fn(async () => reread);
+    const { context } = makeContext({ readFile });
+    const fs = new CachedFS(context);
+    const path = '/app/.immediately.run/packages/react.msgpack';
+    fs.hydrate([{ path, content: new Uint8Array([1, 2, 3, 4]) }]);
+
+    fs.releaseBytes(path);
+
+    // Still known to exist, with no backend probe…
+    expect(await fs.isFileAsync(path)).toBe(true);
+    expect(readFile).not.toHaveBeenCalled();
+    // …and a later read is correct: it crosses the Port again instead of being served
+    // from bytes that were kept only in case.
+    expect(await fs.readBytesAsync(path)).toBe(reread);
+    expect(readFile).toHaveBeenCalledTimes(1);
+  });
+
   it('normalizes a leading-slash-less hydrated path', async () => {
     const { context } = makeContext();
     const fs = new CachedFS(context);

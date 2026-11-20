@@ -104,7 +104,11 @@ export class ModuleRegistry {
     const relPath = (await this.ensureBundledIndex())?.get(`${name}@${version}`);
     if (!relPath) return null;
     try {
-      const module = decodeBundledModule(await this.bundler.fs.readBytesAsync(bundledPackagePath(relPath)));
+      const path = bundledPackagePath(relPath);
+      const module = decodeBundledModule(await this.bundler.fs.readBytesAsync(path));
+      // Decoded: the msgpack bytes are not read again (`fetchNodeModule` memoizes the
+      // module), so do not keep them cached beside the strings they decoded into.
+      this.bundler.fs.releaseBytes(path);
       logger.debug('using bundled package (R3-49a), skipping CDN fetch', name, version);
       return module;
     } catch (err) {
