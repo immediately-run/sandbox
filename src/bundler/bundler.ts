@@ -23,6 +23,7 @@ import { DEFAULT_EXTENSIONS, importerAwareExtensions } from '../resolver/utils/e
 import {
   resolveSelfHostVersionDetailed,
   fetchVendoredModule,
+  fileHashesOf,
   SelfHostResolutionError,
   type VendorTiming,
 } from './registryResolvedModules';
@@ -821,7 +822,7 @@ export class Bundler {
   private async _transformModule(path: string): Promise<Module> {
     let module = this.modules.get(path);
     if (module) {
-      if (module.compiled != null) {
+      if (module.isCompiled) {
         return Promise.resolve(module);
       } else {
         // compilation got reset, we re-read the source to ensure it's the latest version.
@@ -959,7 +960,7 @@ export class Bundler {
   private async adoptSeededModules(): Promise<void> {
     for (const path of this.artifactStore.seededPathList()) {
       const existing = this.modules.get(path);
-      if (!existing || existing.compiled != null) continue;
+      if (!existing || existing.isCompiled) continue;
       const hit = await this.artifactStore.consult(path);
       if (!hit) continue;
       const seeded = new Module(path, hit.content, true, this);
@@ -971,7 +972,7 @@ export class Bundler {
   /** Transform file at a certain absolute path */
   async transformModule(path: string): Promise<Module> {
     let module = this.modules.get(path);
-    if (module && module.compiled != null) {
+    if (module && module.isCompiled) {
       return Promise.resolve(module);
     }
     return this.transformationQueue.addEntry(path, () => {
@@ -998,7 +999,7 @@ export class Bundler {
     } else {
       if (asset.compilationError != null) {
         throw asset.compilationError;
-      } else if (asset.compiled == null) {
+      } else if (!asset.isCompiled) {
         throw new BundlerError(
           `Asset "${id}" has not been compiled — its source likely failed to load ` +
             `(a failed fetch: a network error or a GitHub API rate limit).`,
@@ -1131,7 +1132,9 @@ export class Bundler {
           rel: v.path.startsWith(prefix) ? v.path.slice(prefix.length) : v.path,
           content: v.content,
         })),
-        expectedHashes,
+        // The pin minus its transport entry: a bundle is unpacked, never vendored, and
+        // every file that came out of it is checked here against its own hash.
+        fileHashesOf(expectedHashes),
       );
       if (!result.ok) {
         console.warn(`[security] sdk-integrity:mismatch ${moduleName}`, {
@@ -2113,22 +2116,29 @@ export class Bundler {
       this.sideEffectModulePaths = applied;
     }
 
-    const transpiledModules = Array.from(this.modules, ([name, value]) => {
-      return {
-        /**
-         * TODO: adds trailing for backwards compatibility
-         */
-        [name + ':']: {
-          source: {
-            isEntry: entryModule.filepath === value.filepath,
-            fileName: value.filepath,
-            compiledCode: value.compiled,
-          },
+    // APP modules only. This message is structured-cloned into the host on every
+    // compile, where the sandpack client and its React state both hold it — so carrying
+    // the dependency closure put a second copy of every `/node_modules` module's compiled
+    // text in the host process, for a consumer (`useTranspiledCode`, the active file's
+    // compiled view) that only ever looks up an app file. A dependency's text is also
+    // released after it evaluates (`Module.releaseText`), so there is nothing to send.
+    // (An index signature, not `Record<…>`: the wire snapshot records the type as written.)
+    const transpiledModules: {
+      [x: string]: { source: { isEntry: boolean; fileName: string; compiledCode: string | null } };
+    } = {};
+    for (const [name, value] of this.modules) {
+      if (name.startsWith('/node_modules/')) continue;
+      /**
+       * TODO: adds trailing for backwards compatibility
+       */
+      transpiledModules[name + ':'] = {
+        source: {
+          isEntry: entryModule.filepath === value.filepath,
+          fileName: value.filepath,
+          compiledCode: value.compiled,
         },
       };
-    }).reduce((prev, curr) => {
-      return { ...prev, ...curr };
-    }, {});
+    }
 
     this.messageBus.sendMessage(STATE, { state: { transpiledModules } });
 
