@@ -130,7 +130,15 @@ function reportSeedDiagnostics(seed: MdxMetadataAdditive): void {
   }
 }
 
-const DEFAULT_SDK_VERSION = '0.16.0';
+// The SDK an app that declares none resolves (SDK_PACKAGING_SPEC §5.1(c)). It must be
+// recent enough to define every component the current transpiler emits — a default
+// that predates one fails the first file that uses it ("Expected component
+// `HeadingAnchor` to be defined" on 0.16.0, 2026-11-23). defaultSdkVersion.test.ts
+// holds that. The deploy workflow and site-main's verify-sdk-integrity.js extract the
+// version from the FIRST match of the constant's name, an equals sign and a quoted
+// literal in this file: keep the declaration below a single-quoted literal, and never
+// write that shape anywhere above it (a comment included).
+export const DEFAULT_SDK_VERSION = '0.93.2';
 
 // Oldest version each self-hosted module may pin (SDK_PACKAGING_SPEC §5.1(b)).
 // Pins below the floor fail closed at resolve time: 0.2.7 ships a fatal
@@ -1580,16 +1588,15 @@ export class Bundler {
       );
       const version = resolvedVersion.version;
       if (resolvedVersion.source === 'default') {
-        // R3-289: the silent 0.16.0 landmine, made loud. An app that declares no
-        // SDK at all still works ("a plain dependency that just works"), but the
-        // author should SEE that the platform chose for them — the default is
-        // dozens of releases behind the current SDK and whatever breaks there
-        // surfaces far from the cause.
+        // R3-289: taking the default is loud. An app that declares no SDK at all
+        // still works ("a plain dependency that just works"), but the author should
+        // SEE that the platform chose for them — the default moves when the platform
+        // raises it, and whatever breaks then surfaces far from the cause.
         logger.warn(
           `No ${moduleName} declaration found in this app's package.json (neither ` +
             `"dependencies" nor "peerDependencies") — serving the platform default ` +
-            `${DEFAULT_SDK_VERSION}, which is far from the newest release. Pin the SDK ` +
-            `(e.g. "${moduleName}": "^0.57.0") to control the version you run on.`,
+            `${version}, which changes when the platform raises it. Pin the SDK ` +
+            `(e.g. "${moduleName}": "^${version}") to control the version you run on.`,
         );
       }
       const baseUrl = `${base.replace(/\/$/, '')}/v/${version}`;
