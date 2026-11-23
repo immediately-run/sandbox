@@ -14,7 +14,7 @@ import {
  * R3-1318 at the `loadNodeModules` seam, driven the way `rootPeers.test.ts` drives it
  * (`parsedPackageJSON` set directly; `fetchManifest` spied, no network). The vendored
  * SDK manifest is written where `vendorModuleFrom` writes it, with the bytes production
- * writes there: the recorded self-host manifest for the default SDK 0.16.0, which has
+ * writes there: the recorded self-host manifest for the default SDK 0.93.2, which has
  * no `peerDependencies`. The peers therefore come from `IMPLICIT_SDK_PEERS`; the drift
  * guard pinning that constant to the npm SDK's peers is in `selfHostPeers.test.ts`.
  *
