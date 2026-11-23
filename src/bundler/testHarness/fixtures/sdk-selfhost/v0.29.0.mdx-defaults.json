@@ -1,0 +1,6 @@
+{
+  "version": "0.29.0",
+  "source": "https://immediately-run.github.io/immediately-run-sdk/v/0.29.0/components/MDXComponents.js",
+  "fetched": "2026-11-23",
+  "components": ["a", "Admonition", "HeadingAnchor", "WikiLink"]
+}
