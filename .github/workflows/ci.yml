@@ -1,6 +1,10 @@
 name: CI
 
-on: [pull_request]
+# workflow_dispatch: a manual run, for telling apart "pull_request events stopped
+# creating runs" from "Actions runs nothing in this repo" (no run since 2026-10-13).
+on:
+  pull_request:
+  workflow_dispatch:
 
 jobs:
   test:
