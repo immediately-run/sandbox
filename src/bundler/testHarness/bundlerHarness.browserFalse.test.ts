@@ -32,6 +32,8 @@ const FIXTURE = {
   'src/main.ts':
     "import csv from 'csv-parse';\n" +
     "import * as sync from 'csv-parse/sync';\n" +
+    // A deep subpath (csv-parse v4 documented `csv-parse/lib/sync`).
+    "import 'csv-parse/lib/es5/sync.js';\n" +
     'const g = globalThis as Record<string, unknown>;\n' +
     'g.__browserFalseBooted = true;\n' +
     'g.__csvDefault = csv;\n' +
@@ -58,6 +60,7 @@ beforeAll(async () => {
   const evaluate = await h.bundler.compile();
   g.__resolvedCsv = await h.bundler.resolveAsync('csv-parse', '/app/src/main.ts');
   g.__resolvedCsvSync = await h.bundler.resolveAsync('csv-parse/sync', '/app/src/main.ts');
+  g.__resolvedCsvDeep = await h.bundler.resolveAsync('csv-parse/lib/es5/sync.js', '/app/src/main.ts');
   (evaluate as () => unknown)();
 }, 120000);
 
@@ -67,6 +70,7 @@ afterAll(async () => {
   delete g.__csvSync;
   delete g.__resolvedCsv;
   delete g.__resolvedCsvSync;
+  delete g.__resolvedCsvDeep;
   warn.mockRestore();
   await h.teardown();
   restore();
@@ -80,6 +84,7 @@ describe('R3-1384 — compile() and evaluate with a browser:false dependency', (
   it("both specifiers resolve to the resolver's empty-module shim", () => {
     expect(g.__resolvedCsv).toBe(EMPTY_SHIM);
     expect(g.__resolvedCsvSync).toBe(EMPTY_SHIM);
+    expect(g.__resolvedCsvDeep).toBe(EMPTY_SHIM);
   });
 
   it('both imports yield the empty module, with no named exports', () => {

@@ -32,16 +32,24 @@ describe('process package.json', () => {
       '/app',
     );
     expect(aliases['csv-parse']).toBe('/empty.js');
-    expect(aliases['csv-parse/*']).toBe('/empty.js');
-    expect(aliases['@scope/cli/*']).toBe('/empty.js');
+    expect(aliases['csv-parse/**']).toBe('/empty.js');
+    expect(aliases['@scope/cli/**']).toBe('/empty.js');
     // A path key names one file, and a string mapping is an alias: neither gets a wildcard.
     expect(aliases['/app/src/node.js']).toBe('/empty.js');
-    expect(Object.keys(aliases).filter((k) => k.endsWith('/*'))).toEqual(['csv-parse/*', '@scope/cli/*']);
+    expect(Object.keys(aliases).filter((k) => k.includes('*'))).toEqual(['csv-parse/**', '@scope/cli/**']);
   });
 
   it("R3-1384: a dependency's own browser:false keeps the exact-specifier meaning (no wildcard)", () => {
     const { aliases } = processPackageJSON({ browser: { util: false } }, '/node_modules/readable-stream');
     expect(aliases.util).toBe('/empty.js');
-    expect(aliases['util/*']).toBeUndefined();
+    expect(aliases['util/**']).toBeUndefined();
+  });
+
+  it('R3-1384: a mounted library or a nested package.json is not the root (no wildcard)', () => {
+    for (const pkgRoot of ['/mnt/0123456789abcdef0123456789abcdef', '/app/packages/web']) {
+      const { aliases } = processPackageJSON({ browser: { util: false } }, pkgRoot);
+      expect(aliases.util).toBe('/empty.js');
+      expect(Object.keys(aliases).filter((k) => k.includes('*'))).toEqual([]);
+    }
   });
 });
