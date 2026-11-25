@@ -122,10 +122,12 @@
     "@types/react-dom": "^19.2.5",
     "@types/url-join": "^4.0.1",
     "@types/uuid": "^8.3.4",
+    "@typescript-eslint/parser": "8.62.1",
     "assert": "^2.0.0",
     "buffer": "^6.0.3",
     "crypto-browserify": "^3.12.0",
     "eslint": "9.39.4",
+    "eslint-linter-browserify": "9.39.2",
     "events": "^3.3.0",
     "fastify": "^3.28.0",
     "fastify-static": "^4.6.1",
@@ -143,10 +145,9 @@
     "punycode": "^2.3.1",
     "stream-browserify": "^3.0.0",
     "typescript": "5.8.3",
-    "url": "^0.11.0",
-    "util": "^0.12.4",
     "typescript-eslint": "8.62.1",
-    "eslint-linter-browserify": "9.39.2"
+    "url": "^0.11.0",
+    "util": "^0.12.4"
   },
   "resolutions": {
     "@babel/preset-env": "7.27.0",

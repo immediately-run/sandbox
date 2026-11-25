@@ -103,6 +103,21 @@ const MAX_DIAGS = 200;
 const MESSAGE_CAP = 1000;
 const hasOwn = (o: object, k: string): boolean => Object.prototype.hasOwnProperty.call(o, k);
 
+/** The extensions the parser lints under their own name (`.tsx`/`.jsx` enable JSX). */
+const LINT_EXTENSIONS = ['ts', 'tsx', 'mts', 'cts', 'js', 'jsx', 'mjs', 'cjs'];
+const LINTABLE = new RegExp(`\\.(${LINT_EXTENSIONS.join('|')})$`);
+
+/** The file name `verify` matches and parses under: the caller's base name. Flat-config
+ *  matching is cwd-relative, so a directory part can only lose a file — `/a.ts`,
+ *  `../a.ts` and `node_modules/a.ts` all fall outside it in at least one of the two
+ *  linters. The extension, which the parser reads, is kept; any other name (`Makefile`,
+ *  `notes.txt`) lints as TS, the service's language, under `<name>.ts`. */
+export function matchName(path: string): string {
+  const base = path.split('/').filter(Boolean).pop() ?? '';
+  if (base === '' || base === '.' || base === '..') return 'input.ts';
+  return LINTABLE.test(base) ? base : `${base}.ts`;
+}
+
 export function runLint(req: LintRequest, deps: LintDeps): LintResult {
   for (const k of FORBIDDEN_FIELDS) {
     if (hasOwn(req as object, k))
@@ -130,17 +145,22 @@ export function runLint(req: LintRequest, deps: LintDeps): LintResult {
       try {
         return (deps.tsParser as { parseForESLint: (...a: unknown[]) => unknown }).parseForESLint(...args);
       } catch (e) {
-        if (e && typeof e === 'object' && 'location' in e) throw e;
+        // typescript-estree's syntax error (TSError) carries a `location` object; any
+        // other throw is the parser crashing, never the caller's syntax.
+        const loc = e && typeof e === 'object' ? (e as { location?: unknown }).location : undefined;
+        if (loc && typeof loc === 'object') throw e;
         throw new Error(`PARSER-CRASH: ${(e as Error)?.message ?? String(e)}`);
       }
     },
   };
-  // Flat config: a config object without `files` matches NOTHING (ESLint 9) —
-  // the service is TS-only by design (the kernel-bound parser), so the matcher
-  // is the TS extension set, and a non-TS path reports the no-config diagnostic
-  // rather than silently linting as TS.
+  // Flat config: a config object without `files` matches NOTHING (ESLint 9), and a
+  // path the matcher misses is reported as "no matching configuration" (or, for a
+  // `.js`/`.mjs`/`.cjs` path that only ESLint's built-in default matches, linted with
+  // NO rules — a silent clean bill, which R3-384 forbids). A universal `**/*` does not
+  // select a file on its own, so the config names every extension `matchName` can
+  // return, and `verify` sees that match name, never the caller's path.
   const config = {
-    files: ['**/*.{ts,tsx}'],
+    files: [`**/*.{${LINT_EXTENSIONS.join(',')}}`],
     languageOptions: { parser, parserOptions: PARSER_OPTIONS },
     rules: PRESETS[presetName],
   };
@@ -159,11 +179,8 @@ export function runLint(req: LintRequest, deps: LintDeps): LintResult {
     }
     let messages: ReturnType<LinterLike['verify']>;
     try {
-      // Flat-config `files` patterns match cwd-RELATIVE paths — a caller's
-      // leading-slash path (`/a.ts`) matches nothing and reports the no-config
-      // diagnostic instead of linting. Strip it for the match only; the
-      // diagnostics carry the caller's own path.
-      messages = linter.verify(f.content, config, f.path.replace(/^\/+/, ''));
+      // The diagnostics carry the caller's own path; `verify` only sees the match name.
+      messages = linter.verify(f.content, config, matchName(f.path));
     } catch {
       // A parse failure is not fatal — tsc owns syntax errors — but it is not nothing
       // either. It was previously a bare `continue`, which reported the file as clean.

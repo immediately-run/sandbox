@@ -21,7 +21,6 @@ export function handleEvaluate(command: string): { error: boolean; result: any }
       try {
         const wrapped = `(${command})`;
         // `new Function` is used to validate Javascript syntax
-
         new Function(wrapped);
         command = wrapped;
       } catch (e) {

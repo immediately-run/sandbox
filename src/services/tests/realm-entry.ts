@@ -121,7 +121,6 @@ export type Evaluator = (code: string, globals: Record<string, unknown>) => void
  *  document's CSP (`script-src blob:`) to be in force. */
 export const functionEvaluator: Evaluator = (code, globals) => {
   const names = Object.keys(globals);
-
   const fn = new Function(...names, `"use strict";\n${code}`);
   fn(...names.map((n) => globals[n]));
 };

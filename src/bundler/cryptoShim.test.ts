@@ -22,7 +22,6 @@ interface CryptoShim {
 /** Evaluate the shim source the way the bundler does: as a CommonJS module. */
 function loadShim(): CryptoShim {
   const module = { exports: {} as CryptoShim };
-
   new Function('module', 'exports', CRYPTO_MODULE_CODE)(module, module.exports);
   return module.exports;
 }
