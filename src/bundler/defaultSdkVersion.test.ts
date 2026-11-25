@@ -5,7 +5,7 @@ import { join } from 'path';
 // The submodule, not the package index: the index opens a host transport at import.
 import { DEFAULT_MDX_COMPONENTS } from '@immediately-run/sdk/components/MDXComponents';
 
-import { DEFAULT_SDK_VERSION } from './bundler';
+import { DEFAULT_SDK_VERSION, SELF_HOST_FLOORS } from './bundler';
 import { compareSemver } from './registryResolvedModules';
 
 // The SDK an app with no SDK declaration gets (SDK_PACKAGING_SPEC §5.1(c)) must
@@ -20,6 +20,13 @@ import { compareSemver } from './registryResolvedModules';
 //   2. DEFAULT_SDK_VERSION is no older than that installed SDK.
 // Bumping the transpiler past the SDK, or the SDK devDependency past the default,
 // fails one of them.
+//
+// The same holds for the FLOOR (SDK_PACKAGING_SPEC §5.1(b)): an app may pin any SDK at
+// or above it, so the floor SDK must define every emitted component too. The floor's
+// default components are a recorded fixture (fixtures/sdk-selfhost/), because the
+// floor version is not installed here. Raising the floor means re-recording it; a
+// transpiler that emits a new component fails until the floor is raised to an SDK
+// that defines it.
 
 const ROOT = join(__dirname, '..', '..');
 
@@ -68,5 +75,15 @@ describe('DEFAULT_SDK_VERSION covers what the transpiler emits', () => {
       readFileSync(join(ROOT, 'node_modules', '@immediately-run', 'sdk', 'package.json'), 'utf-8'),
     ).version as string;
     expect(compareSemver(DEFAULT_SDK_VERSION, installed)).toBeGreaterThanOrEqual(0);
+  });
+
+  it('the SDK floor defines every component the transpiler emits', () => {
+    const floor = SELF_HOST_FLOORS['@immediately-run/sdk'];
+    const recorded = JSON.parse(
+      readFileSync(join(__dirname, 'testHarness', 'fixtures', 'sdk-selfhost', `v${floor}.mdx-defaults.json`), 'utf-8'),
+    ) as { version: string; components: string[] };
+    expect(recorded.version).toBe(floor);
+    const missing = componentsTheTranspilerEmits().filter((name) => !recorded.components.includes(name));
+    expect(missing).toEqual([]);
   });
 });

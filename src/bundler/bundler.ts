@@ -141,12 +141,17 @@ function reportSeedDiagnostics(seed: MdxMetadataAdditive): void {
 export const DEFAULT_SDK_VERSION = '0.96.0';
 
 // Oldest version each self-hosted module may pin (SDK_PACKAGING_SPEC §5.1(b)).
-// Pins below the floor fail closed at resolve time: 0.2.7 ships a fatal
-// sandboxUtils↔runtime import cycle that infinite-loops this bundler at boot
-// ("Maximum call stack size exceeded"), so booting it would crash anyway —
-// fail with a clear error instead.
-const SELF_HOST_FLOORS: Record<string, string> = {
-  '@immediately-run/sdk': '0.2.8',
+// Pins below the floor fail closed at resolve time with a clear error rather than
+// booting into a known crash. The SDK floor is 0.29.0, the first SDK whose default MDX
+// components define everything the transpiler emits: older SDKs fail any Markdown
+// heading with "Expected component `HeadingAnchor` to be defined" (R3-186). 0.2.7 and
+// earlier additionally ship a sandboxUtils↔runtime import cycle that infinite-loops
+// this bundler at boot. defaultSdkVersion.test.ts holds the floor against the
+// transpiler's output. The deploy workflow extracts the SDK floor from the FIRST
+// match of the quoted module name, a colon and a quoted version in this file: keep
+// the entry below in that shape and never write that shape above it.
+export const SELF_HOST_FLOORS: Record<string, string> = {
+  '@immediately-run/sdk': '0.29.0',
 };
 
 // Each self-host `/v/<version>/` path encodes the exact version, so its
