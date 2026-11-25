@@ -18,7 +18,18 @@ interface RetryOptions {
   pinnedSri?: string;
 }
 
-export type RequestInitWithRetry = RequestInit & RetryOptions;
+export type RequestInitWithRetry = RequestInit &
+  RetryOptions & {
+    /**
+     * Skip the persistent immutable cache for this request. Set ONLY for a URL
+     * whose address does not itself pin the content — the range→exact
+     * `name@^range/package.json` probe of the esm-fallback subpath rail
+     * (esm-fallback.ts): every registered immutable prefix is assumed to encode
+     * the exact version in the URL, and a RANGE url would freeze the floating
+     * resolution into the cache, pinning it across sessions (R3-820 round 1).
+     */
+    bypassImmutableCache?: boolean;
+  };
 
 /** Whether a response's body matches `sri` (true when no `sri` to check). A
  *  hashing failure (no crypto) counts as a non-match so we never serve/persist
@@ -136,7 +147,11 @@ const fetchViaParent = async (url: string, integrity?: string): Promise<Response
  * @returns {Response}
  */
 export async function retryFetch(input: RequestInfo, init: RequestInitWithRetry = {}, count = 0): Promise<Response> {
-  if (typeof input === 'string' && immutableUrlPrefixes.some((prefix) => input.startsWith(prefix))) {
+  if (
+    typeof input === 'string' &&
+    !init.bypassImmutableCache &&
+    immutableUrlPrefixes.some((prefix) => input.startsWith(prefix))
+  ) {
     const { pinnedSri } = init;
     const cache = await openImmutableCache();
     if (cache) {

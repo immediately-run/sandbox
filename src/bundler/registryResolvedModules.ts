@@ -135,6 +135,55 @@ export function resolveSelfHostVersion(raw: string, moduleName: string, defaultV
   return resolveSelfHostVersionDetailed(raw, moduleName, defaultVersion, floor).version;
 }
 
+/**
+ * The single-file transport of a self-hosted version: `{ schemaVersion: 1, files:
+ * { <rel>: <content> } }` holding every pinned file, written beside them by the SDK's
+ * `build-selfhost.mjs`. A version that ships one lists it in its integrity pin under
+ * this name, which is how the bundler knows to ask for it.
+ *
+ * It is TRANSPORT ONLY and carries no trust of its own: each file unpacked from it is
+ * verified against that file's own host-pinned hash, exactly as a separately fetched
+ * file is (`verifyVendoredFiles`). It exists because the per-file layout costs one
+ * request per module — about a hundred per SDK version, per frame.
+ */
+export const SELFHOST_BUNDLE_FILE = 'bundle.json';
+
+/** The pinned hashes of a version's FILES — the pin without its transport entry. What
+ *  `verifyVendoredFiles` must be given: the bundle is never vendored, so leaving its
+ *  key in would report it missing. */
+export function fileHashesOf(expected: Record<string, string>): Record<string, string> {
+  if (!(SELFHOST_BUNDLE_FILE in expected)) return expected;
+  const { [SELFHOST_BUNDLE_FILE]: _bundle, ...files } = expected;
+  return files;
+}
+
+/**
+ * Read every one of `rels` out of a fetched bundle, or `null` when the payload is not
+ * a bundle this code understands or lacks any of them. `null` sends the caller to the
+ * per-file layout, which every version still publishes — a bundle can make a load
+ * faster, never make it fail.
+ */
+export function unpackSelfHostBundle(raw: string, rels: readonly string[]): string[] | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  const bundle = parsed as { schemaVersion?: unknown; files?: unknown } | null;
+  if (!bundle || bundle.schemaVersion !== 1 || typeof bundle.files !== 'object' || bundle.files === null) {
+    return null;
+  }
+  const files = bundle.files as Record<string, unknown>;
+  const contents: string[] = [];
+  for (const rel of rels) {
+    const content = Object.prototype.hasOwnProperty.call(files, rel) ? files[rel] : undefined;
+    if (typeof content !== 'string') return null;
+    contents.push(content);
+  }
+  return contents;
+}
+
 /** One file resolved for a self-hosted module, ready to write + register. */
 export interface VendoredFile {
   /** Absolute in-sandbox path: `/node_modules/<moduleName>/<rel>`. */
@@ -207,13 +256,27 @@ export async function fetchVendoredModule(
   // decides what gets fetched, so a tampered manifest can't influence the fetch set
   // (every file, manifest included, is hash-verified downstream regardless).
   if (expected) {
-    const rels = Object.keys(expected);
+    const rels = Object.keys(fileHashesOf(expected));
     const tFiles0 = vendorNow();
-    let contents: string[];
-    try {
-      contents = await Promise.all(rels.map((rel) => fetchSource(`${baseUrl}/${rel}`, expected[rel])));
-    } catch (err) {
-      unavailable();
+    let contents: string[] | null = null;
+    // ONE request when the version ships a bundle (see SELFHOST_BUNDLE_FILE). Any
+    // failure here — the fetch, the shape, a file it does not carry — falls through to
+    // the per-file batch below rather than failing the boot: the bundle is an
+    // accelerator, and the files it would have carried are still published singly.
+    const bundlePin = expected[SELFHOST_BUNDLE_FILE];
+    if (bundlePin !== undefined) {
+      try {
+        contents = unpackSelfHostBundle(await fetchSource(`${baseUrl}/${SELFHOST_BUNDLE_FILE}`, bundlePin), rels);
+      } catch {
+        contents = null;
+      }
+    }
+    if (contents === null) {
+      try {
+        contents = await Promise.all(rels.map((rel) => fetchSource(`${baseUrl}/${rel}`, expected[rel])));
+      } catch (err) {
+        unavailable();
+      }
     }
     if (timing) {
       // manifestMs stays 0 — there is no serial manifest round-trip on this path.

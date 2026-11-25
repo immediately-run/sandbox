@@ -15,13 +15,7 @@
  * without a live bundler/babel worker.
  */
 import { underAppRoot } from '../fsLayout';
-import {
-  identifierEnd,
-  isIdentStart,
-  nextSignificantIndex,
-  skipCommentFrom,
-  skipStringFrom,
-} from '../utils/sourceScan';
+import { scanSourceTokens, tokenSignificantChar } from '../utils/sourceScan';
 
 /**
  * Local-entry filenames, by Vite/CRA convention, whose side-effect imports the
@@ -37,69 +31,31 @@ export const LOCAL_ENTRY_CANDIDATES = ['src/main', 'main'];
  * deliberately excluded: those carry the local entry's render logic, not its
  * global side effects.
  *
- * Implemented as a small scanner (rather than a full AST parse) so it stays
- * cheap in the iframe bundle. It correctly skips string literals, template
- * literals and comments so it never mistakes an `import` keyword inside them for
- * a statement, and ignores `obj.import` member access.
+ * A token walk over the shared scanner skeleton (`utils/sourceScan`), so an
+ * `import` inside a string or a comment is never mistaken for a statement, and
+ * `obj.import` is never mistaken for the keyword.
  */
 export function extractSideEffectImports(source: string): string[] {
   const specifiers: string[] = [];
-  const n = source.length;
-  let i = 0;
-  // Last non-whitespace, non-comment character consumed — used to tell the
-  // `import` keyword apart from an `.import` member access.
   let prevSignificant = '';
-
-  while (i < n) {
-    const c = source[i];
-
-    // Line or block comment.
-    const pastComment = skipCommentFrom(source, i);
-    if (pastComment >= 0) {
-      i = pastComment;
-      continue;
-    }
-    // String / template literal — skipped whole (no `${...}` descent), which is
-    // fine here because we only care about top-level import statements, never
-    // expressions.
-    if (c === '"' || c === "'" || c === '`') {
-      i = skipStringFrom(source, i, c);
-      prevSignificant = c;
-      continue;
-    }
-    // Identifier / keyword
-    if (isIdentStart(c)) {
-      const j = identifierEnd(source, i);
-      const word = source.slice(i, j);
-
-      if (word === 'import' && prevSignificant !== '.') {
-        // Skip whitespace and comments after the keyword to find the next token.
-        const k = nextSignificantIndex(source, j);
-        const next = source[k];
-        if (next === '"' || next === "'") {
-          // `import <string>` — a side-effect import. Read the literal.
-          const end = skipStringFrom(source, k, next);
-          specifiers.push(source.slice(k + 1, end - 1));
-          prevSignificant = next;
-          i = end;
-          continue;
-        }
-        // Anything else (`{`, `*`, an identifier, `(` for dynamic import,
-        // `type`) is a binding/dynamic import — not a side effect. Resume after
-        // the keyword.
+  // Set after the bare `import` keyword: the next non-comment token answers
+  // whether it was a side-effect form (a quoted literal) or a binding/dynamic
+  // import — in which case the statement is skipped and the literal, if any,
+  // arrives later as its own token.
+  let afterImportKeyword = false;
+  scanSourceTokens(source, (token) => {
+    const significant = tokenSignificantChar(token);
+    if (token.kind === 'comment') return;
+    if (afterImportKeyword) {
+      afterImportKeyword = false;
+      if (token.kind === 'string' && token.quote !== '`') {
+        specifiers.push(token.raw);
       }
-
-      prevSignificant = word[word.length - 1];
-      i = j;
-      continue;
+    } else if (token.kind === 'ident' && token.word === 'import' && prevSignificant !== '.') {
+      afterImportKeyword = true;
     }
-
-    if (c !== ' ' && c !== '\t' && c !== '\r' && c !== '\n') {
-      prevSignificant = c;
-    }
-    i++;
-  }
-
+    if (significant !== undefined) prevSignificant = significant;
+  });
   return specifiers;
 }
 

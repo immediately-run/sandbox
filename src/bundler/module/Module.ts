@@ -14,6 +14,12 @@ export class Module {
   isEntry = false;
   source: string;
   compiled: string | null;
+  /**
+   * True once {@link releaseText} has dropped this module's `source`/`compiled` text.
+   * The module is still COMPILED — ask {@link isCompiled}, never `compiled != null`,
+   * which stopped meaning that the moment the text could be released.
+   */
+  private textReleased = false;
   bundler: Bundler;
   evaluation: Evaluation | null = null;
   hot: HotContext;
@@ -35,6 +41,45 @@ export class Module {
     this.hot = new HotContext(this);
   }
 
+  /**
+   * Whether this module has compiled output — the question `compiled != null` used to
+   * answer. It holds across {@link releaseText}: an evaluated dependency keeps its
+   * place in the graph (and its `evaluation`) after its text is gone.
+   */
+  get isCompiled(): boolean {
+    return this.compiled != null || this.textReleased;
+  }
+
+  /**
+   * Whether the text may be dropped once this module has evaluated.
+   *
+   * Only `/node_modules` code qualifies. Nothing reads a dependency's text after its
+   * one evaluation: the error overlay returns `node_modules` frames unmapped
+   * (`error-listener/mapper.ts`), the `state` message carries app modules only, and a
+   * reset re-reads the source from the filesystem before recompiling. App modules keep
+   * theirs — the overlay maps their frames through the inline source map in `compiled`,
+   * and hot reload re-evaluates them.
+   */
+  private canReleaseText(): boolean {
+    return this.filepath.startsWith('/node_modules/') && !this.hot.hmrConfig;
+  }
+
+  /**
+   * Drop the retained `source` and `compiled` strings of an evaluated dependency.
+   *
+   * V8 keeps the evaluated script's own text for as long as any function from it is
+   * alive, so before this a large dependency was held up to three times: its source,
+   * its compiled output and the wrapped copy `eval` received. These two are the copies
+   * nothing reads again. (A package file the registry inlined is still referenced from
+   * `NodeModule.files`, which serves filesystem reads — releasing here frees the
+   * COMPILED copy of a Babel-transformed dependency, not that registry copy.)
+   */
+  private releaseText(): void {
+    this.source = '';
+    this.compiled = null;
+    this.textReleased = true;
+  }
+
   get initiators() {
     return this.bundler.getInitiators(this.id);
   }
@@ -52,7 +97,7 @@ export class Module {
   }
 
   async compile(): Promise<void> {
-    if (this.compiled != null || this.compilationError != null) {
+    if (this.isCompiled || this.compilationError != null) {
       return;
     }
     try {
@@ -100,9 +145,12 @@ export class Module {
     this.compilationError = null;
 
     // Skip modules that don't have any compilation
-    if (this.compiled == null) return;
+    if (!this.isCompiled) return;
 
     this.compiled = null;
+    // A reset module recompiles from a fresh filesystem read (`_transformModule`), so a
+    // released module is simply uncompiled again.
+    this.textReleased = false;
     this.evaluation = null;
 
     // §5.3 reset-delete: drop any `/transpiled/<path>.js` for this module so an
@@ -192,6 +240,11 @@ export class Module {
       this.hot.hmrConfig.callAcceptCallback();
     }
     // this.bundler.setHmrStatus('idle');
+
+    // Evaluated without throwing: a dependency's text has no reader left.
+    if (this.canReleaseText()) {
+      this.releaseText();
+    }
 
     return this.evaluation;
   }

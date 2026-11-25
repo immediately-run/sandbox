@@ -7,6 +7,7 @@ import {
   validateSeedEntry,
   readableLayerOnly,
   manifestShaMap,
+  selectSeedVariant,
   type ArtifactFileEntry,
 } from './artifactIndex';
 
@@ -56,6 +57,38 @@ describe('parseArtifactIndex (§4.2 structural validation)', () => {
   it('rejects non-object input', () => {
     expect(parseArtifactIndex(null)).toBeNull();
     expect(parseArtifactIndex('nope')).toBeNull();
+  });
+
+  it('keeps a well-formed `library` variant on its entry (R3-1343)', () => {
+    const idx = parseArtifactIndex({
+      ...validIndex,
+      files: {
+        '/src/App.tsx': {
+          srcSha: 'sha-app',
+          out: 'transpiled/src/App.tsx.js',
+          deps: ['react'],
+          library: { out: 'transpiled-lib/src/App.tsx.js', deps: ['react/jsx-runtime'] },
+        },
+      },
+    });
+    expect(idx!.files['/src/App.tsx'].library).toEqual({
+      out: 'transpiled-lib/src/App.tsx.js',
+      deps: ['react/jsx-runtime'],
+    });
+  });
+
+  it('drops a malformed `library` variant WITHOUT rejecting the index (R3-843 at the variant level)', () => {
+    for (const library of [42, 'nope', { out: 3, deps: [] }, { out: 'o' }, { deps: [] }, { out: 'o', deps: [1] }]) {
+      const idx = parseArtifactIndex({
+        ...validIndex,
+        files: { '/src/App.tsx': { srcSha: 'sha-app', out: 'transpiled/src/App.tsx.js', deps: [], library } },
+      });
+      // The entry survives; only its variant is gone — and the drop is MARKED, so
+      // seeding can count a rejected variant apart from a zip that carries none.
+      expect(idx).not.toBeNull();
+      expect(idx!.files['/src/App.tsx'].library).toBeUndefined();
+      expect(idx!.files['/src/App.tsx'].libraryRejected).toBe(true);
+    }
   });
 });
 
@@ -168,5 +201,64 @@ describe('manifestShaMap', () => {
   it('drops entries whose path cannot canonicalize', () => {
     const map = manifestShaMap([{ path: '/src/../etc', sha: 'x' }]);
     expect(map.size).toBe(0);
+  });
+});
+
+describe('selectSeedVariant (R3-1343 — which bytes a root serves for one entry)', () => {
+  const base = (over: Partial<ArtifactFileEntry> = {}): ArtifactFileEntry => ({
+    srcSha: 's',
+    out: 'transpiled/src/x.js',
+    deps: [],
+    ...over,
+  });
+
+  it('the /app root always seeds the base entry — the publisher path IS the mounted path', () => {
+    const withVariant = base({ library: { out: 'transpiled-lib/src/x.js', deps: ['react/jsx-runtime'] } });
+    expect(selectSeedVariant(withVariant, { isAppRoot: true })).toEqual({ kind: 'base' });
+    expect(selectSeedVariant(base(), { isAppRoot: true })).toEqual({ kind: 'base' });
+  });
+
+  it('a library root seeds the variant when the zip carries one, with `out` confined', () => {
+    const decision = selectSeedVariant(
+      base({ library: { out: 'transpiled-lib/src/x.js', deps: ['react/jsx-runtime'] } }),
+      { isAppRoot: false },
+    );
+    expect(decision).toEqual({
+      kind: 'library',
+      out: '.immediately.run/artifacts/transpiled-lib/src/x.js',
+      deps: ['react/jsx-runtime'],
+    });
+  });
+
+  it('a library root skips an entry with no variant — no /app compile byte-matches a mount', () => {
+    // Two path axes make the base artifact unusable at a mount, and either alone is
+    // enough: the CHAIN (refresh for app-root `.tsx`/`.jsx`/`.js`, plain under
+    // `/node_modules`) and COMPACTION (the transpiler minifies `/node_modules/**`, so
+    // even a same-chain `.ts` compiles pretty at /app and minified at the mount —
+    // verified 2026-11-06: the plain `.ts` pair differs by formatting alone). `.mdx`
+    // has no chain at all under `/node_modules`. The entry carries no path — the
+    // decision cannot depend on the extension, and does not.
+    expect(selectSeedVariant(base(), { isAppRoot: false })).toEqual({
+      kind: 'skip',
+      reason: 'library-variant-missing',
+    });
+  });
+
+  it('a variant whose `out` escapes .immediately.run/artifacts/ is REJECTED, not silently missing', () => {
+    // Adversarial row: the escaping variant never seeds — the confinement rule is the
+    // same one `validateSeedEntry` applies to the base `out`. The skip says WHICH
+    // failure it was: a carried-but-unservable variant is an emission or confinement
+    // bug signal, distinct from a zip that simply predates the emission flag.
+    const escaping = base({ library: { out: '../../evil.js', deps: [] } });
+    expect(selectSeedVariant(escaping, { isAppRoot: false })).toEqual({
+      kind: 'skip',
+      reason: 'library-variant-rejected',
+    });
+    // The parse-time marker for a shape-invalid block takes the same branch.
+    const malformedAtParse = base({ libraryRejected: true });
+    expect(selectSeedVariant(malformedAtParse, { isAppRoot: false })).toEqual({
+      kind: 'skip',
+      reason: 'library-variant-rejected',
+    });
   });
 });

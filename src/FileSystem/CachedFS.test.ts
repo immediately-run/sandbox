@@ -210,6 +210,27 @@ describe('CachedFS (G0-2 — read memoization + change invalidation)', () => {
     expect(events).toEqual([{ path: '/a.js', eventType: 'rename' }]);
   });
 
+  it('dropCachesFor clears a memoized NEGATIVE for a node_modules path (R3-820)', async () => {
+    // A failed resolution probe memoizes isFile=false. invalidate() skips
+    // node_modules (registry content is immutable per compile) — the one
+    // sanctioned exception is a lazily materialized esm-fallback subpath, whose
+    // rail drops exactly that path so the retried resolution re-stats.
+    let exists = false;
+    const stat = jest.fn(async () => ({ isFile: () => exists }));
+    const { context } = makeContext({ stat });
+    const fs = new CachedFS(context);
+
+    expect(await fs.isFileAsync('/node_modules/sql.js/dist/sql-asm.js')).toBe(false); // probe memoizes the miss
+    expect(await fs.isFileAsync('/node_modules/sql.js/dist/sql-asm.js')).toBe(false);
+    expect(stat).toHaveBeenCalledTimes(1);
+
+    exists = true; // the file materializes in the registry-backed mount
+    expect(await fs.isFileAsync('/node_modules/sql.js/dist/sql-asm.js')).toBe(false); // stale negative still served
+    fs.dropCachesFor('/node_modules/sql.js/dist/sql-asm.js');
+    expect(await fs.isFileAsync('/node_modules/sql.js/dist/sql-asm.js')).toBe(true); // re-stat sees the file
+    expect(stat).toHaveBeenCalledTimes(2);
+  });
+
   it('isFileAsync memoizes stat and treats a cached read as a known file', async () => {
     const stat = jest.fn(async () => ({ isFile: () => true }));
     const { context, readFile } = makeContext({ stat });
@@ -264,6 +285,25 @@ describe('CachedFS — batch hydration (R3-49b)', () => {
 
     expect(await fs.readBytesAsync('/app/.immediately.run/packages/react.msgpack')).toBe(bytes);
     expect(readFile).not.toHaveBeenCalled();
+  });
+
+  it('releaseBytes drops the cached bytes but not the fact the file exists', async () => {
+    const reread = new Uint8Array([9, 9]);
+    const readFile = jest.fn(async () => reread);
+    const { context } = makeContext({ readFile });
+    const fs = new CachedFS(context);
+    const path = '/app/.immediately.run/packages/react.msgpack';
+    fs.hydrate([{ path, content: new Uint8Array([1, 2, 3, 4]) }]);
+
+    fs.releaseBytes(path);
+
+    // Still known to exist, with no backend probe…
+    expect(await fs.isFileAsync(path)).toBe(true);
+    expect(readFile).not.toHaveBeenCalled();
+    // …and a later read is correct: it crosses the Port again instead of being served
+    // from bytes that were kept only in case.
+    expect(await fs.readBytesAsync(path)).toBe(reread);
+    expect(readFile).toHaveBeenCalledTimes(1);
   });
 
   it('normalizes a leading-slash-less hydrated path', async () => {

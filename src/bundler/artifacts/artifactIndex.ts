@@ -34,6 +34,23 @@ export interface ArtifactToolchain {
   preset: string;
 }
 
+/**
+ * The library-mount variant of one file entry (R3-1343): the output pre-transpiled for
+ * consumption at a `/node_modules/<name>` mount — the compile the module would get live
+ * at its mounted path (plain chain, minified; byte-identical at any mount name, its
+ * source map names only the basename). The base `out` is the `/app` compile, and the
+ * two can never byte-match: the react preset branches the chain by path and the
+ * transpiler minifies `/node_modules/**` (`compact`), so a library root serves the
+ * variant or nothing (see `selectSeedVariant`). Absent on every zip built before the
+ * CLI's opt-in `libraryArtifacts` flag existed.
+ */
+interface ArtifactLibraryVariant {
+  /** Output path, relative to `.immediately.run/artifacts/` — confined exactly like `out`. */
+  out: string;
+  /** Raw dependency specifiers of the variant compile (§4.2). */
+  deps: string[];
+}
+
 /** One `files` entry in `index.json` (§4.2). */
 export interface ArtifactFileEntry {
   /** Git blob SHA of the source — MUST equal the manifest entry's `sha` (§4.2). */
@@ -42,6 +59,13 @@ export interface ArtifactFileEntry {
   out: string;
   /** Raw dependency specifiers as the dep-collector reported them (§4.2). */
   deps: string[];
+  /** Optional library-mount variant (R3-1343) — see {@link ArtifactLibraryVariant}. */
+  library?: ArtifactLibraryVariant;
+  /** Runtime-only marker (never serialized): the entry carried a `library` block that
+   *  failed shape validation, so `parseArtifactIndex` dropped it (R3-843 — reject the
+   *  variant, keep the entry). Carried so seeding can tell a REJECTED variant apart
+   *  from a zip that carries none (R3-1343 diagnostics). */
+  libraryRejected?: true;
 }
 
 export interface ArtifactIndex {
@@ -73,6 +97,13 @@ function isFileEntry(value: unknown): value is ArtifactFileEntry {
   return typeof e.srcSha === 'string' && typeof e.out === 'string' && isStringArray(e.deps);
 }
 
+/** A well-formed `library` variant block (R3-1343). */
+function isLibraryVariant(value: unknown): value is ArtifactLibraryVariant {
+  if (typeof value !== 'object' || value === null) return false;
+  const e = value as Record<string, unknown>;
+  return typeof e.out === 'string' && isStringArray(e.deps);
+}
+
 /**
  * Structurally validate a parsed `index.json` (§4.2). Returns the typed index or
  * `null` on any shape/`schemaVersion` failure (caller logs + boots live, §5.1).
@@ -99,7 +130,15 @@ export function parseArtifactIndex(raw: unknown): ArtifactIndex | null {
   const files: Record<string, ArtifactFileEntry> = {};
   for (const [key, value] of Object.entries(idx.files as Record<string, unknown>)) {
     if (!isFileEntry(value)) return null;
-    files[key] = { srcSha: value.srcSha, out: value.out, deps: value.deps };
+    const entry: ArtifactFileEntry = { srcSha: value.srcSha, out: value.out, deps: value.deps };
+    // A malformed `library` drops only THAT entry's variant; the entry stays and
+    // `selectSeedVariant` decides without it. One bad block must never reject the
+    // whole index — that is R3-843's lesson (one poisoned entry cost every artifact).
+    // The marker keeps the drop VISIBLE: a carried-but-broken variant is a rejection,
+    // not the same thing as a zip that carries no variant at all.
+    if (isLibraryVariant(value.library)) entry.library = { out: value.library.out, deps: value.library.deps };
+    else if (value.library !== undefined) entry.libraryRejected = true;
+    files[key] = entry;
   }
 
   return {
@@ -230,6 +269,57 @@ export function validateSeedEntry(
   if (entry.srcSha !== manifestSha) return { ok: false, reason: 'srcsha-mismatch' };
 
   return { ok: true, path, out, deps: entry.deps };
+}
+
+/** Which bytes a root seeds for one index entry (R3-1343). */
+export type SeedVariantDecision =
+  /** Seed the entry's own `out`/`deps` — the app-root compile. */
+  | { kind: 'base' }
+  /** Seed the entry's `library` variant (its `out` already confined). */
+  | { kind: 'library'; out: string; deps: string[] }
+  /** Seed nothing: the module live-transpiles. A cache miss, never a distrust.
+   *  `library-variant-missing` — the zip carries no variant (every pre-flag zip);
+   *  `library-variant-rejected` — the zip carries one the runtime cannot serve
+   *  (malformed at parse, or an `out` escaping the artifacts dir). */
+  | { kind: 'skip'; reason: 'library-variant-missing' | 'library-variant-rejected' };
+
+/**
+ * Pick the artifact a root serves for one index entry.
+ *
+ * The `/app` root serves the base entry: the publisher's path is the mounted path.
+ * Every other root (a git-mounted library at `/node_modules/<name>/…`) serves the
+ * `library` variant or nothing, because the base artifact — the compile at `/app/<rel>`
+ * — can never byte-match a mounted-path compile. TWO path axes make the bytes differ,
+ * and either alone is enough:
+ *
+ * - the chain: the react preset gives app-root `.tsx`/`.jsx`/`.js` the react-refresh
+ *   envelope and `/node_modules/**` the plain one;
+ * - compaction: the transpiler minifies `/node_modules/**` output
+ *   (`compact: /node_modules/.test(filepath)`), so even a same-chain `.ts` compiles
+ *   pretty at `/app` and minified at the mount. Verified 2026-11-06: the plain `.ts`
+ *   pair differs by formatting alone.
+ *
+ * Seeding the base artifact anyway would not just serve foreign bytes — the §5.7
+ * spot-check, which re-transpiles at the mounted path (the correct reference, owner
+ * ruling 2026-11-06), would flag it as tampered and discard the whole section. So a
+ * zip without variants (every zip built before the CLI's `libraryArtifacts` flag) is a
+ * cold cache for the library, never a distrust.
+ */
+export function selectSeedVariant(entry: ArtifactFileEntry, opts: { isAppRoot: boolean }): SeedVariantDecision {
+  if (opts.isAppRoot) return { kind: 'base' };
+  const variant = entry.library;
+  if (variant) {
+    const out = outWithinArtifacts(variant.out);
+    if (out) return { kind: 'library', out, deps: variant.deps };
+    // An `out` that escapes `.immediately.run/artifacts/` is an unservable variant:
+    // reject it (R3-843 — the variant, not the index) and say WHICH failure it was.
+  }
+  // A variant the zip carries but the runtime cannot serve (malformed at parse — the
+  // `libraryRejected` marker — or an escaping `out` above) is a REJECTION, not a
+  // missing variant: once R3-1345's zips carry variants, a rejection count is the
+  // emission-or-confinement bug signal, while `missing` is just an old zip.
+  const carried = variant !== undefined || entry.libraryRejected === true;
+  return { kind: 'skip', reason: carried ? 'library-variant-rejected' : 'library-variant-missing' };
 }
 
 /**

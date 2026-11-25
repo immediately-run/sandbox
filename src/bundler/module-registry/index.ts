@@ -18,13 +18,25 @@ import { bundledIndexPath, bundledPackagePath, decodeBundledModule, parseBundled
 import { SELF_HOST_BASES } from '../moduleOrigins';
 import {
   EsmFallbackFetcher,
+  EsmFallbackSubpathLoader,
   esmFallbackEntryUrl,
   esmFallbackModulePath,
+  esmFallbackSubpathPath,
   fetchEsmFallbackSource,
   nativeEsmFallbackFetcher,
+  nativeEsmFallbackSubpathLoader,
   synthesizeEsmFallbackModule,
 } from './esm-fallback';
 import { NodeModule } from './NodeModule';
+import {
+  DeferredFailure,
+  deferredFailureModulePath,
+  deferredFailureWarning,
+  packageNameOf,
+  synthesizeDeferredFailureModule,
+} from './deferredFailures';
+import { collectUndeclaredImports, UNDECLARED_IMPORT_RESCUE_BUDGET, UndeclaredImport } from './undeclared-transitive';
+import { scanCjsModule } from '../transforms/raw-cjs/scan';
 
 // dependency => version range
 export type DepMap = { [depName: string]: string };
@@ -48,6 +60,13 @@ export class ModuleRegistry {
   // (name → requested range). Consulted in `_fetchModule` to synthesize the
   // bridge package instead of fetching from the primary CDN.
   private esmFallbacks: Map<string, string> = new Map();
+  // R3-1383 — declared packages that failed to resolve or preload, one per name. Each is
+  // served by a stub package that throws the recorded error when imported (see
+  // deferredFailures.ts), so a package the page never imports cannot fail the boot.
+  private deferredFailures: Map<string, DeferredFailure> = new Map();
+  // The top-level dependency map of the current boot: only a failure of one of THESE is
+  // deferred. A transitive failure means a declared package is broken, and fails the boot.
+  private requestedDeps: Record<string, string> = {};
 
   bundler: Bundler;
 
@@ -60,7 +79,22 @@ export class ModuleRegistry {
   // the primary CDN actually drops a package; on failure (esm.sh down, a
   // multi-chunk package) it throws the clear `assertDependenciesResolved`-style
   // error. Pass `null` to disable, or a stub fetcher in tests.
-  constructor(bundler: Bundler, private esmFallbackFetcher: EsmFallbackFetcher | null = nativeEsmFallbackFetcher) {
+  //
+  // The SUBPATH loader materializes deep imports of a fallback package
+  // (`sql.js/dist/sql-asm.js`) — the synthesis covers only the package root, so
+  // the subpath rail fetches the raw tarball file from unpkg. `null` disables
+  // the rail (subpath imports keep the resolution error).
+  //
+  // With the esm.sh fallback ENABLED, the registry also runs the dist-declared
+  // transitive rescue (R3-1203, see undeclared-transitive.ts): a package whose
+  // dist imports a name no declared dependency resolves is fetched through the
+  // same fallback. `null` (the fallback off) disables the rescue with it — the
+  // pre-R3-1203 behaviour, the boot dies on the first such import.
+  constructor(
+    bundler: Bundler,
+    private esmFallbackFetcher: EsmFallbackFetcher | null = nativeEsmFallbackFetcher,
+    private esmFallbackSubpathLoader: EsmFallbackSubpathLoader | null = nativeEsmFallbackSubpathLoader,
+  ) {
     this.bundler = bundler;
   }
 
@@ -84,7 +118,11 @@ export class ModuleRegistry {
     const relPath = (await this.ensureBundledIndex())?.get(`${name}@${version}`);
     if (!relPath) return null;
     try {
-      const module = decodeBundledModule(await this.bundler.fs.readBytesAsync(bundledPackagePath(relPath)));
+      const path = bundledPackagePath(relPath);
+      const module = decodeBundledModule(await this.bundler.fs.readBytesAsync(path));
+      // Decoded: the msgpack bytes are not read again (`fetchNodeModule` memoizes the
+      // module), so do not keep them cached beside the strings they decoded into.
+      this.bundler.fs.releaseBytes(path);
       logger.debug('using bundled package (R3-49a), skipping CDN fetch', name, version);
       return module;
     } catch (err) {
@@ -104,6 +142,7 @@ export class ModuleRegistry {
     }
 
     const sortedDeps = sortObj(deps);
+    this.requestedDeps = sortedDeps;
 
     // A sidecar lockset (PRETRANSPILED_ARTIFACTS_SPEC §5.4) replaces the
     // blocking /dep_tree request — but only on an exact input match, so a
@@ -173,7 +212,47 @@ export class ModuleRegistry {
     // disabled) then guard, so a dropped dep surfaces the clear error rather than
     // a cryptic undefined import — on either path.
     this.registerEsmFallbacks(sortedDeps);
-    assertDependenciesResolved(sortedDeps, this.manifest);
+    // R3-1383: a declared package still missing (the fallback is off) is deferred, not
+    // thrown. The message is the shared guard's own, so the import fails with the words the
+    // boot used to show.
+    const resolvedNames = new Set(this.manifest.map((dep) => dep.n));
+    for (const [name, range] of Object.entries(sortedDeps)) {
+      if (resolvedNames.has(name)) continue;
+      try {
+        assertDependenciesResolved({ [name]: range }, this.manifest);
+      } catch (err) {
+        this.deferFailure(name, range, err);
+      }
+    }
+  }
+
+  /** Record a declared package as failed and serve its stub in its place. */
+  private deferFailure(name: string, range: string, err: unknown): void {
+    // The subpath rail must not try to materialize files of a package that failed.
+    this.esmFallbacks.delete(name);
+    // A deferral lasts as long as the registry, like a loaded package: a re-boot in this
+    // frame keeps the stub (registry files never change under a path; RegistryFS caches
+    // them), and a dependency change reloads the frame, which is the retry.
+    if (this.deferredFailures.has(name)) return;
+    const failure: DeferredFailure = { name, range, message: err instanceof Error ? err.message : String(err) };
+    this.deferredFailures.set(name, failure);
+    const stub = synthesizeDeferredFailureModule(failure);
+    this.modules.set(name, new NodeModule(name, range, stub.f, stub.m));
+    logger.warn(deferredFailureWarning(failure));
+  }
+
+  /** The recorded failure of a declared package the boot deferred to its import (R3-1383). */
+  deferredFailure(name: string): DeferredFailure | undefined {
+    return this.deferredFailures.get(name);
+  }
+
+  /**
+   * The stub entry a bare specifier resolves to when its package was deferred (R3-1383), or
+   * null. Covers subpaths (`csv-parse/sync`): the stub has no files beyond its entry.
+   */
+  deferredFailurePath(specifier: string): string | null {
+    const name = packageNameOf(specifier);
+    return name !== null && this.deferredFailures.has(name) ? deferredFailureModulePath(name) : null;
   }
 
   /**
@@ -239,11 +318,121 @@ export class ModuleRegistry {
   }
 
   async preloadModules(): Promise<void> {
-    await Promise.all(
+    // R3-1383: settle every fetch. A declared package that fails is deferred to its import;
+    // a transitive one still fails the boot (the declared package that needs it is broken).
+    const results = await Promise.allSettled(
       this.manifest.map((dep) => {
         return this.fetchNodeModule(dep.n, dep.v);
       }),
     );
+    results.forEach((result, i) => {
+      if (result.status === 'fulfilled') return;
+      const dep = this.manifest[i];
+      const range = this.requestedDeps[dep.n];
+      if (range === undefined) throw result.reason;
+      this.deferFailure(dep.n, range, result.reason);
+    });
+    await this.rescueUndeclaredImports();
+  }
+
+  /**
+   * R3-1203 — reconcile the loaded packages' ACTUAL imports (their `m` list,
+   * the CDN's package-level answer computed from the real dist) against what
+   * the boot resolved, and fetch anything the whole chain left unnamed through
+   * the esm.sh fallback: a dist-declared transitive the resolved version's
+   * package.json does not declare (the recorded case:
+   * `@codemirror/language@6.13.0` importing `@codemirror/streamparser`,
+   * declared only from 6.13.1) is resolved at esm.sh's `*` (latest — no range
+   * was ever declared for it) with the already-resolved deps externalized, and
+   * registered like any fallback package. Runs to a fixpoint so a rescued
+   * package's own bare imports get the same treatment.
+   *
+   * Never throws: a name the fallback cannot answer is warned about and left
+   * alone, preserving the R3-411 bar (a guarded require in a file the app never
+   * imports must not fail the boot — the module-not-found surfaces exactly if
+   * the import is reached). The budget bounds the boot's fallback round-trips
+   * against metadata naming unbounded unknowns.
+   */
+  private async rescueUndeclaredImports(): Promise<void> {
+    if (!this.esmFallbackFetcher) return;
+    let rescued = 0;
+    const failed = new Set<string>();
+    const unrescuedNames = (current: UndeclaredImport[]): string =>
+      [...new Set([...failed, ...current.map((c) => c.name)])].join(', ');
+    for (;;) {
+      // What counts as resolved: the manifest, the self-hosted bases, every
+      // registered package (so a package.json re-edit that re-runs the boot
+      // does not re-rescue), and the registry-resolved names (git-form deps —
+      // the mount provides them; a rescue would fetch an esm.sh duplicate).
+      const known = new Set([
+        ...this.bundler.registryResolvedNames(),
+        ...this.manifest.map((dep) => dep.n),
+        ...this.modules.keys(),
+      ]);
+      const candidates = collectUndeclaredImports(this.modules, known).filter((c) => !failed.has(c.name));
+      if (candidates.length === 0) {
+        if (failed.size > 0) {
+          logger.warn(
+            `Undeclared-import rescue could not resolve: ${[...failed].join(', ')}; ` +
+              `left unresolved. These surface as module-not-found if actually imported.`,
+          );
+        }
+        return;
+      }
+      if (rescued >= UNDECLARED_IMPORT_RESCUE_BUDGET) {
+        logger.warn(
+          `Undeclared-import rescue stopped at its ${UNDECLARED_IMPORT_RESCUE_BUDGET}-package budget; ` +
+            `not resolved: ${unrescuedNames(candidates)}. These surface as module-not-found if actually imported.`,
+        );
+        return;
+      }
+      const batch = candidates.slice(0, UNDECLARED_IMPORT_RESCUE_BUDGET - rescued);
+      const outcomes = await Promise.all(
+        batch.map((candidate) =>
+          this.rescueOneUndeclared(candidate).then((ok) => {
+            if (!ok) failed.add(candidate.name);
+            return ok;
+          }),
+        ),
+      );
+      const registered = outcomes.filter((outcome) => outcome);
+      if (registered.length === 0) continue; // all of this batch failed — the next pass warns and stops
+      rescued += registered.length;
+    }
+  }
+
+  // Fetch one rescued package through the esm.sh fallback at `*`. The
+  // synthesized NodeModule's `modules` (its `m` slot) is seeded with the
+  // transpiled entry's bare specifiers so the fixpoint loop picks them up on
+  // its next pass exactly like a CDN package's import list.
+  private async rescueOneUndeclared(candidate: UndeclaredImport): Promise<boolean> {
+    let mod: NodeModule;
+    try {
+      mod = await this._fetchEsmFallbackModule(candidate.name, '*');
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      logger.warn(
+        `Could not rescue the undeclared import "${candidate.name}" through the esm.sh fallback ` +
+          `(${reason}); leaving it unresolved`,
+        { name: candidate.name },
+      );
+      return false;
+    }
+    const index = mod.files['index.js'];
+    if (typeof index === 'object') mod.modules.push(...index.d);
+    // Register exactly like a dropped top-level dependency: the manifest entry
+    // (honest bookkeeping — the registry HAS resolved this name, depth ≥1 by
+    // construction) and the esmFallbacks slot, so the SUBPATH rail
+    // (`hasEsmFallback`-gated materialization) serves deep imports of the
+    // rescued package too.
+    this.esmFallbacks.set(candidate.name, '*');
+    this.manifest.push({ n: candidate.name, v: '*', d: 1 });
+    logger.warn(
+      `"${candidate.importer}" imports "${candidate.name}", which no declared dependency resolves and the ` +
+        `package CDN has not indexed; resolved ${candidate.name} at latest through the esm.sh fallback. ` +
+        `Pin the package in package.json to make the dependency explicit.`,
+    );
+    return true;
   }
 
   private async _fetchModule(name: string, version: string): Promise<NodeModule> {
@@ -303,6 +492,111 @@ export class ModuleRegistry {
     this.modules.set(name, processedNodeModule);
     logger.debug('resolved module via esm.sh fallback (shared-React transpile)', name, range, entryUrl);
     return processedNodeModule;
+  }
+
+  /** Whether `name` is a package the primary CDN dropped (esm.sh-fallback). */
+  hasEsmFallback(name: string): boolean {
+    return this.esmFallbacks.has(name);
+  }
+
+  /** Test seam for the subpath rail — mirrors the bundler's `setRegistryFetcher`. */
+  setEsmFallbackSubpathLoader(loader: EsmFallbackSubpathLoader | null): void {
+    this.esmFallbackSubpathLoader = loader;
+  }
+
+  /** Test seam for the root fallback fetcher (same rationale as the loader seam). */
+  setEsmFallbackFetcher(fetcher: EsmFallbackFetcher | null): void {
+    this.esmFallbackFetcher = fetcher;
+  }
+
+  // In-flight subpath materializations, deduped per (name, subpath) so two
+  // resolutions racing on the same deep import share one unpkg fetch.
+  private esmFallbackSubpathPromises: Map<string, Promise<boolean>> = new Map();
+
+  /**
+   * Materialize a DEEP SUBPATH of an esm.sh-fallback package into its synthetic
+   * module, so `name/sub` resolves the way the primary CDN would have served it.
+   *
+   * The root synthesis (`synthesizeEsmFallbackModule`) registers only
+   * `package.json` + `index.js`, so an app importing `name/sub` (sql.js's
+   * `dist/sql-asm.js`, the shape that killed sqlite-studio's live boot) fails
+   * resolution: the file map has no such file and RegistryFS answers from it.
+   * This fetches the RAW tarball file from unpkg (esm.sh's own subpath URL is a
+   * multi-chunk stub the single-module fallback refuses), passes published CJS
+   * through byte-for-byte with its require() graph scanned (the raw-cjs
+   * convention) or transpiles ESM through the shared chain, then inlines the
+   * file and precompiles its module — identical to what `loadModuleDependencies`
+   * does for the files a CDN module inlines.
+   *
+   * Scope: SINGLE FILE per call — exactly the subpath the app imported. A
+   * relative require INSIDE that file for a sibling the tarball also carries is
+   * NOT materialized by this rail (it maps to the R3-411 stub that throws on
+   * call), where a primary-CDN package would have its whole file map served.
+   *
+   * Returns TRUE when the subpath is resolvable after the call — including when
+   * it was already materialized (the early return; nothing is fetched). Returns
+   * FALSE when nothing was materialized: not a fallback package, the rail is
+   * disabled, the module is missing from the registry, or the fetch/transpile
+   * failed (a warning naming the package, subpath and cause is logged first) —
+   * the caller keeps the original resolution error.
+   */
+  async ensureEsmFallbackSubpath(name: string, subpath: string): Promise<boolean> {
+    if (!this.esmFallbacks.has(name) || !this.esmFallbackSubpathLoader) return false;
+    const nodeModule = this.modules.get(name);
+    if (!nodeModule) return false;
+    if (nodeModule.files[subpath] != null) return true; // already materialized
+    const key = `${name}\0${subpath}`;
+    let promise = this.esmFallbackSubpathPromises.get(key);
+    if (!promise) {
+      promise = this._materializeEsmFallbackSubpath(name, subpath, nodeModule).finally(() =>
+        this.esmFallbackSubpathPromises.delete(key),
+      );
+      this.esmFallbackSubpathPromises.set(key, promise);
+    }
+    return promise;
+  }
+
+  private async _materializeEsmFallbackSubpath(
+    name: string,
+    subpath: string,
+    nodeModule: NodeModule,
+  ): Promise<boolean> {
+    const range = this.esmFallbacks.get(name)!;
+    let code: string;
+    try {
+      code = await this.esmFallbackSubpathLoader!(name, range, subpath);
+    } catch (err) {
+      logger.warn(
+        `esm.sh fallback subpath fetch failed for ${name}@${range}/${subpath}; the resolution error stands`,
+        err,
+      );
+      return false;
+    }
+    const path = esmFallbackSubpathPath(name, subpath);
+    let compiled: string;
+    let deps: string[];
+    const scan = scanCjsModule(code);
+    if (scan.isEsm) {
+      // ESM tarball file → the shared ESM→CJS chain (the CJS require-runtime
+      // cannot evaluate import/export statements).
+      const transformed = await transformFile({ path, code });
+      if ('error' in transformed) {
+        logger.warn(`esm.sh fallback subpath transpile failed for ${name}@${range}/${subpath}`, transformed.error);
+        return false;
+      }
+      compiled = transformed.code;
+      deps = transformed.deps;
+    } else {
+      // Published CJS is browser-ready as-is — the raw-cjs convention: the code
+      // passes through byte-for-byte and only its require() graph is collected.
+      compiled = code;
+      deps = scan.requires;
+    }
+    const file: ICDNModuleFile = { c: compiled, d: deps, t: true };
+    nodeModule.files[subpath] = file;
+    const callbacks = this._writePrecompiledModule(path, file);
+    await Promise.all(callbacks.map((fn) => fn()));
+    return true;
   }
 
   async fetchNodeModule(name: string, version: string): Promise<NodeModule> {

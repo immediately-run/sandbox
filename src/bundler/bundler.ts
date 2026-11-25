@@ -23,6 +23,7 @@ import { DEFAULT_EXTENSIONS, importerAwareExtensions } from '../resolver/utils/e
 import {
   resolveSelfHostVersionDetailed,
   fetchVendoredModule,
+  fileHashesOf,
   SelfHostResolutionError,
   type VendorTiming,
 } from './registryResolvedModules';
@@ -42,22 +43,25 @@ import { WorkerMessageBus } from '../utils/WorkerMessageBus';
 import { NamedPromiseQueue } from '../utils/NamedPromiseQueue';
 import { nullthrows } from '../utils/nullthrows';
 import { ModuleRegistry } from './module-registry';
+import { esmFallbackSubpathPath, parseBareSubpath } from './module-registry/esm-fallback';
 import { resolveFromCdnLayout } from './module-registry/cdnLayoutResolve';
 import { LocksetSection, locksetEchoContextFor, validateLockset } from './module-registry/lockset';
 import { collectLocalEntrySideEffects } from './sideEffectImports';
+import { classifyDeclaredEntry } from './entryPoint';
 import { Module } from './module/Module';
-import { CRYPTO_MODULE_CODE, UNSUPPORTED_BUILTIN_MODULE_CODE } from './shims';
+import { CRYPTO_MODULE_CODE, NODE_SHIMMED_BUILTIN_NAMES, UNSUPPORTED_BUILTIN_MODULE_CODE } from './shims';
 import { Preset } from './presets/Preset';
 import { getPreset } from './presets/registry';
 import { emitPerfMarker } from './perfMarkers';
 import { SELF_HOST_BASES } from './moduleOrigins';
+import { sdkPeerDependencies } from './selfHostPeers';
 import { retryFetch, registerImmutableUrlPrefix } from '../utils/fetch';
 import { basename, dirname } from '../utils/path';
 import { FrontmatterParseResult, parseFrontmatter } from '@immediately-run/transpiler';
 import { withHeadings } from './headings';
+import { isFrontmatterSource } from './frontmatterSource';
 import {
   bindContext,
-  globToRegex,
   CopyOnWrite,
   InMemory,
   mount,
@@ -126,7 +130,15 @@ function reportSeedDiagnostics(seed: MdxMetadataAdditive): void {
   }
 }
 
-const DEFAULT_SDK_VERSION = '0.16.0';
+// The SDK an app that declares none resolves (SDK_PACKAGING_SPEC §5.1(c)). It must be
+// recent enough to define every component the current transpiler emits — a default
+// that predates one fails the first file that uses it ("Expected component
+// `HeadingAnchor` to be defined" on 0.16.0, 2026-11-23). defaultSdkVersion.test.ts
+// holds that. The deploy workflow and site-main's verify-sdk-integrity.js extract the
+// version from the FIRST match of the constant's name, an equals sign and a quoted
+// literal in this file: keep the declaration below a single-quoted literal, and never
+// write that shape anywhere above it (a comment included).
+export const DEFAULT_SDK_VERSION = '0.96.0';
 
 // Oldest version each self-hosted module may pin (SDK_PACKAGING_SPEC §5.1(b)).
 // Pins below the floor fail closed at resolve time: 0.2.7 ships a fatal
@@ -187,8 +199,10 @@ interface IBundlerOpts {
   mounts: MountService;
 }
 
-const extractMetadata = (file: ISandboxFile): FrontmatterParseResult | null => {
-  if (file.path.endsWith('.mdx')) {
+// Exported for its adoption test (R3-1349, `frontmatterAdoption.test.ts`): the test feeds
+// the production function, not a copy.
+export const extractMetadata = (file: ISandboxFile): FrontmatterParseResult | null => {
+  if (isFrontmatterSource(file.path)) {
     try {
       const parseResult = parseFrontmatter(file.code);
       if (Object.keys(parseResult.data).length > 0) {
@@ -323,6 +337,11 @@ export class Bundler {
   // the top of `compile()`).
   private mountsReady = false;
   private lastMetadata: Map<string, Record<string, any>> = new Map();
+  // Store keys whose current row came from a frontmatter sidecar rather than a live
+  // parse. The spot-verify checks only these: a live row is the parser's own output (and
+  // carries the additive `headings` field a re-parse of the source does not), so
+  // comparing it would call a benign publisher's page forged.
+  private sidecarSeededMetadata = new Set<string>();
   // Host-pinned SDK integrity hashes (SDK_PACKAGING_SPEC §5.2), set from
   // IInitConfig before the initial compile; undefined → verification skipped.
   private sdkIntegrity?: SdkIntegrity;
@@ -548,42 +567,83 @@ export class Bundler {
       throw new BundlerError('Preset has not been loaded yet');
     }
 
+    const parsed = this.parsedPackageJSON;
+    // The manifest's own declarations — the only candidates the BOOT_SCAFFOLDING_SPEC
+    // §4.1 classification applies to; the preset defaults below are the boot
+    // scaffolding's and always resolve to what they resolve to.
+    const declaredEntries = new Set([parsed.main, parsed.source, parsed.module].filter((e) => typeof e === 'string'));
     const potentialEntries = new Set(
-      [
-        this.parsedPackageJSON.main,
-        this.parsedPackageJSON.source,
-        this.parsedPackageJSON.module,
-        ...this.preset.defaultEntryPoints,
-      ].filter((e) => typeof e === 'string'),
+      [parsed.main, parsed.source, parsed.module, ...this.preset.defaultEntryPoints].filter(
+        (e) => typeof e === 'string',
+      ),
     );
 
     for (let potentialEntry of potentialEntries) {
-      if (typeof potentialEntry === 'string') {
-        try {
-          // Entry paths from package.json (and preset defaults) are
-          // repo-relative. The bundler fs is now rooted at `/`, so anchor them
-          // to `APP_ROOT`: an absolute entry like `/index.tsx` means the repo's
-          // `/app/index.tsx`, and relative/bare entries resolve against an
-          // `APP_ROOT` base.
-          const entryPoint =
-            potentialEntry[0] === '/'
-              ? underAppRoot(potentialEntry)
-              : potentialEntry[0] !== '.'
-              ? `./${potentialEntry}`
-              : potentialEntry;
-          const resolvedEntryPont = await this.resolveAsync(entryPoint, underAppRoot('/index.js'));
-          return resolvedEntryPont;
-        } catch (err) {
-          logger.debug(`Could not resolve entrypoint ${potentialEntry}`);
-          logger.debug(err);
+      if (typeof potentialEntry !== 'string') continue;
+
+      let resolvedEntryPoint: string;
+      try {
+        // Entry paths from package.json (and preset defaults) are
+        // repo-relative. The bundler fs is now rooted at `/`, so anchor them
+        // to `APP_ROOT`: an absolute entry like `/index.tsx` means the repo's
+        // `/app/index.tsx`, and relative/bare entries resolve against an
+        // `APP_ROOT` base.
+        const entryPoint =
+          potentialEntry[0] === '/'
+            ? underAppRoot(potentialEntry)
+            : potentialEntry[0] !== '.'
+            ? `./${potentialEntry}`
+            : potentialEntry;
+        resolvedEntryPoint = await this.resolveAsync(entryPoint, underAppRoot('/index.js'));
+      } catch (err) {
+        logger.debug(`Could not resolve entrypoint ${potentialEntry}`);
+        logger.debug(err);
+        continue;
+      }
+
+      if (declaredEntries.has(potentialEntry)) {
+        const verdict = classifyDeclaredEntry(resolvedEntryPoint, await this.readEntrySource(resolvedEntryPoint));
+        if (verdict === 'dispatch') {
+          // The manifest names a file the boot-defaults entry dispatches anyway —
+          // it selects the component, it is not the bundle entry. Skip it so the
+          // preset defaults resolve the boot scaffolding `index.tsx`.
+          logger.debug(
+            `Entrypoint ${potentialEntry} is the boot-dispatched program component; keeping the boot-defaults entry`,
+          );
+          continue;
+        }
+        if (verdict === 'refuse') {
+          const field = (['main', 'source', 'module'] as const).find((f) => parsed[f] === potentialEntry);
+          throw new BundlerError(
+            `package.json "${
+              field ?? 'main'
+            }" names ${potentialEntry}, which default-exports a component but calls no render API, so evaluating it as the entry renders nothing. ` +
+              `Name the program component src/App.tsx (the boot entry dispatches it), or mount it from an entry that calls createRoot/boot.`,
+          );
         }
       }
+
+      return resolvedEntryPoint;
     }
     throw new BundlerError(
       `Could not resolve entry point, potential entrypoints: ${Array.from(potentialEntries).join(
         ', ',
       )}. You can define one by changing the "main" field in package.json.`,
     );
+  }
+
+  /**
+   * The declared entry's source for the §4.1 classification, or `undefined` when
+   * unreadable — an unreadable entry is used as-is rather than refused on no
+   * evidence (a read failure is a resolution concern the candidates after this one
+   * may still answer).
+   */
+  private async readEntrySource(resolvedEntryPoint: string): Promise<string | undefined> {
+    try {
+      return await this.fs.readFileAsync(resolvedEntryPoint);
+    } catch {
+      return undefined;
+    }
   }
 
   /**
@@ -616,7 +676,19 @@ export class Bundler {
     // naming react-error-boundary, and a peer-only SDK pin silently self-hosts the
     // (very stale) default. The merge is the transpiler's shared
     // `rootRuntimeDependencies` so the CLI's lockset echo matches (§4.4).
-    let dependencies = rootRuntimeDependencies(this.parsedPackageJSON);
+    const rootDependencies = rootRuntimeDependencies(this.parsedPackageJSON);
+    // R3-1318: the SDK is vendored implicitly (`addLocalModules`), so its peers are
+    // supplied implicitly too — a repo whose manifest never chose the SDK has no reason
+    // to declare react, yet the boot-default entry imports `react-dom/client` through
+    // it. The self-host manifest carries no peers, so they default to
+    // `IMPLICIT_SDK_PEERS` (selfHostPeers.ts). The root wins every name it declares.
+    // Merged before the emptiness gate so a root with no dependencies at all still
+    // fetches them.
+    const sdkPeers = await this.selfHostPeerDependencies();
+    // The names only the SDK supplied (the root did not declare them), so a git library's
+    // differing range is reported as losing to the SDK's peer, not to an app pin.
+    const implicitPeerNames = new Set(Object.keys(sdkPeers).filter((name) => !(name in rootDependencies)));
+    let dependencies = { ...sdkPeers, ...rootDependencies };
     if (Object.keys(dependencies).length > 0) {
       // R3-844: the lockset echo the CLI writes mirrors the PRE-strip input —
       // `computeInputDepMap` over the root runtime deps, git-form entries
@@ -627,6 +699,15 @@ export class Bundler {
       // Without this, a git-library consumer's lockset could never match its
       // own echo and the boot always needed the /dep_tree CDN call — a CDN
       // outage blanked exactly the apps the library-mount rail serves.
+      // R3-1318: the echo input is the MERGED map (SDK peers + root), not the root alone.
+      // The CLI's echo is `computeInputDepMap(rootRuntimeDependencies(pkg))`, root only,
+      // and its lockset was resolved without the SDK's peers. A root that declares every
+      // SDK peer itself gives a merged map equal to the root map (the root wins every
+      // overlap), so its sidecar lockset still matches and applies. A root missing one
+      // (omnibox declares react but not react-dom) gives a merged map with that peer
+      // added, so the echo misses and the bundler resolves live through /dep_tree/.
+      // Echoing the root alone would match, apply a lockset without react-dom, and fail
+      // `assertDependenciesResolved`.
       const locksetEcho = locksetEchoContextFor(dependencies);
       // Self-hosted (resolveFromRegistry) modules are already registered as
       // local modules by addLocalModules; strip them so the CDN /dep_tree/ query
@@ -643,7 +724,7 @@ export class Bundler {
       // resolves from a mount or the self-host) and BEFORE the preset augmentation (so they
       // get the same react/core-js treatment every other dependency does). App-wins on a
       // clash — see `libraryContributedDependencies`.
-      const contributed = this.libraryContributedDependencies(dependencies);
+      const contributed = this.libraryContributedDependencies(dependencies, implicitPeerNames);
       if (Object.keys(contributed).length) {
         dependencies = { ...contributed, ...dependencies };
       }
@@ -660,7 +741,12 @@ export class Bundler {
     }
   }
 
-  async resolveAsync(specifier: string, filename: string, extensions: string[] = DEFAULT_EXTENSIONS): Promise<string> {
+  async resolveAsync(
+    specifier: string,
+    filename: string,
+    extensions: string[] = DEFAULT_EXTENSIONS,
+    retriedEsmFallbackSubpath = false,
+  ): Promise<string> {
     // R3-577: a `.cjs` importer tries its CJS sibling FIRST (see
     // resolver/utils/extensions.ts — node-mode interop is only correct when an
     // extensionless internal require meets the `.cjs` build, and the default order
@@ -710,6 +796,33 @@ export class Bundler {
     try {
       return await promise;
     } catch (err) {
+      // R3-1383 — a declared package that failed to load is served by a stub that throws its
+      // recorded error when evaluated; a subpath of it (`csv-parse/sync`) lands on that stub.
+      const deferred = this.moduleRegistry.deferredFailurePath(specifier);
+      if (deferred !== null) return deferred;
+      // R3-820 — an esm.sh-fallback package's DEEP SUBPATH import (e.g.
+      // `sql.js/dist/sql-asm.js`) fails here because the fallback synthesis
+      // registers only the package root: the file map has no subpath file for
+      // the resolver to find. Materialize the subpath once (raw tarball file
+      // from unpkg, the same bytes the primary CDN would have served), then
+      // retry the resolution — the recursion flag makes this fire at most once
+      // per call so a subpath that STILL fails keeps its original error.
+      if (!retriedEsmFallbackSubpath) {
+        const bareSubpath = parseBareSubpath(specifier);
+        if (
+          bareSubpath !== null &&
+          this.moduleRegistry.hasEsmFallback(bareSubpath.name) &&
+          (await this.moduleRegistry.ensureEsmFallbackSubpath(bareSubpath.name, bareSubpath.subpath))
+        ) {
+          // The failed probe memoized the subpath as absent (CachedFS negatives
+          // persist per compile; node_modules is exempt from watcher
+          // invalidation) — drop that one path so the retry consults the
+          // registry-backed mount, which now carries the file. The path is the
+          // SAME symbol the registry materialized at, by construction.
+          this.fs.dropCachesFor(esmFallbackSubpathPath(bareSubpath.name, bareSubpath.subpath));
+          return await this.resolveAsync(specifier, filename, extensions, true);
+        }
+      }
       // Resolution failure is re-thrown for the caller to handle. Some callers
       // probe for *optional* files (e.g. the `src/main`/`main` local-entry
       // convention in collectLocalEntrySideEffects) and catch this as expected
@@ -726,7 +839,7 @@ export class Bundler {
   private async _transformModule(path: string): Promise<Module> {
     let module = this.modules.get(path);
     if (module) {
-      if (module.compiled != null) {
+      if (module.isCompiled) {
         return Promise.resolve(module);
       } else {
         // compilation got reset, we re-read the source to ensure it's the latest version.
@@ -864,7 +977,7 @@ export class Bundler {
   private async adoptSeededModules(): Promise<void> {
     for (const path of this.artifactStore.seededPathList()) {
       const existing = this.modules.get(path);
-      if (!existing || existing.compiled != null) continue;
+      if (!existing || existing.isCompiled) continue;
       const hit = await this.artifactStore.consult(path);
       if (!hit) continue;
       const seeded = new Module(path, hit.content, true, this);
@@ -876,7 +989,7 @@ export class Bundler {
   /** Transform file at a certain absolute path */
   async transformModule(path: string): Promise<Module> {
     let module = this.modules.get(path);
-    if (module && module.compiled != null) {
+    if (module && module.isCompiled) {
       return Promise.resolve(module);
     }
     return this.transformationQueue.addEntry(path, () => {
@@ -903,7 +1016,7 @@ export class Bundler {
     } else {
       if (asset.compilationError != null) {
         throw asset.compilationError;
-      } else if (asset.compiled == null) {
+      } else if (!asset.isCompiled) {
         throw new BundlerError(
           `Asset "${id}" has not been compiled — its source likely failed to load ` +
             `(a failed fetch: a network error or a GitHub API rate limit).`,
@@ -958,18 +1071,20 @@ export class Bundler {
   }
 
   async preloadModules(): Promise<void> {
-    await Promise.all([
-      this.addPreloadedModule('path'),
+    // The two shims with their own module sources; every other builtin name in
+    // NODE_SHIMMED_BUILTIN_NAMES loads the default polyfill `getNodeModuleFiles`
+    // generates. The list is single-sourced in shims.ts so the undeclared-import
+    // collector skips exactly these names (R3-1203).
+    const shimSources: Record<string, string> = {
       // `fs` is backed by the shared filesystem (parent window over the Port),
       // not a CDN polyfill — so app-code writes reach the parent and reflect in
       // the editor.
-      this.addPreloadedModule('fs', SHARED_FS_MODULE_CODE),
-      this.addPreloadedModule('util'),
-      this.addPreloadedModule('assert'),
-      this.addPreloadedModule('module'),
-      this.addPreloadedModule('os'),
+      fs: SHARED_FS_MODULE_CODE,
       // WebCrypto-backed subset; unshimmable APIs throw only when called (R3-411).
-      this.addPreloadedModule('crypto', CRYPTO_MODULE_CODE),
+      crypto: CRYPTO_MODULE_CODE,
+    };
+    await Promise.all([
+      ...NODE_SHIMMED_BUILTIN_NAMES.map((name) => this.addPreloadedModule(name, shimSources[name])),
       // R3-411: the landing spot for a precompiled package's UNRESOLVABLE
       // builtin require (node:child_process, node:worker_threads, …) — a
       // guarded require in an un-imported file must not fail the app.
@@ -1034,7 +1149,9 @@ export class Bundler {
           rel: v.path.startsWith(prefix) ? v.path.slice(prefix.length) : v.path,
           content: v.content,
         })),
-        expectedHashes,
+        // The pin minus its transport entry: a bundle is unpacked, never vendored, and
+        // every file that came out of it is checked here against its own hash.
+        fileHashesOf(expectedHashes),
       );
       if (!result.ok) {
         console.warn(`[security] sdk-integrity:mismatch ${moduleName}`, {
@@ -1231,6 +1348,27 @@ export class Bundler {
   }
 
   /**
+   * The peers every self-hosted module brings, per `sdkPeerDependencies`: the non-optional
+   * `peerDependencies` of the `package.json` `vendorModuleFrom` wrote under
+   * `/node_modules/<name>/` when it declares that field, else `IMPLICIT_SDK_PEERS` (the
+   * self-host manifest is `{ name, main, module, types }` only). An unreadable or
+   * unparseable manifest contributes nothing and is logged: vendoring has already failed
+   * loudly if the files were missing, so this path is defensive.
+   */
+  private async selfHostPeerDependencies(): Promise<Record<string, string>> {
+    const peers: Record<string, string> = {};
+    for (const moduleName of Object.keys(SELF_HOST_BASES)) {
+      const path = `/node_modules/${moduleName}/package.json`;
+      try {
+        Object.assign(peers, sdkPeerDependencies(JSON.parse(await this.fs.readFileAsync(path))));
+      } catch (err) {
+        logger.warn(`Could not read ${moduleName}'s peerDependencies from ${path}; none are added.`, err);
+      }
+    }
+    return peers;
+  }
+
+  /**
    * The union of every mounted git library's own `dependencies`, with the APP's manifest
    * winning any name both declare (R3-293).
    *
@@ -1239,16 +1377,21 @@ export class Bundler {
    * has to serve both. Taking the app's keeps the version its author tested. A differing
    * pin is logged once per name rather than resolved silently, because "the library asked
    * for something else and got yours" is exactly the kind of thing that surfaces later as
-   * a mystery.
+   * a mystery. A name in `implicitPeerNames` came from the vendored SDK's peers, not the
+   * app's manifest (R3-1318), and the warning says so.
    */
-  private libraryContributedDependencies(appDependencies: Record<string, string>): Record<string, string> {
+  private libraryContributedDependencies(
+    appDependencies: Record<string, string>,
+    implicitPeerNames: ReadonlySet<string> = new Set(),
+  ): Record<string, string> {
     const contributed: Record<string, string> = {};
     for (const [libName, deps] of this.gitLibraryDependencies) {
       for (const [name, range] of Object.entries(deps)) {
         if (name in appDependencies) {
           if (appDependencies[name] !== range) {
+            const winner = implicitPeerNames.has(name) ? "the SDK's implicit peer" : 'the app pins';
             logger.warn(
-              `Git-library '${libName}' asks for ${name}@${range}; the app pins ` +
+              `Git-library '${libName}' asks for ${name}@${range}; ${winner} ` +
                 `${name}@${appDependencies[name]}, which wins (one flat dependency closure).`,
             );
           }
@@ -1410,9 +1553,10 @@ export class Bundler {
     // §5.7 byte check PLUS the §3 frontmatter extension: the sampled sources are
     // re-read anyway, so also re-derive their frontmatter and compare to the seeded
     // store — the only runtime path that can catch a forged/divergent sidecar (the
-    // consult-HIT path never re-reads a covered `.mdx`; verify-on-read is dead).
+    // consult-HIT path never re-reads a covered source; verify-on-read is dead).
     const verdict = await this.artifactStore.spotVerify(undefined, {
-      frontmatterOf: (appPath) => this.lastMetadata.get(appPath),
+      frontmatterOf: (appPath) =>
+        this.sidecarSeededMetadata.has(appPath) ? this.lastMetadata.get(appPath) : undefined,
     });
     if (!verdict.tampered) return;
     // §8.14 security event (logged here; the actionable channel is the message below).
@@ -1454,16 +1598,15 @@ export class Bundler {
       );
       const version = resolvedVersion.version;
       if (resolvedVersion.source === 'default') {
-        // R3-289: the silent 0.16.0 landmine, made loud. An app that declares no
-        // SDK at all still works ("a plain dependency that just works"), but the
-        // author should SEE that the platform chose for them — the default is
-        // dozens of releases behind the current SDK and whatever breaks there
-        // surfaces far from the cause.
+        // R3-289: taking the default is loud. An app that declares no SDK at all
+        // still works ("a plain dependency that just works"), but the author should
+        // SEE that the platform chose for them — the default moves when the platform
+        // raises it, and whatever breaks then surfaces far from the cause.
         logger.warn(
           `No ${moduleName} declaration found in this app's package.json (neither ` +
             `"dependencies" nor "peerDependencies") — serving the platform default ` +
-            `${DEFAULT_SDK_VERSION}, which is far from the newest release. Pin the SDK ` +
-            `(e.g. "${moduleName}": "^0.57.0") to control the version you run on.`,
+            `${version}, which changes when the platform raises it. Pin the SDK ` +
+            `(e.g. "${moduleName}": "^${version}") to control the version you run on.`,
         );
       }
       const baseUrl = `${base.replace(/\/$/, '')}/v/${version}`;
@@ -1517,7 +1660,7 @@ export class Bundler {
    * it MUST be stripped here. (Runs in `loadNodeModules`, after
    * `processPackageJSON`, so `parsedPackageJSON` is available.)
    */
-  private registryResolvedNames(): Set<string> {
+  registryResolvedNames(): Set<string> {
     const names = new Set(Object.keys(SELF_HOST_BASES));
     // R3-289: read through the root-peer merge so a git-form PEER mounts (and is
     // stripped from the CDN query) exactly like a git-form dependency.
@@ -1531,7 +1674,7 @@ export class Bundler {
     // Cached path (MDX_CONTENT_COLLECTIONS_SPEC §1.3): seed the store from the
     // frontmatter sidecar — a blob-SHA-confined JSON — instead of the recursive
     // walk + per-file read across the COW port. Clean covered files come from JSON;
-    // modified `.mdx` (dirty set, parent-attested — no in-iframe walk) re-scan live;
+    // modified `.mdx`/`.md` (dirty set, parent-attested — no in-iframe walk) re-scan live;
     // an absent/rejected sidecar falls through to the full live walk below.
     //
     // The seed covers every artifact root, not just `/app` (MDX_FROM_MOUNT_SPEC §3), so a
@@ -1573,24 +1716,25 @@ export class Bundler {
       logger.warn(`MDX metadata sidecar unusable (${seed.unusable}) — live-scanning frontmatter instead.`);
       // fall through to the live walk
     } else if (seed.present) {
-      // Modified `.mdx` re-scan live (cache==live under edits); the rest is covered.
+      // Modified sources re-scan live (cache==live under edits); the rest is covered.
+      // A sidecar written before the CLI emitted `.md` rows covers no `.md` file, and a
+      // clean `.md` is pre-transpiled, so its first read is a consult HIT that never
+      // reaches `refreshMetadata`: on such a cached boot a clean `.md` page has no row
+      // for the whole session, until the CLI's sidecar carries `.md` rows.
       await Promise.all(
-        [...this.dirtyPaths]
-          .filter((relPath) => relPath.endsWith('.mdx'))
-          .map(async (relPath) => {
-            const appPath = underAppRoot(relPath);
-            try {
-              const source = await this.fs.readFileAsync(appPath);
-              this.refreshMetadata(appPath, source);
-            } catch {
-              /* deleted/unreadable — no entry, matching a live scan */
-            }
-          }),
+        [...this.dirtyPaths].filter(isFrontmatterSource).map(async (relPath) => {
+          const appPath = underAppRoot(relPath);
+          try {
+            const source = await this.fs.readFileAsync(appPath);
+            this.refreshMetadata(appPath, source);
+          } catch {
+            /* deleted/unreadable — no entry, matching a live scan */
+          }
+        }),
       );
       return;
     }
 
-    const re = globToRegex('/**/*.mdx');
     const zenFsLayer = this.fs;
     const fsp = zenFsLayer.boundContext.fs.promises;
 
@@ -1602,8 +1746,8 @@ export class Bundler {
     // Resolving each absolute subpath through the vfs (the way file reads already
     // do) avoids it; a subdirectory that still can't be listed is skipped rather
     // than aborting the whole scan. Scope stays the repo (`APP_ROOT`) — dynamic
-    // mounts (e.g. `/firestore`) and virtual node_modules aren't app-MDX sources.
-    const mdxFiles: string[] = [];
+    // mounts (e.g. `/firestore`) and virtual node_modules aren't app content sources.
+    const sourceFiles: string[] = [];
     const walk = async (dir: string): Promise<void> => {
       let names: string[];
       try {
@@ -1621,14 +1765,14 @@ export class Bundler {
             return; // vanished between readdir and stat — skip
           }
           if (isDir) await walk(full);
-          else if (full.match(re)) mdxFiles.push(full);
+          else if (isFrontmatterSource(full)) sourceFiles.push(full);
         }),
       );
     };
     await walk(APP_ROOT);
 
     await Promise.all(
-      mdxFiles.map(async (filepath) => {
+      sourceFiles.map(async (filepath) => {
         try {
           const source = await zenFsLayer.readFileAsync(filepath);
           this.refreshMetadata(filepath, source);
@@ -1668,6 +1812,7 @@ export class Bundler {
    * any artifact root's sidecar can seed (MDX_FROM_MOUNT_SPEC §3).
    */
   private seedMetadataEntry(modulePath: string, frontmatter: Record<string, any>): void {
+    this.sidecarSeededMetadata.add(modulePath);
     const prev = this.lastMetadata.get(modulePath);
     if (prev && JSON.stringify(prev) === JSON.stringify(frontmatter)) return;
     this.lastMetadata.set(modulePath, frontmatter);
@@ -1680,6 +1825,8 @@ export class Bundler {
     // carries its entry's heading list, ids from the render canon. The author's
     // own `headings` frontmatter key (if any) wins — `withHeadings` is a no-op then.
     const next = parsed ? withHeadings(parsed.data, parsed.content) : undefined;
+    // From here the row (or its absence) is a live parse, whatever a sidecar seeded.
+    this.sidecarSeededMetadata.delete(path);
     // Metadata is keyed by the file's ABSOLUTE module/fs path (e.g.
     // `/app/content/x.mdx`) — the same identifier `module.dynamicImport`, `fs`,
     // and the SDK `<Include>` use. Keeping the metadata key in the file space
@@ -1923,6 +2070,27 @@ export class Bundler {
         // eslint-disable-next-line no-console
         console.info(formatStampMismatch(root, mismatch));
       }
+      // R3-1343: library-root entries skipped for want of a `library` variant in the
+      // zip (every zip built before the opt-in flag existed). Those modules
+      // live-transpile — a cache miss, not a failure — but without this line
+      // "seeded 0" reads as the seeding never having run, the same ambiguity the
+      // count line above exists to kill. Unconditional-in-both-branches, like the
+      // stamp-mismatch loop, because a library's cold cache is independent of the
+      // app root's verdict.
+      if (seedResult.libraryVariantMissing) {
+        // eslint-disable-next-line no-console
+        console.info(
+          `[ir-artifacts] ${seedResult.libraryVariantMissing} library module(s) live-transpiled: ` +
+            `no library variant in the zip`,
+        );
+      }
+      if (seedResult.libraryVariantRejected) {
+        // eslint-disable-next-line no-console
+        console.info(
+          `[ir-artifacts] ${seedResult.libraryVariantRejected} library module(s) live-transpiled: ` +
+            `the zip's library variant is malformed or escapes the artifacts dir`,
+        );
+      }
     }
 
     // Resolve entrypoints
@@ -1969,22 +2137,29 @@ export class Bundler {
       this.sideEffectModulePaths = applied;
     }
 
-    const transpiledModules = Array.from(this.modules, ([name, value]) => {
-      return {
-        /**
-         * TODO: adds trailing for backwards compatibility
-         */
-        [name + ':']: {
-          source: {
-            isEntry: entryModule.filepath === value.filepath,
-            fileName: value.filepath,
-            compiledCode: value.compiled,
-          },
+    // APP modules only. This message is structured-cloned into the host on every
+    // compile, where the sandpack client and its React state both hold it — so carrying
+    // the dependency closure put a second copy of every `/node_modules` module's compiled
+    // text in the host process, for a consumer (`useTranspiledCode`, the active file's
+    // compiled view) that only ever looks up an app file. A dependency's text is also
+    // released after it evaluates (`Module.releaseText`), so there is nothing to send.
+    // (An index signature, not `Record<…>`: the wire snapshot records the type as written.)
+    const transpiledModules: {
+      [x: string]: { source: { isEntry: boolean; fileName: string; compiledCode: string | null } };
+    } = {};
+    for (const [name, value] of this.modules) {
+      if (name.startsWith('/node_modules/')) continue;
+      /**
+       * TODO: adds trailing for backwards compatibility
+       */
+      transpiledModules[name + ':'] = {
+        source: {
+          isEntry: entryModule.filepath === value.filepath,
+          fileName: value.filepath,
+          compiledCode: value.compiled,
         },
       };
-    }).reduce((prev, curr) => {
-      return { ...prev, ...curr };
-    }, {});
+    }
 
     this.messageBus.sendMessage(STATE, { state: { transpiledModules } });
 

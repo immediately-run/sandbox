@@ -134,6 +134,36 @@ export class CachedFS {
   }
 
   /**
+   * Drop every read memo for ONE exact path, `/node_modules` included. The
+   * watcher-driven {@link invalidate} skips `node_modules` because registry
+   * content is immutable per compile — the single exception is a lazily
+   * materialized esm.sh-fallback SUBPATH (R3-820), which registers mid-boot
+   * AFTER the resolver's existence probe may already have memoized its path as
+   * absent. The materialization rail calls this for the file it just added, so
+   * the retried resolution re-consults the live RegistryFS instead of the
+   * stale negative (the `''` extension probe runs first in the resolver's
+   * candidate order, so one exact-path drop unblocks the retry).
+   */
+  dropCachesFor(path: string): void {
+    const normalized = withLeadingSlash(path);
+    this.fileCache.delete(normalized);
+    this.bytesCache.delete(normalized);
+    this.isFileCache.delete(normalized);
+  }
+
+  /**
+   * Drop the cached BYTES of one path, keeping its existence memo.
+   *
+   * For a payload that is read once and decoded — a bundled `/package/` msgpack: the
+   * decoded module holds every file as a string, so the encoded bytes are dead weight
+   * for the rest of the session (tens of MB across a dependency closure). A later read
+   * of the same path is still correct; it just crosses the Port again.
+   */
+  releaseBytes(path: string): void {
+    this.bytesCache.delete(withLeadingSlash(path));
+  }
+
+  /**
    * Write THROUGH to the bound context (the mount table) — `/node_modules` writes
    * land on the CopyOnWrite writable side, `/empty.js` on the root tmpfs — then
    * update the read memo. Parent dirs are materialized first (the writable tmpfs

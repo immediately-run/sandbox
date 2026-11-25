@@ -40,4 +40,15 @@ describe('G0-0 bundler full compile() smoke (booted bundler + babel loopback)', 
     const modules = state?.state?.transpiledModules ?? {};
     expect(Object.keys(modules).some((k) => k.includes('main.ts'))).toBe(true);
   });
+
+  it('leaves the dependency closure out of the "state" message — it is cloned into the host on every compile', () => {
+    const state = h.sentMessages.find((m) => m.type === 'state')?.data as
+      | { state?: { transpiledModules?: Record<string, unknown> } }
+      | undefined;
+    const reported = Object.keys(state?.state?.transpiledModules ?? {});
+    // The graph itself does hold dependency modules (so this is not vacuous)…
+    expect([...h.bundler.modules.keys()].some((k) => k.startsWith('/node_modules/'))).toBe(true);
+    // …and none of them is sent: only app modules have a reader on the host side.
+    expect(reported.filter((k) => k.startsWith('/node_modules/'))).toEqual([]);
+  });
 });

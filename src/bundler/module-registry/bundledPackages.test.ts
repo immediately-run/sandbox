@@ -11,7 +11,7 @@ import { encode as encodeMsgPack } from '@msgpack/msgpack';
 import { ModuleRegistry } from '.';
 import { Bundler } from '../bundler';
 import { fetchModule } from './module-cdn';
-import { parseBundledIndex, decodeBundledModule } from './bundledPackages';
+import { bundledPackagePath, parseBundledIndex, decodeBundledModule } from './bundledPackages';
 
 jest.mock('./module-cdn', () => ({
   ...jest.requireActual('./module-cdn'),
@@ -27,6 +27,9 @@ const CDN_MODULE = { f: { 'index.js': { c: 'module.exports = "cdn"', d: [], t: f
 const indexJson = (entries: Array<{ n: string; v: string; path: string }>) =>
   JSON.stringify({ cdnVersion: 5, packages: entries.map((e) => ({ ...e, key: `k:${e.n}` })) });
 
+/** Paths whose cached bytes the registry released, in order. */
+const releasedBytes: string[] = [];
+
 // Minimal Bundler stand-in exposing only the FS reads the consume path uses.
 const makeBundler = (opts: { index?: string | Error; bytes?: Record<string, Uint8Array> }): Bundler =>
   ({
@@ -41,12 +44,16 @@ const makeBundler = (opts: { index?: string | Error; bytes?: Record<string, Uint
         if (!hit) throw new Error(`not bundled: ${p}`);
         return hit[1];
       },
+      releaseBytes: (p: string) => {
+        releasedBytes.push(p);
+      },
     },
     modules: new Map(),
   } as unknown as Bundler);
 
 beforeEach(() => {
   mockedFetchModule.mockReset();
+  releasedBytes.length = 0;
   mockedFetchModule.mockResolvedValue(CDN_MODULE as never);
 });
 
@@ -89,6 +96,28 @@ describe('ModuleRegistry bundled-package consumption', () => {
     const mod = await reg.fetchNodeModule('react', '18.3.1');
     expect(mod.files['index.js']).toEqual(MODULE.f['index.js']);
     expect(mockedFetchModule).not.toHaveBeenCalled();
+  });
+
+  it('releases the msgpack bytes once decoded — they are not kept beside the strings', async () => {
+    const reg = new ModuleRegistry(
+      makeBundler({
+        index: indexJson([{ n: 'react', v: '18.3.1', path: 'react.msgpack' }]),
+        bytes: { 'react.msgpack': encodeMsgPack(MODULE) },
+      }),
+    );
+    await reg.fetchNodeModule('react', '18.3.1');
+    expect(releasedBytes).toEqual([bundledPackagePath('react.msgpack')]);
+  });
+
+  it('does not release bytes that failed to decode (the CDN fallback owns that case)', async () => {
+    const reg = new ModuleRegistry(
+      makeBundler({
+        index: indexJson([{ n: 'react', v: '18.3.1', path: 'react.msgpack' }]),
+        bytes: { 'react.msgpack': new Uint8Array([0xff, 0xff, 0xff]) },
+      }),
+    );
+    await reg.fetchNodeModule('react', '18.3.1');
+    expect(releasedBytes).toEqual([]);
   });
 
   it('falls back to the CDN when the package is not bundled', async () => {
