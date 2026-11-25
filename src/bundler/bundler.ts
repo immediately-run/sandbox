@@ -13,7 +13,7 @@ import { MountService } from '../mounts/MountService';
 import type { SandboxMount } from '../mounts/mountState';
 import type { IDisposable } from '../utils/Disposable';
 import { APP_ROOT, MANIFEST_SIDECAR_PATH, underAppRoot } from '../fsLayout';
-import { isTransformable, rootRuntimeDependencies } from '@immediately-run/transpiler';
+import { browserExcludedPackages, isTransformable, rootRuntimeDependencies } from '@immediately-run/transpiler';
 import { ArtifactStore, type MdxMetadataAdditive, type SeedResult } from './artifacts/artifactStore';
 import { formatStampMismatch } from './artifacts/artifactIndex';
 import { getEmbeddedToolchain } from './artifacts/embeddedToolchain';
@@ -688,7 +688,20 @@ export class Bundler {
     // The names only the SDK supplied (the root did not declare them), so a git library's
     // differing range is reported as losing to the SDK's peer, not to an app pin.
     const implicitPeerNames = new Set(Object.keys(sdkPeers).filter((name) => !(name in rootDependencies)));
-    let dependencies = { ...sdkPeers, ...rootDependencies };
+    // R3-1384: a package the root maps to `false` in `browser` is never resolved or fetched.
+    // The resolver already maps the root's imports of it (and its subpaths) to EMPTY_SHIM
+    // through the same field; what remained was the manifest, which still resolved and
+    // preloaded it, so a failing CLI-only package broke the boot. `rootRuntimeDependencies`
+    // drops it from the root's own map (the CLI's echo reads the same map); the SDK's
+    // implicit peers, a git library's dependencies and the preset's additions are filtered
+    // below so none of them brings it back. An excluded implicit peer (`react`) stays
+    // excluded: the author asked for it.
+    const browserExcluded = browserExcludedPackages(this.parsedPackageJSON);
+    const withoutExcluded = (deps: Record<string, string>): Record<string, string> =>
+      browserExcluded.size
+        ? Object.fromEntries(Object.entries(deps).filter(([name]) => !browserExcluded.has(name)))
+        : deps;
+    let dependencies = withoutExcluded({ ...sdkPeers, ...rootDependencies });
     if (Object.keys(dependencies).length > 0) {
       // R3-844: the lockset echo the CLI writes mirrors the PRE-strip input —
       // `computeInputDepMap` over the root runtime deps, git-form entries
@@ -728,10 +741,11 @@ export class Bundler {
       if (Object.keys(contributed).length) {
         dependencies = { ...contributed, ...dependencies };
       }
-      dependencies = nullthrows(
-        this.preset,
-        'Preset needs to be defined when loading node modules',
-      ).augmentDependencies(dependencies);
+      dependencies = withoutExcluded(
+        nullthrows(this.preset, 'Preset needs to be defined when loading node modules').augmentDependencies(
+          dependencies,
+        ),
+      );
 
       await this.moduleRegistry.fetchManifest(dependencies, true, await this.readSidecarLockset(), locksetEcho);
 
