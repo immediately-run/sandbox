@@ -15,7 +15,7 @@ jest.mock('@immediately-run/transpiler', () => {
 
 import { transformFile, TRANSPILER_VERSION } from '@immediately-run/transpiler';
 
-import { createBundlerHarness, type BundlerHarness } from '../testHarness/bundlerHarness';
+import { createBundlerHarness, lastMetadataOf, type BundlerHarness } from '../testHarness/bundlerHarness';
 import { EMBEDDED_TOOLCHAIN_HASH } from './embeddedToolchainHash';
 
 const ARTIFACT = '/* pre-transpiled post */ export default function(){ return null; }\n';
@@ -24,7 +24,9 @@ const EMPTY_DIRTY = { dirtySet: new Set<string>(), writableLayer: new Set<string
 
 // A covered page is either `.mdx` or plain `.md` (R3-1368): both are seeded from the
 // sidecar, so both must be re-derived and compared here.
-const fixtureFor = (rel: string): Record<string, string> => ({
+// `sidecar` is the frontmatter the cache-zip sidecar claims for the page; absent, the
+// fixture ships no sidecar and the live walk fills the store.
+const fixtureFor = (rel: string, sidecar?: Record<string, unknown>): Record<string, string> => ({
   'package.json': JSON.stringify({ name: 'sv', main: 'src/index.ts' }),
   'index.html': '<!doctype html><div id="root"></div>',
   'src/index.ts': 'export default 1;\n',
@@ -48,14 +50,18 @@ const fixtureFor = (rel: string): Record<string, string> => ({
     files: { [`/${rel}`]: { srcSha: 'sha-post', out: `transpiled/${rel}.js`, deps: [] } },
   }),
   [`.immediately.run/artifacts/transpiled/${rel}.js`]: ARTIFACT,
+  ...(sidecar && {
+    '.immediately.run/artifacts/mdx-metadata.json': JSON.stringify({
+      schemaVersion: 1,
+      files: { [`/${rel}`]: { srcSha: 'sha-post', frontmatter: sidecar } },
+    }),
+  }),
 });
 
 describe.each(['content/post.mdx', 'content/post.md'])(
   'G-MDX-3b — idle spot-verify extended to frontmatter (§3): %s',
   (rel) => {
     const POST_PATH = `/app/${rel}`;
-    const setMeta = (h: BundlerHarness, v: Record<string, unknown>): void =>
-      void (h.bundler as unknown as { lastMetadata: Map<string, unknown> }).lastMetadata.set(POST_PATH, v);
 
     let h: BundlerHarness;
     beforeEach(() => {
@@ -67,16 +73,18 @@ describe.each(['content/post.mdx', 'content/post.md'])(
       if (h) await h.teardown();
     });
 
-    const seedConsume = async () => {
-      h = await createBundlerHarness(fixtureFor(rel), { forCompile: true });
+    // The store is filled by its real producer, `preloadMDXMetadata`: from the sidecar
+    // when the fixture ships one, by the live walk when it does not.
+    const seedConsume = async (sidecar?: Record<string, unknown>) => {
+      h = await createBundlerHarness(fixtureFor(rel, sidecar), { forCompile: true });
       expect((await h.bundler.artifactStore.seed(EMPTY_DIRTY)).seeded).toBe(1);
+      await h.bundler.preloadMDXMetadata();
       // A consult marks the page consumed → it enters the spot-verify universe.
       expect(await h.bundler.artifactStore.consult(POST_PATH)).not.toBeNull();
     };
 
     it('distrusts a FORGED sidecar frontmatter entry + emits a security event', async () => {
-      await seedConsume();
-      setMeta(h, { title: 'Forged' }); // ≠ parseFrontmatter(SOURCE) = { title: 'Real' }
+      await seedConsume({ title: 'Forged' }); // ≠ parseFrontmatter(SOURCE) = { title: 'Real' }
 
       await h.bundler.runSpotVerify();
 
@@ -88,8 +96,19 @@ describe.each(['content/post.mdx', 'content/post.md'])(
     });
 
     it('passes a GENUINE sidecar entry (= parseFrontmatter(source)) — no distrust', async () => {
+      await seedConsume({ title: 'Real' }); // matches the source frontmatter
+
+      await h.bundler.runSpotVerify();
+
+      expect(await h.bundler.artifactStore.consult(POST_PATH)).not.toBeNull();
+      expect(h.sentMessages.find((m) => m.type === 'artifact-distrust')).toBeUndefined();
+    });
+
+    it('does not compare a row the live walk wrote (no sidecar) — no distrust', async () => {
+      // The walk's row carries the additive `headings` field, which a re-parse of the
+      // source does not; it is the parser's own output, not a claim to check.
       await seedConsume();
-      setMeta(h, { title: 'Real' }); // matches the source frontmatter
+      expect(lastMetadataOf(h).get(POST_PATH)).toMatchObject({ title: 'Real', headings: [expect.anything()] });
 
       await h.bundler.runSpotVerify();
 

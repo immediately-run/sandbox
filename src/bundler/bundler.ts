@@ -337,6 +337,11 @@ export class Bundler {
   // the top of `compile()`).
   private mountsReady = false;
   private lastMetadata: Map<string, Record<string, any>> = new Map();
+  // Store keys whose current row came from a frontmatter sidecar rather than a live
+  // parse. The spot-verify checks only these: a live row is the parser's own output (and
+  // carries the additive `headings` field a re-parse of the source does not), so
+  // comparing it would call a benign publisher's page forged.
+  private sidecarSeededMetadata = new Set<string>();
   // Host-pinned SDK integrity hashes (SDK_PACKAGING_SPEC §5.2), set from
   // IInitConfig before the initial compile; undefined → verification skipped.
   private sdkIntegrity?: SdkIntegrity;
@@ -1546,7 +1551,8 @@ export class Bundler {
     // store — the only runtime path that can catch a forged/divergent sidecar (the
     // consult-HIT path never re-reads a covered source; verify-on-read is dead).
     const verdict = await this.artifactStore.spotVerify(undefined, {
-      frontmatterOf: (appPath) => this.lastMetadata.get(appPath),
+      frontmatterOf: (appPath) =>
+        this.sidecarSeededMetadata.has(appPath) ? this.lastMetadata.get(appPath) : undefined,
     });
     if (!verdict.tampered) return;
     // §8.14 security event (logged here; the actionable channel is the message below).
@@ -1707,9 +1713,10 @@ export class Bundler {
       // fall through to the live walk
     } else if (seed.present) {
       // Modified sources re-scan live (cache==live under edits); the rest is covered.
-      // A sidecar written before the CLI emitted `.md` rows covers no `.md` file, so a
-      // clean `.md` there is indexed when it is first read (`refreshMetadata`), as a
-      // mount that shipped no sidecar is.
+      // A sidecar written before the CLI emitted `.md` rows covers no `.md` file, and a
+      // clean `.md` is pre-transpiled, so its first read is a consult HIT that never
+      // reaches `refreshMetadata`: on such a cached boot a clean `.md` page has no row
+      // for the whole session, until the CLI's sidecar carries `.md` rows.
       await Promise.all(
         [...this.dirtyPaths].filter(isFrontmatterSource).map(async (relPath) => {
           const appPath = underAppRoot(relPath);
@@ -1801,6 +1808,7 @@ export class Bundler {
    * any artifact root's sidecar can seed (MDX_FROM_MOUNT_SPEC §3).
    */
   private seedMetadataEntry(modulePath: string, frontmatter: Record<string, any>): void {
+    this.sidecarSeededMetadata.add(modulePath);
     const prev = this.lastMetadata.get(modulePath);
     if (prev && JSON.stringify(prev) === JSON.stringify(frontmatter)) return;
     this.lastMetadata.set(modulePath, frontmatter);
@@ -1813,6 +1821,8 @@ export class Bundler {
     // carries its entry's heading list, ids from the render canon. The author's
     // own `headings` frontmatter key (if any) wins — `withHeadings` is a no-op then.
     const next = parsed ? withHeadings(parsed.data, parsed.content) : undefined;
+    // From here the row (or its absence) is a live parse, whatever a sidecar seeded.
+    this.sidecarSeededMetadata.delete(path);
     // Metadata is keyed by the file's ABSOLUTE module/fs path (e.g.
     // `/app/content/x.mdx`) — the same identifier `module.dynamicImport`, `fs`,
     // and the SDK `<Include>` use. Keeping the metadata key in the file space
