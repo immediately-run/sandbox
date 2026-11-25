@@ -162,7 +162,9 @@ describe('ModuleRegistry.fetchManifest with a lockset', () => {
     const r = new ModuleRegistry({} as Bundler, null);
     const deps = { ...DEPS, 'lucide-react': '^1.21.0' };
     const incomplete = lockset({ dependencies: { ...deps } }); // resolved=RESOLVED lacks lucide-react
-    await expect(r.fetchManifest(deps, true, incomplete)).rejects.toThrow(/Could not resolve.*lucide-react@\^1\.21\.0/);
+    // R3-1383: caught, and recorded for the import rather than failing the boot.
+    await expect(r.fetchManifest(deps, true, incomplete)).resolves.toBeUndefined();
+    expect(r.deferredFailure('lucide-react')?.message).toMatch(/Could not resolve.*lucide-react@\^1\.21\.0/);
     expect(mockedFetchManifest).not.toHaveBeenCalled(); // lockset echo matched; no live fetch attempted
   });
 });
