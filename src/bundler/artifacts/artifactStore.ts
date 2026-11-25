@@ -1,4 +1,5 @@
 import { APP_ROOT, MANIFEST_SIDECAR_PATH } from '../../fsLayout';
+import { isFrontmatterSource } from '../frontmatterSource';
 import {
   MDX_METADATA_SIDECAR_PATH,
   type MdxMetadataRejection,
@@ -750,12 +751,12 @@ export class ArtifactStore {
       }
       // §3 frontmatter extension: `srcSha` binds the source blob, NOT the derived
       // frontmatter the sidecar seeded. Re-derive it from the re-read source (this
-      // is the ONLY runtime path that re-reads a covered `.mdx` — verify-on-read is
+      // is the ONLY runtime path that re-reads a covered source — verify-on-read is
       // dead on the consult-HIT path) and deep-compare; a mismatch is a forged/divergent
       // sidecar → distrust the section. Same source bytes → same parser output, so no
       // false positive for a benign publisher (the CLI uses this same parser, §1.3).
       const seededFrontmatter = opts?.frontmatterOf?.(appModulePath);
-      if (seededFrontmatter !== undefined && appModulePath.endsWith('.mdx')) {
+      if (seededFrontmatter !== undefined && isFrontmatterSource(appModulePath)) {
         const liveFrontmatter = parseFrontmatter(source).data;
         if (JSON.stringify(liveFrontmatter) !== JSON.stringify(seededFrontmatter)) {
           this.discardAll();

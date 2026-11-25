@@ -59,9 +59,9 @@ import { retryFetch, registerImmutableUrlPrefix } from '../utils/fetch';
 import { basename, dirname } from '../utils/path';
 import { FrontmatterParseResult, parseFrontmatter } from '@immediately-run/transpiler';
 import { withHeadings } from './headings';
+import { isFrontmatterSource } from './frontmatterSource';
 import {
   bindContext,
-  globToRegex,
   CopyOnWrite,
   InMemory,
   mount,
@@ -202,7 +202,7 @@ interface IBundlerOpts {
 // Exported for its adoption test (R3-1349, `frontmatterAdoption.test.ts`): the test feeds
 // the production function, not a copy.
 export const extractMetadata = (file: ISandboxFile): FrontmatterParseResult | null => {
-  if (file.path.endsWith('.mdx')) {
+  if (isFrontmatterSource(file.path)) {
     try {
       const parseResult = parseFrontmatter(file.code);
       if (Object.keys(parseResult.data).length > 0) {
@@ -337,6 +337,11 @@ export class Bundler {
   // the top of `compile()`).
   private mountsReady = false;
   private lastMetadata: Map<string, Record<string, any>> = new Map();
+  // Store keys whose current row came from a frontmatter sidecar rather than a live
+  // parse. The spot-verify checks only these: a live row is the parser's own output (and
+  // carries the additive `headings` field a re-parse of the source does not), so
+  // comparing it would call a benign publisher's page forged.
+  private sidecarSeededMetadata = new Set<string>();
   // Host-pinned SDK integrity hashes (SDK_PACKAGING_SPEC §5.2), set from
   // IInitConfig before the initial compile; undefined → verification skipped.
   private sdkIntegrity?: SdkIntegrity;
@@ -1544,9 +1549,10 @@ export class Bundler {
     // §5.7 byte check PLUS the §3 frontmatter extension: the sampled sources are
     // re-read anyway, so also re-derive their frontmatter and compare to the seeded
     // store — the only runtime path that can catch a forged/divergent sidecar (the
-    // consult-HIT path never re-reads a covered `.mdx`; verify-on-read is dead).
+    // consult-HIT path never re-reads a covered source; verify-on-read is dead).
     const verdict = await this.artifactStore.spotVerify(undefined, {
-      frontmatterOf: (appPath) => this.lastMetadata.get(appPath),
+      frontmatterOf: (appPath) =>
+        this.sidecarSeededMetadata.has(appPath) ? this.lastMetadata.get(appPath) : undefined,
     });
     if (!verdict.tampered) return;
     // §8.14 security event (logged here; the actionable channel is the message below).
@@ -1664,7 +1670,7 @@ export class Bundler {
     // Cached path (MDX_CONTENT_COLLECTIONS_SPEC §1.3): seed the store from the
     // frontmatter sidecar — a blob-SHA-confined JSON — instead of the recursive
     // walk + per-file read across the COW port. Clean covered files come from JSON;
-    // modified `.mdx` (dirty set, parent-attested — no in-iframe walk) re-scan live;
+    // modified `.mdx`/`.md` (dirty set, parent-attested — no in-iframe walk) re-scan live;
     // an absent/rejected sidecar falls through to the full live walk below.
     //
     // The seed covers every artifact root, not just `/app` (MDX_FROM_MOUNT_SPEC §3), so a
@@ -1706,24 +1712,25 @@ export class Bundler {
       logger.warn(`MDX metadata sidecar unusable (${seed.unusable}) — live-scanning frontmatter instead.`);
       // fall through to the live walk
     } else if (seed.present) {
-      // Modified `.mdx` re-scan live (cache==live under edits); the rest is covered.
+      // Modified sources re-scan live (cache==live under edits); the rest is covered.
+      // A sidecar written before the CLI emitted `.md` rows covers no `.md` file, and a
+      // clean `.md` is pre-transpiled, so its first read is a consult HIT that never
+      // reaches `refreshMetadata`: on such a cached boot a clean `.md` page has no row
+      // for the whole session, until the CLI's sidecar carries `.md` rows.
       await Promise.all(
-        [...this.dirtyPaths]
-          .filter((relPath) => relPath.endsWith('.mdx'))
-          .map(async (relPath) => {
-            const appPath = underAppRoot(relPath);
-            try {
-              const source = await this.fs.readFileAsync(appPath);
-              this.refreshMetadata(appPath, source);
-            } catch {
-              /* deleted/unreadable — no entry, matching a live scan */
-            }
-          }),
+        [...this.dirtyPaths].filter(isFrontmatterSource).map(async (relPath) => {
+          const appPath = underAppRoot(relPath);
+          try {
+            const source = await this.fs.readFileAsync(appPath);
+            this.refreshMetadata(appPath, source);
+          } catch {
+            /* deleted/unreadable — no entry, matching a live scan */
+          }
+        }),
       );
       return;
     }
 
-    const re = globToRegex('/**/*.mdx');
     const zenFsLayer = this.fs;
     const fsp = zenFsLayer.boundContext.fs.promises;
 
@@ -1735,8 +1742,8 @@ export class Bundler {
     // Resolving each absolute subpath through the vfs (the way file reads already
     // do) avoids it; a subdirectory that still can't be listed is skipped rather
     // than aborting the whole scan. Scope stays the repo (`APP_ROOT`) — dynamic
-    // mounts (e.g. `/firestore`) and virtual node_modules aren't app-MDX sources.
-    const mdxFiles: string[] = [];
+    // mounts (e.g. `/firestore`) and virtual node_modules aren't app content sources.
+    const sourceFiles: string[] = [];
     const walk = async (dir: string): Promise<void> => {
       let names: string[];
       try {
@@ -1754,14 +1761,14 @@ export class Bundler {
             return; // vanished between readdir and stat — skip
           }
           if (isDir) await walk(full);
-          else if (full.match(re)) mdxFiles.push(full);
+          else if (isFrontmatterSource(full)) sourceFiles.push(full);
         }),
       );
     };
     await walk(APP_ROOT);
 
     await Promise.all(
-      mdxFiles.map(async (filepath) => {
+      sourceFiles.map(async (filepath) => {
         try {
           const source = await zenFsLayer.readFileAsync(filepath);
           this.refreshMetadata(filepath, source);
@@ -1801,6 +1808,7 @@ export class Bundler {
    * any artifact root's sidecar can seed (MDX_FROM_MOUNT_SPEC §3).
    */
   private seedMetadataEntry(modulePath: string, frontmatter: Record<string, any>): void {
+    this.sidecarSeededMetadata.add(modulePath);
     const prev = this.lastMetadata.get(modulePath);
     if (prev && JSON.stringify(prev) === JSON.stringify(frontmatter)) return;
     this.lastMetadata.set(modulePath, frontmatter);
@@ -1813,6 +1821,8 @@ export class Bundler {
     // carries its entry's heading list, ids from the render canon. The author's
     // own `headings` frontmatter key (if any) wins — `withHeadings` is a no-op then.
     const next = parsed ? withHeadings(parsed.data, parsed.content) : undefined;
+    // From here the row (or its absence) is a live parse, whatever a sidecar seeded.
+    this.sidecarSeededMetadata.delete(path);
     // Metadata is keyed by the file's ABSOLUTE module/fs path (e.g.
     // `/app/content/x.mdx`) — the same identifier `module.dynamicImport`, `fs`,
     // and the SDK `<Include>` use. Keeping the metadata key in the file space
