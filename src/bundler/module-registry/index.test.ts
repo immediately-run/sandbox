@@ -64,13 +64,15 @@ describe('ModuleRegistry esm.sh fallback (transpile-through)', () => {
     expect(index.d).toContain('react');
   });
 
-  it('surfaces a clear error (not a silent undefined) when esm.sh also fails', async () => {
+  it('records a clear error (not a silent undefined) when esm.sh also fails, deferred to the import (R3-1383)', async () => {
     const fetcher = jest.fn<Promise<string>, [string]>().mockRejectedValue(new Error('HTTP 404'));
     const r = registry(fetcher);
     await r.fetchManifest({ 'lucide-react': '^1.21.0', react: '^19.2.5' });
-    await expect(r.preloadModules()).rejects.toThrow(
+    await expect(r.preloadModules()).resolves.toBeUndefined();
+    expect(r.deferredFailure('lucide-react')?.message).toMatch(
       /Could not resolve "lucide-react@\^1\.21\.0".*esm\.sh fallback.*404/,
     );
+    expect(r.deferredFailurePath('lucide-react/icons')).toBe('/node_modules/lucide-react/index.js');
   });
 
   it('externalizes self-hosted modules (the SDK), so a first-party SDK-importing package loads (R3-566)', async () => {
@@ -96,11 +98,11 @@ describe('ModuleRegistry esm.sh fallback (transpile-through)', () => {
     expect(index.c).not.toMatch(/esm\.sh\/.*sdk/i);
   });
 
-  it('with the fallback disabled, a dropped package fails fast via the resolution guard', async () => {
+  it("with the fallback disabled, a dropped package records the resolution guard's error for its import (R3-1383)", async () => {
     const r = registry(null);
-    await expect(r.fetchManifest({ 'lucide-react': '^1.21.0', react: '^19.2.5' })).rejects.toThrow(
-      /Could not resolve.*lucide-react@\^1\.21\.0/,
-    );
+    await expect(r.fetchManifest({ 'lucide-react': '^1.21.0', react: '^19.2.5' })).resolves.toBeUndefined();
+    expect(r.deferredFailure('lucide-react')?.message).toMatch(/Could not resolve.*lucide-react@\^1\.21\.0/);
+    expect(r.deferredFailure('react')).toBeUndefined();
   });
 });
 

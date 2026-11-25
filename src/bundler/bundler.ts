@@ -796,6 +796,10 @@ export class Bundler {
     try {
       return await promise;
     } catch (err) {
+      // R3-1383 — a declared package that failed to load is served by a stub that throws its
+      // recorded error when evaluated; a subpath of it (`csv-parse/sync`) lands on that stub.
+      const deferred = this.moduleRegistry.deferredFailurePath(specifier);
+      if (deferred !== null) return deferred;
       // R3-820 — an esm.sh-fallback package's DEEP SUBPATH import (e.g.
       // `sql.js/dist/sql-asm.js`) fails here because the fallback synthesis
       // registers only the package root: the file map has no subpath file for

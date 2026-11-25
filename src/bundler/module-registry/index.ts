@@ -28,6 +28,13 @@ import {
   synthesizeEsmFallbackModule,
 } from './esm-fallback';
 import { NodeModule } from './NodeModule';
+import {
+  DeferredFailure,
+  deferredFailureModulePath,
+  deferredFailureWarning,
+  packageNameOf,
+  synthesizeDeferredFailureModule,
+} from './deferredFailures';
 import { collectUndeclaredImports, UNDECLARED_IMPORT_RESCUE_BUDGET, UndeclaredImport } from './undeclared-transitive';
 import { scanCjsModule } from '../transforms/raw-cjs/scan';
 
@@ -53,6 +60,13 @@ export class ModuleRegistry {
   // (name → requested range). Consulted in `_fetchModule` to synthesize the
   // bridge package instead of fetching from the primary CDN.
   private esmFallbacks: Map<string, string> = new Map();
+  // R3-1383 — declared packages that failed to resolve or preload, one per name. Each is
+  // served by a stub package that throws the recorded error when imported (see
+  // deferredFailures.ts), so a package the page never imports cannot fail the boot.
+  private deferredFailures: Map<string, DeferredFailure> = new Map();
+  // The top-level dependency map of the current boot: only a failure of one of THESE is
+  // deferred. A transitive failure means a declared package is broken, and fails the boot.
+  private requestedDeps: Record<string, string> = {};
 
   bundler: Bundler;
 
@@ -128,6 +142,7 @@ export class ModuleRegistry {
     }
 
     const sortedDeps = sortObj(deps);
+    this.requestedDeps = sortedDeps;
 
     // A sidecar lockset (PRETRANSPILED_ARTIFACTS_SPEC §5.4) replaces the
     // blocking /dep_tree request — but only on an exact input match, so a
@@ -197,7 +212,47 @@ export class ModuleRegistry {
     // disabled) then guard, so a dropped dep surfaces the clear error rather than
     // a cryptic undefined import — on either path.
     this.registerEsmFallbacks(sortedDeps);
-    assertDependenciesResolved(sortedDeps, this.manifest);
+    // R3-1383: a declared package still missing (the fallback is off) is deferred, not
+    // thrown. The message is the shared guard's own, so the import fails with the words the
+    // boot used to show.
+    const resolvedNames = new Set(this.manifest.map((dep) => dep.n));
+    for (const [name, range] of Object.entries(sortedDeps)) {
+      if (resolvedNames.has(name)) continue;
+      try {
+        assertDependenciesResolved({ [name]: range }, this.manifest);
+      } catch (err) {
+        this.deferFailure(name, range, err);
+      }
+    }
+  }
+
+  /** Record a declared package as failed and serve its stub in its place. */
+  private deferFailure(name: string, range: string, err: unknown): void {
+    // The subpath rail must not try to materialize files of a package that failed.
+    this.esmFallbacks.delete(name);
+    // A deferral lasts as long as the registry, like a loaded package: a re-boot in this
+    // frame keeps the stub (registry files never change under a path; RegistryFS caches
+    // them), and a dependency change reloads the frame, which is the retry.
+    if (this.deferredFailures.has(name)) return;
+    const failure: DeferredFailure = { name, range, message: err instanceof Error ? err.message : String(err) };
+    this.deferredFailures.set(name, failure);
+    const stub = synthesizeDeferredFailureModule(failure);
+    this.modules.set(name, new NodeModule(name, range, stub.f, stub.m));
+    logger.warn(deferredFailureWarning(failure));
+  }
+
+  /** The recorded failure of a declared package the boot deferred to its import (R3-1383). */
+  deferredFailure(name: string): DeferredFailure | undefined {
+    return this.deferredFailures.get(name);
+  }
+
+  /**
+   * The stub entry a bare specifier resolves to when its package was deferred (R3-1383), or
+   * null. Covers subpaths (`csv-parse/sync`): the stub has no files beyond its entry.
+   */
+  deferredFailurePath(specifier: string): string | null {
+    const name = packageNameOf(specifier);
+    return name !== null && this.deferredFailures.has(name) ? deferredFailureModulePath(name) : null;
   }
 
   /**
@@ -263,11 +318,20 @@ export class ModuleRegistry {
   }
 
   async preloadModules(): Promise<void> {
-    await Promise.all(
+    // R3-1383: settle every fetch. A declared package that fails is deferred to its import;
+    // a transitive one still fails the boot (the declared package that needs it is broken).
+    const results = await Promise.allSettled(
       this.manifest.map((dep) => {
         return this.fetchNodeModule(dep.n, dep.v);
       }),
     );
+    results.forEach((result, i) => {
+      if (result.status === 'fulfilled') return;
+      const dep = this.manifest[i];
+      const range = this.requestedDeps[dep.n];
+      if (range === undefined) throw result.reason;
+      this.deferFailure(dep.n, range, result.reason);
+    });
     await this.rescueUndeclaredImports();
   }
 
