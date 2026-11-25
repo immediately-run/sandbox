@@ -36,6 +36,12 @@ describe.each(LINTERS)('runLint path coverage (%s)', (_name, deps) => {
     expect(res.diagnostics.every((d) => d.path === path)).toBe(true);
   });
 
+  it.each(['C.TSX', 'B.JSX', 'c.tsx', 'b.jsx'])('parses JSX in %s (any extension case)', (path) => {
+    const res = runLint({ files: [{ path, content: 'export const a = <div className="x" />;\nvar v = 1;\n' }] }, deps);
+    expect(res.diagnostics.map((d) => d.messageText).filter((m) => m.startsWith('Parsing error'))).toEqual([]);
+    expect(res.diagnostics.map((d) => d.ruleId)).toContain('no-var');
+  });
+
   it('a caller syntax error is a diagnostic, never a skip', () => {
     const res = runLint({ files: [{ path: 'bad.ts', content: 'const = ;\n' }] }, deps);
     expect(res.skipped).toEqual([]);
@@ -72,6 +78,10 @@ describe('matchName', () => {
     expect(matchName('/x/y/c.tsx')).toBe('c.tsx');
     expect(matchName('../a.ts')).toBe('a.ts');
     expect(matchName('a.js')).toBe('a.js');
+  });
+  it('lower-cases an upper-case lintable extension', () => {
+    expect(matchName('dir/C.TSX')).toBe('C.tsx');
+    expect(matchName('B.Jsx')).toBe('B.jsx');
   });
   it('gives a name with no lintable extension a .ts suffix', () => {
     expect(matchName('Makefile')).toBe('Makefile.ts');

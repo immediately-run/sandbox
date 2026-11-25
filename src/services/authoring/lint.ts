@@ -105,17 +105,21 @@ const hasOwn = (o: object, k: string): boolean => Object.prototype.hasOwnPropert
 
 /** The extensions the parser lints under their own name (`.tsx`/`.jsx` enable JSX). */
 const LINT_EXTENSIONS = ['ts', 'tsx', 'mts', 'cts', 'js', 'jsx', 'mjs', 'cjs'];
-const LINTABLE = new RegExp(`\\.(${LINT_EXTENSIONS.join('|')})$`);
+const LINTABLE = new RegExp(`\\.(${LINT_EXTENSIONS.join('|')})$`, 'i');
 
 /** The file name `verify` matches and parses under: the caller's base name. Flat-config
  *  matching is cwd-relative, so a directory part can only lose a file — `/a.ts`,
  *  `../a.ts` and `node_modules/a.ts` all fall outside it in at least one of the two
  *  linters. The extension, which the parser reads, is kept; any other name (`Makefile`,
- *  `notes.txt`) lints as TS, the service's language, under `<name>.ts`. */
+ *  `notes.txt`) lints as TS, the service's language, under `<name>.ts`. An upper-case
+ *  extension (`C.TSX`) is lower-cased, so it parses as what it names. */
 export function matchName(path: string): string {
   const base = path.split('/').filter(Boolean).pop() ?? '';
   if (base === '' || base === '.' || base === '..') return 'input.ts';
-  return LINTABLE.test(base) ? base : `${base}.ts`;
+  // The extension is matched case-insensitively and lower-cased: the parser picks JSX
+  // from the lower-cased extension, and the config's `files` glob is case-sensitive.
+  const ext = LINTABLE.exec(base);
+  return ext ? `${base.slice(0, ext.index)}.${ext[1].toLowerCase()}` : `${base}.ts`;
 }
 
 export function runLint(req: LintRequest, deps: LintDeps): LintResult {
