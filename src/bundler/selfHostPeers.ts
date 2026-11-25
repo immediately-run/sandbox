@@ -7,7 +7,7 @@ import { rootRuntimeDependencies, type RootPackageShape } from '@immediately-run
  * is the SELF-HOST manifest, not npm's: the SDK's self-host build
  * (`immediately-run-sdk/scripts/build-selfhost.mjs`) writes only `{ name, main, module,
  * types }`, so no published self-hosted version carries `peerDependencies` (checked
- * 0.16.0 to 0.57.0, 2026-11-04; 0.93.2, 2026-11-23). These are the peers every published SDK declares on npm
+ * 0.16.0 to 0.57.0, 2026-11-04; 0.93.2, 2026-11-23; 0.96.0, 2026-11-25). These are the peers every published SDK declares on npm
  * (`npm view @immediately-run/sdk@<v> peerDependencies` for 0.16.0, 0.46.0 and latest all
  * give exactly these). This is their one home in the sandbox; `selfHostPeers.test.ts` fails
  * if the installed npm SDK's peers drift from it.
