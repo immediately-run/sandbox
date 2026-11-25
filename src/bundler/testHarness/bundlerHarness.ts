@@ -46,11 +46,11 @@ export const INSTALLED_SDK_PACKAGE_JSON: string = readFileSync(
 
 /** The bytes `vendorModuleFrom` writes to `/node_modules/@immediately-run/sdk/package.json`
  *  for the default SDK: a recorded copy of
- *  https://immediately-run.github.io/immediately-run-sdk/v/0.93.2/package.json, fetched
- *  2026-11-23. The SDK's self-host build writes only `{ name, main, module, types }`, so it
+ *  https://immediately-run.github.io/immediately-run-sdk/v/0.96.0/package.json (the gh-pages bytes), recorded
+ *  2026-11-25. The SDK's self-host build writes only `{ name, main, module, types }`, so it
  *  carries no `peerDependencies`. */
 export const SELF_HOSTED_SDK_PACKAGE_JSON: string = readFileSync(
-  join(__dirname, 'fixtures', 'sdk-selfhost', 'v0.93.2.package.json'),
+  join(__dirname, 'fixtures', 'sdk-selfhost', 'v0.96.0.package.json'),
   'utf-8',
 );
 

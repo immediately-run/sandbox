@@ -138,7 +138,7 @@ function reportSeedDiagnostics(seed: MdxMetadataAdditive): void {
 // version from the FIRST match of the constant's name, an equals sign and a quoted
 // literal in this file: keep the declaration below a single-quoted literal, and never
 // write that shape anywhere above it (a comment included).
-export const DEFAULT_SDK_VERSION = '0.93.2';
+export const DEFAULT_SDK_VERSION = '0.96.0';
 
 // Oldest version each self-hosted module may pin (SDK_PACKAGING_SPEC §5.1(b)).
 // Pins below the floor fail closed at resolve time: 0.2.7 ships a fatal
