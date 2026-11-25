@@ -149,35 +149,37 @@ export function synthesizeEsmFallbackModule(
 }
 
 /**
- * Split a BARE specifier with a subpath (`name/sub`, `@scope/name/sub`) into its
- * package name and the package-relative subpath. Null for everything else: a
- * bare package ROOT (`name`, `@scope/name` — no subpath to materialize),
- * relative (`./x`, `../y`), absolute (`/x`), `node:` builtins, and URL schemes
- * (`https:`, `data:`). The esm.sh fallback synthesizes ONLY the package root
- * (`synthesizeEsmFallbackModule`), so a bare subpath of a fallback package is
- * the one resolution shape whose target can still be missing — this predicate
- * names exactly that case for the resolution-retry hook.
+ * Split a BARE specifier (`name`, `name/sub`, `@scope/name`, `@scope/name/sub`) into its
+ * package name and the package-relative subpath (`''` for the package root). Null for
+ * everything that names no package: relative (`./x`, `../y`), absolute (`/x`), `node:`
+ * builtins, URL schemes (`https:`, `data:`) and a bare `@scope`. The one home of the
+ * bare-specifier rule: `parseBareSubpath` and the deferred-failure lookup (R3-1383) both
+ * build on it.
  */
-export function parseBareSubpath(specifier: string): { name: string; subpath: string } | null {
+export function splitBareSpecifier(specifier: string): { name: string; subpath: string } | null {
   if (!specifier || specifier.startsWith('.') || specifier.startsWith('/') || specifier.startsWith('node:')) {
     return null;
   }
   if (/^[a-z][a-z0-9+.-]*:/i.test(specifier)) return null; // URL scheme (https:, data:, …)
   const segs = specifier.split('/');
-  let name: string;
-  let rest: string[];
-  if (segs[0].startsWith('@')) {
-    if (segs.length < 3 || !segs[1]) return null; // '@scope' or the package root — no subpath
-    name = `${segs[0]}/${segs[1]}`;
-    rest = segs.slice(2);
-  } else {
-    if (segs.length < 2 || !segs[0]) return null; // the package root
-    name = segs[0];
-    rest = segs.slice(1);
-  }
-  const subpath = rest.join('/');
-  if (!subpath) return null;
-  return { name, subpath };
+  const scoped = segs[0].startsWith('@');
+  const nameSegs = scoped ? 2 : 1;
+  if (segs.length < nameSegs || segs.slice(0, nameSegs).some((seg) => !seg)) return null;
+  return { name: segs.slice(0, nameSegs).join('/'), subpath: segs.slice(nameSegs).join('/') };
+}
+
+/**
+ * Split a BARE specifier with a subpath (`name/sub`, `@scope/name/sub`) into its
+ * package name and the package-relative subpath. Null for everything else: a
+ * bare package ROOT (`name`, `@scope/name` — no subpath to materialize) and every
+ * specifier `splitBareSpecifier` refuses. The esm.sh fallback synthesizes ONLY the
+ * package root (`synthesizeEsmFallbackModule`), so a bare subpath of a fallback
+ * package is the one resolution shape whose target can still be missing — this
+ * predicate names exactly that case for the resolution-retry hook.
+ */
+export function parseBareSubpath(specifier: string): { name: string; subpath: string } | null {
+  const split = splitBareSpecifier(specifier);
+  return split && split.subpath ? split : null;
 }
 
 /**

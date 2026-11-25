@@ -13,7 +13,7 @@
  * `ModuleRegistry` owns the state (one record per package name).
  */
 import type { ICDNModule } from './module-cdn';
-import { parseBareSubpath } from './esm-fallback';
+import { splitBareSpecifier } from './esm-fallback';
 
 /** One declared package that could not be loaded, and why. */
 export interface DeferredFailure {
@@ -60,13 +60,5 @@ export function deferredFailureWarning(failure: DeferredFailure): string {
  * null for a relative, absolute, `node:` or URL specifier.
  */
 export function packageNameOf(specifier: string): string | null {
-  const subpath = parseBareSubpath(specifier);
-  if (subpath) return subpath.name;
-  if (!specifier || specifier.startsWith('.') || specifier.startsWith('/') || specifier.startsWith('node:')) {
-    return null;
-  }
-  if (/^[a-z][a-z0-9+.-]*:/i.test(specifier)) return null;
-  const segs = specifier.split('/');
-  if (segs[0].startsWith('@')) return segs.length === 2 && segs[1] ? specifier : null;
-  return segs.length === 1 && segs[0] ? specifier : null;
+  return splitBareSpecifier(specifier)?.name ?? null;
 }

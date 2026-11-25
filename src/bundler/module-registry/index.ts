@@ -143,13 +143,6 @@ export class ModuleRegistry {
 
     const sortedDeps = sortObj(deps);
     this.requestedDeps = sortedDeps;
-    // A re-boot (a package.json edit) retries every package an earlier boot deferred.
-    for (const name of this.deferredFailures.keys()) {
-      this.modules.delete(name);
-      // Its compiled stub too, or `_writePrecompiledModule` would keep it over the real file.
-      this.bundler.modules.delete(deferredFailureModulePath(name));
-    }
-    this.deferredFailures.clear();
 
     // A sidecar lockset (PRETRANSPILED_ARTIFACTS_SPEC §5.4) replaces the
     // blocking /dep_tree request — but only on an exact input match, so a
@@ -235,10 +228,14 @@ export class ModuleRegistry {
 
   /** Record a declared package as failed and serve its stub in its place. */
   private deferFailure(name: string, range: string, err: unknown): void {
-    const failure: DeferredFailure = { name, range, message: err instanceof Error ? err.message : String(err) };
-    this.deferredFailures.set(name, failure);
     // The subpath rail must not try to materialize files of a package that failed.
     this.esmFallbacks.delete(name);
+    // A deferral lasts as long as the registry, like a loaded package: a re-boot in this
+    // frame keeps the stub (registry files never change under a path; RegistryFS caches
+    // them), and a dependency change reloads the frame, which is the retry.
+    if (this.deferredFailures.has(name)) return;
+    const failure: DeferredFailure = { name, range, message: err instanceof Error ? err.message : String(err) };
+    this.deferredFailures.set(name, failure);
     const stub = synthesizeDeferredFailureModule(failure);
     this.modules.set(name, new NodeModule(name, range, stub.f, stub.m));
     logger.warn(deferredFailureWarning(failure));

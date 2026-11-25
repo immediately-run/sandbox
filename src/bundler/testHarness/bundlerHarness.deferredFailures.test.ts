@@ -75,8 +75,17 @@ afterEach(() => {
 });
 
 const boot = async (deps: Record<string, string> = { 'csv-parse': '^7.0.3' }) => {
-  // A fresh resolution per boot, as after a package.json edit's recompile.
-  (h.bundler as unknown as { resolutionCache: Map<string, unknown> }).resolutionCache.clear();
+  // The caches `compile()` resets before every boot (bundler.ts, "Reset resolver cache").
+  const b = h.bundler as unknown as {
+    resolverCache: Map<string, unknown>;
+    resolutionCache: Map<string, unknown>;
+    cdnLayoutEligibility: Map<string, unknown>;
+    fs: { resetCache(): void };
+  };
+  b.resolverCache = new Map();
+  b.resolutionCache = new Map();
+  b.cdnLayoutEligibility = new Map();
+  b.fs.resetCache();
   await h.bundler.moduleRegistry.fetchManifest(deps);
   await h.bundler.moduleRegistry.preloadModules();
   await h.bundler.moduleRegistry.loadModuleDependencies();
@@ -115,43 +124,49 @@ describe('R3-1383 — a failed declared dependency is deferred to its import', (
     60000,
   );
 
+  // A deferral lasts as long as the registry (the frame), and the harness is shared, so each
+  // remaining case uses its own package name.
   it("defers a package the CDN dropped with the fallback off, with the shared guard's wording", async () => {
     h.bundler.moduleRegistry.setEsmFallbackFetcher(null);
-    await expect(boot()).resolves.toBeUndefined();
-    const stub = await h.bundler.transformModule(stubPath);
+    await expect(boot({ 'other-cli-dep': '^1.0.0' })).resolves.toBeUndefined();
+    const stub = await h.bundler.transformModule(deferredFailureModulePath('other-cli-dep'));
     expect(thrownBy(stub.compiled ?? stub.source)?.message).toMatch(
-      /^Could not resolve package from the package CDN: "csv-parse@\^7\.0\.3"/,
+      /^Could not resolve package from the package CDN: "other-cli-dep@\^1\.0\.0"/,
     );
   }, 60000);
 
   it('still fails the boot for a TRANSITIVE package that fails to load', async () => {
     mockedFetchManifest.mockResolvedValue([
-      { n: 'csv-parse', v: '7.0.3', d: 0 },
+      { n: 'cli-root', v: '1.0.0', d: 0 },
       { n: 'some-transitive', v: '1.0.0', d: 1 },
     ]);
     mockedFetchModule.mockImplementation(async (name) => {
       if (name === 'some-transitive') throw new Error('transitive fetch failed');
       return { f: { 'package.json': { c: '{"main":"index.js"}', d: [], t: true } }, m: [] };
     });
-    await expect(boot()).rejects.toThrow('transitive fetch failed');
+    await expect(boot({ 'cli-root': '^1.0.0' })).rejects.toThrow('transitive fetch failed');
+    expect(h.bundler.moduleRegistry.deferredFailure('some-transitive')).toBeUndefined();
   }, 60000);
 
-  it('a re-boot retries a deferred package and serves the real one once it loads', async () => {
-    // An earlier test loaded a real csv-parse; the registry keeps loaded packages across boots.
-    h.bundler.moduleRegistry.modules.delete('csv-parse');
+  it('a re-boot in the same frame keeps the deferral: the same stub, no second warning', async () => {
     await boot();
     expect(h.bundler.moduleRegistry.deferredFailurePath('csv-parse')).toBe(stubPath);
+    warn.mockClear();
+    // The CDN now serves the package. A dependency change reloads the frame (bundler.ts,
+    // "Dependencies changed, reloading"), and the reload is the retry; an in-place re-boot
+    // keeps what the registry holds, as it does for a package that loaded.
     mockedFetchManifest.mockResolvedValue([{ n: 'csv-parse', v: '7.0.3', d: 0 }]);
     mockedFetchModule.mockResolvedValue({
       f: {
-        'package.json': { c: '{"name":"csv-parse","main":"index.js"}', d: [], t: true },
-        'index.js': { c: 'exports.parse = function parse() { return []; };\n', d: [], t: true },
+        'package.json': { c: '{"name":"csv-parse","version":"7.0.3","main":"lib/main.js"}', d: [], t: true },
+        'lib/main.js': { c: 'exports.parse = function parse() { return []; };\n', d: [], t: true },
       },
       m: [],
     });
     await boot();
-    expect(h.bundler.moduleRegistry.deferredFailurePath('csv-parse')).toBeNull();
-    const real = await h.bundler.transformModule(stubPath);
-    expect(real.compiled ?? real.source).toContain('exports.parse');
+    expect(h.bundler.moduleRegistry.deferredFailurePath('csv-parse')).toBe(stubPath);
+    expect(warn.mock.calls.map((c) => c.join(' ')).filter((m) => m.includes('could not be loaded'))).toEqual([]);
+    const importer = await h.bundler.transformModule(underAppRoot('/src/importsSubpath.ts'));
+    expect(importer.dependencyMap.get('csv-parse/sync')).toBe(stubPath);
   }, 60000);
 });
