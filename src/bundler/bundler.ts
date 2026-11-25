@@ -1735,7 +1735,7 @@ export class Bundler {
     // Resolving each absolute subpath through the vfs (the way file reads already
     // do) avoids it; a subdirectory that still can't be listed is skipped rather
     // than aborting the whole scan. Scope stays the repo (`APP_ROOT`) — dynamic
-    // mounts (e.g. `/firestore`) and virtual node_modules aren't app-MDX sources.
+    // mounts (e.g. `/firestore`) and virtual node_modules aren't app content sources.
     const sourceFiles: string[] = [];
     const walk = async (dir: string): Promise<void> => {
       let names: string[];
