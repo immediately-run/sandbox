@@ -1,3 +1,4 @@
+import { PLATFORM_CORE_JS_VERSION } from '@immediately-run/transpiler';
 import { Bundler } from '../../bundler';
 import { DepMap } from '../../module-registry';
 import { Module } from '../../module/Module';
@@ -59,7 +60,7 @@ export class SolidPreset extends Preset {
     if (!dependencies['solid-refresh']) {
       dependencies['solid-refresh'] = '^0.4.0';
     }
-    dependencies['core-js'] = '3.22.7';
+    dependencies['core-js'] = PLATFORM_CORE_JS_VERSION;
     return dependencies;
   }
 }

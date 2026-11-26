@@ -1,5 +1,5 @@
 [
-  "package.json:@babel/plugin-proposal-explicit-resource-management",
+  "package.json:@babel/plugin-transform-explicit-resource-management",
   "package.json:babel-preset-solid",
   "package.json:postcss-url",
   "package.json:react-refresh",

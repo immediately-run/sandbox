@@ -1,4 +1,5 @@
 import * as babel from '@babel/standalone';
+import { REACT_REFRESH_BABEL_CONFIG } from '@immediately-run/transpiler';
 
 import type { MessageEndpoint } from '../../utils/WorkerMessageBus';
 
@@ -65,7 +66,12 @@ let workerLoaded: Promise<unknown> | null = null;
 // deployed worker ends up with them after its first load.
 function preloadRefreshChainPlugins(): void {
   const registry = (babel as unknown as { availablePlugins: Record<string, unknown> }).availablePlugins;
-  for (const name of ['react-refresh/babel', '@babel/plugin-proposal-explicit-resource-management']) {
+  // Derived from the transpiler's own config, never spelled here: a hard-coded copy
+  // kept the deprecated proposal plugin's name after the chain moved off it (R3-1399).
+  const names = REACT_REFRESH_BABEL_CONFIG.plugins.map((entry) =>
+    typeof entry === 'string' ? entry : String(entry[0]),
+  );
+  for (const name of names) {
     if (!registry[name]) {
       // eslint-disable-next-line @typescript-eslint/no-var-requires
       const loaded = require(name);
