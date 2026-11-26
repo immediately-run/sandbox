@@ -13,6 +13,8 @@ import { Linter } from 'eslint';
 import type { LintDeps } from './lint';
 
 export const nodeLintDeps: LintDeps = {
+  // R3-1081: ESLint 9's Linter defaults to the flat config; the parser rides
+  // the config object (no defineParser).
   createLinter: () => new Linter(),
   tsParser,
 };

@@ -1,7 +1,6 @@
 // @ts-ignore
 import * as swcHelpers from '@swc/helpers';
 
-/* eslint-disable no-eval */
 // import buildProcess from "./utils/process";
 import * as logger from '../../utils/logger';
 
@@ -42,7 +41,6 @@ const hasGlobalDeclaration = /^const global/m;
 // never correctness; the reverse mistake costs the module.
 const hasFetchDeclaration = /(?:^|[^\w$.])(?:const|let|class)\s+fetch(?![\w$])/;
 
-/* eslint-disable no-unused-vars */
 export default function (
   code: string,
   require: Function,

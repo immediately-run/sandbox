@@ -54,14 +54,14 @@ export interface LintResult {
 }
 
 // The minimal `Linter` surface used here — so the Worker can inject the browserify
-// build and tests stay decoupled from the eslint major.
+// build and tests stay decoupled from the eslint major. R3-1081: ESLint 9's flat
+// config — no defineParser; the parser rides the config object (languageOptions).
 export interface LinterLike {
-  defineParser(name: string, parser: unknown): void;
   verify(
     code: string,
     config: unknown,
     filename?: string,
-  ): { line: number; column: number; ruleId: string | null; severity: number; message: string }[];
+  ): { line: number; column: number; ruleId: string | null; severity: number; message: string; fatal?: boolean }[];
 }
 // Runtime-supplied linter + parser. REQUIRED — `runLint` has no built-in default so
 // this module stays free of any Node-only static import (see the file header).
@@ -70,7 +70,6 @@ export interface LintDeps {
   tsParser: unknown;
 }
 
-const TS_PARSER = '@authoring/ts-parser';
 const PARSER_OPTIONS = { ecmaVersion: 2022, sourceType: 'module', ecmaFeatures: { jsx: true } };
 
 // Fixed, kernel-reviewed rule presets (the eslint analog of the babel-plugin
@@ -104,6 +103,25 @@ const MAX_DIAGS = 200;
 const MESSAGE_CAP = 1000;
 const hasOwn = (o: object, k: string): boolean => Object.prototype.hasOwnProperty.call(o, k);
 
+/** The extensions the parser lints under their own name (`.tsx`/`.jsx` enable JSX). */
+const LINT_EXTENSIONS = ['ts', 'tsx', 'mts', 'cts', 'js', 'jsx', 'mjs', 'cjs'];
+const LINTABLE = new RegExp(`\\.(${LINT_EXTENSIONS.join('|')})$`, 'i');
+
+/** The file name `verify` matches and parses under: the caller's base name. Flat-config
+ *  matching is cwd-relative, so a directory part can only lose a file — `/a.ts`,
+ *  `../a.ts` and `node_modules/a.ts` all fall outside it in at least one of the two
+ *  linters. The extension, which the parser reads, is kept; any other name (`Makefile`,
+ *  `notes.txt`) lints as TS, the service's language, under `<name>.ts`. An upper-case
+ *  extension (`C.TSX`) is lower-cased, so it parses as what it names. */
+export function matchName(path: string): string {
+  const base = path.split('/').filter(Boolean).pop() ?? '';
+  if (base === '' || base === '.' || base === '..') return 'input.ts';
+  // The extension is matched case-insensitively and lower-cased: the parser picks JSX
+  // from the lower-cased extension, and the config's `files` glob is case-sensitive.
+  const ext = LINTABLE.exec(base);
+  return ext ? `${base.slice(0, ext.index)}.${ext[1].toLowerCase()}` : `${base}.ts`;
+}
+
 export function runLint(req: LintRequest, deps: LintDeps): LintResult {
   for (const k of FORBIDDEN_FIELDS) {
     if (hasOwn(req as object, k))
@@ -120,8 +138,36 @@ export function runLint(req: LintRequest, deps: LintDeps): LintResult {
   }
 
   const linter = deps.createLinter();
-  linter.defineParser(TS_PARSER, deps.tsParser);
-  const config = { parser: TS_PARSER, parserOptions: PARSER_OPTIONS, rules: PRESETS[presetName] };
+  // ESLint 9's verify catches EVERY parser throw into a fatal diagnostic, which
+  // loses the contract's distinction: a syntax error in the CALLER's code is a
+  // diagnostic (tsc owns it, the file was read fine), a parser that CRASHES is a
+  // skipped file (the kernel's bug, nothing linted). The wrapper re-marks the
+  // crash so the fatal message below still separates them: a syntax error from
+  // typescript-estree carries a `location`; a crash does not.
+  const parser = {
+    parseForESLint: (...args: unknown[]) => {
+      try {
+        return (deps.tsParser as { parseForESLint: (...a: unknown[]) => unknown }).parseForESLint(...args);
+      } catch (e) {
+        // typescript-estree's syntax error (TSError) carries a `location` object; any
+        // other throw is the parser crashing, never the caller's syntax.
+        const loc = e && typeof e === 'object' ? (e as { location?: unknown }).location : undefined;
+        if (loc && typeof loc === 'object') throw e;
+        throw new Error(`PARSER-CRASH: ${(e as Error)?.message ?? String(e)}`);
+      }
+    },
+  };
+  // Flat config: a config object without `files` matches NOTHING (ESLint 9), and a
+  // path the matcher misses is reported as "no matching configuration" (or, for a
+  // `.js`/`.mjs`/`.cjs` path that only ESLint's built-in default matches, linted with
+  // NO rules — a silent clean bill, which R3-384 forbids). A universal `**/*` does not
+  // select a file on its own, so the config names every extension `matchName` can
+  // return, and `verify` sees that match name, never the caller's path.
+  const config = {
+    files: [`**/*.{${LINT_EXTENSIONS.join(',')}}`],
+    languageOptions: { parser, parserOptions: PARSER_OPTIONS },
+    rules: PRESETS[presetName],
+  };
 
   const diagnostics: LintDiag[] = [];
   const skipped: LintSkip[] = [];
@@ -137,10 +183,19 @@ export function runLint(req: LintRequest, deps: LintDeps): LintResult {
     }
     let messages: ReturnType<LinterLike['verify']>;
     try {
-      messages = linter.verify(f.content, config, f.path);
+      // The diagnostics carry the caller's own path; `verify` only sees the match name.
+      messages = linter.verify(f.content, config, matchName(f.path));
     } catch {
       // A parse failure is not fatal — tsc owns syntax errors — but it is not nothing
       // either. It was previously a bare `continue`, which reported the file as clean.
+      skipped.push({ path: f.path, reason: 'parse-error' });
+      continue;
+    }
+    // ESLint 9's Linter.verify catches a throwing parser and returns the fatal
+    // message instead of throwing — the skip contract holds via the wrapper's
+    // PARSER-CRASH marker (a caller-side syntax error is a diagnostic, never a
+    // skip; a parser crash is a skip, never a clean bill).
+    if (messages.some((m) => m.fatal && m.message.startsWith('Parsing error: PARSER-CRASH:'))) {
       skipped.push({ path: f.path, reason: 'parse-error' });
       continue;
     }
