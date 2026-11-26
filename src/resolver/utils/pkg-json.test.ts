@@ -25,4 +25,31 @@ describe('process package.json', () => {
     const processedPkg = processPackageJSON(content, '/');
     expect(processedPkg).toMatchSnapshot();
   });
+
+  it('R3-1384: a package mapped to false in browser sends its subpaths to the empty shim too', () => {
+    const { aliases } = processPackageJSON(
+      { browser: { 'csv-parse': false, '@scope/cli': false, './src/node.js': false, other: './other.js' } },
+      '/app',
+    );
+    expect(aliases['csv-parse']).toBe('/empty.js');
+    expect(aliases['csv-parse/**']).toBe('/empty.js');
+    expect(aliases['@scope/cli/**']).toBe('/empty.js');
+    // A path key names one file, and a string mapping is an alias: neither gets a wildcard.
+    expect(aliases['/app/src/node.js']).toBe('/empty.js');
+    expect(Object.keys(aliases).filter((k) => k.includes('*'))).toEqual(['csv-parse/**', '@scope/cli/**']);
+  });
+
+  it("R3-1384: a dependency's own browser:false keeps the exact-specifier meaning (no wildcard)", () => {
+    const { aliases } = processPackageJSON({ browser: { util: false } }, '/node_modules/readable-stream');
+    expect(aliases.util).toBe('/empty.js');
+    expect(aliases['util/**']).toBeUndefined();
+  });
+
+  it('R3-1384: a mounted library or a nested package.json is not the root (no wildcard)', () => {
+    for (const pkgRoot of ['/mnt/0123456789abcdef0123456789abcdef', '/app/packages/web']) {
+      const { aliases } = processPackageJSON({ browser: { util: false } }, pkgRoot);
+      expect(aliases.util).toBe('/empty.js');
+      expect(Object.keys(aliases).filter((k) => k.includes('*'))).toEqual([]);
+    }
+  });
 });
