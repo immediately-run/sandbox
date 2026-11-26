@@ -1,3 +1,6 @@
+import { browserExcludedPackages } from '@immediately-run/transpiler';
+
+import { APP_ROOT } from '../../fsLayout';
 import { normalizeAliasFilePath } from './alias';
 import { EMPTY_SHIM } from './constants';
 import { extractPathFromExport } from './exports';
@@ -29,6 +32,14 @@ export function processPackageJSON(content: any, pkgRoot: string): ProcessedPack
     aliases[pkgRoot] = EMPTY_SHIM;
   }
 
+  // R3-1384: the packages the ROOT package.json's `browser` maps to `false`, by the
+  // transpiler's one rule: the same set `rootRuntimeDependencies` leaves out of the dependency
+  // map, so the package is never fetched and no subpath of it could resolve. A dependency's
+  // own `"util": false` keeps npm's exact-specifier meaning (`util/util.js` still resolves).
+  // The app's own manifest only: a mounted library (`/mnt/<hash>`) or a nested package.json
+  // is not the root whose exclusions left the package out of the manifest.
+  const isRootPackage = pkgRoot === APP_ROOT;
+  const excludedPackages = isRootPackage ? browserExcludedPackages(content) : new Set<string>();
   for (const aliasFieldKey of PKG_ALIAS_FIELDS) {
     const aliasField = content[aliasFieldKey];
     if (typeof aliasField === 'object') {
@@ -40,6 +51,11 @@ export function processPackageJSON(content: any, pkgRoot: string): ProcessedPack
 
         if (aliasFieldKey !== 'browser') {
           aliases[`${normalizedKey}/*`] = `${normalizedValue}/$1`;
+        } else if (excludedPackages.has(key)) {
+          // R3-1384: a root `"browser": { "csv-parse": false }` removes the whole package, so
+          // its subpaths at any depth (`csv-parse/sync`, `csv-parse/lib/sync`) land on the empty shim too. Path keys
+          // (`"./src/node.js": false`) name one file and get no wildcard.
+          aliases[`${normalizedKey}/**`] = EMPTY_SHIM;
         }
       }
     }
