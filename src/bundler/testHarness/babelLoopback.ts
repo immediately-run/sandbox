@@ -73,7 +73,6 @@ function preloadRefreshChainPlugins(): void {
   );
   for (const name of names) {
     if (!registry[name]) {
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
       const loaded = require(name);
       registry[name] = (loaded as { default?: unknown }).default ?? loaded;
     }

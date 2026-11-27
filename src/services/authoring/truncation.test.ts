@@ -80,11 +80,13 @@ describe('lint truncation and skips are reported (R3-384)', () => {
   it('a parser that THROWS is reported as skipped, not as clean', () => {
     // Drive the catch directly — the only honest way to test it, since no ordinary
     // source reaches it. One file throws, the next must still be linted.
+    // (R3-1081: verify receives the cwd-RELATIVE name — flat-config files
+    // patterns never match a leading-slash path — so the thrower keys on the
+    // stripped form; the diagnostics still carry the caller's own path.)
     const throwOn = (bad: string) => ({
       createLinter: () => {
         const real = nodeLintDeps.createLinter();
         return {
-          defineParser: real.defineParser.bind(real),
           verify: (code: string, config: unknown, filename?: string) => {
             if (filename === bad) throw new Error('parser exploded');
             return real.verify(code, config, filename);
@@ -100,7 +102,7 @@ describe('lint truncation and skips are reported (R3-384)', () => {
           { path: '/fine.ts', content: varLines(1) },
         ],
       },
-      throwOn('/boom.ts'),
+      throwOn('boom.ts'),
     );
     expect(r.skipped).toEqual([{ path: '/boom.ts', reason: 'parse-error' }]);
     // The good file is still linted — one bad file does not abort the run.
