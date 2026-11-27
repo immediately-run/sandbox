@@ -1,6 +1,8 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
+import { PLATFORM_CORE_JS_VERSION } from '@immediately-run/transpiler';
+
 import { SandpackLogLevel, setLogLevel } from '../../utils/logger';
 import { MANIFEST_SIDECAR_PATH, underAppRoot } from '../../fsLayout';
 import {
@@ -213,6 +215,13 @@ describe('R3-1318 — SDK peers and the sidecar lockset', () => {
       lockset: { dependencies: Record<string, string>; resolved: Resolved[] };
     };
     sidecar.lockset.dependencies['react-dom'] = '^19.2.5';
+    // The recording predates R3-1399's platform core-js pin, and a CLI writing it today
+    // echoes the current one; left at the recorded pin the echo mismatches for a
+    // reason this case is not about.
+    sidecar.lockset.dependencies['core-js'] = PLATFORM_CORE_JS_VERSION;
+    sidecar.lockset.resolved = sidecar.lockset.resolved.map((r) =>
+      r.n === 'core-js' ? { ...r, v: PLATFORM_CORE_JS_VERSION } : r,
+    );
     sidecar.lockset.resolved.push({ n: 'react-dom', v: '19.2.5', d: 0 }, { n: 'scheduler', v: '0.27.0', d: 1 });
     const pkg = { peerDependencies: { ...OMNIBOX_PKG.peerDependencies, 'react-dom': '^19.2.5' } };
 

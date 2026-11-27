@@ -82,12 +82,11 @@
     }
   },
   "dependencies": {
-    "@babel/plugin-proposal-explicit-resource-management": "7.25.9",
     "@babel/standalone": "7.27.0",
     "@immediately-run/mdx-plugins": "0.5.0",
     "@immediately-run/platform-constants": "0.13.0",
     "@immediately-run/sandbox-protocol": "0.7.2",
-    "@immediately-run/transpiler": "0.12.0",
+    "@immediately-run/transpiler": "0.13.0",
     "@msgpack/msgpack": "^2.8.0",
     "@swc/helpers": "0.5.17",
     "@types/babel__standalone": "7.1.9",
@@ -110,6 +109,7 @@
     "url-join": "^5.0.0"
   },
   "devDependencies": {
+    "@babel/plugin-transform-explicit-resource-management": "7.29.15",
     "@immediately-run/prettier-config": "0.1.0",
     "@immediately-run/sdk": "^0.46.0",
     "@immediately-run/verify-checks": "0.8.3",

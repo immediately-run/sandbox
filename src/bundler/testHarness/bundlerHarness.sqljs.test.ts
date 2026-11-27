@@ -15,7 +15,7 @@
 import fs from 'fs';
 import path from 'path';
 
-import { REACT_REFRESH_BABEL_CONFIG, transformBabel } from '@immediately-run/transpiler';
+import { PLATFORM_CORE_JS_VERSION, REACT_REFRESH_BABEL_CONFIG, transformBabel } from '@immediately-run/transpiler';
 
 import { NodeModule } from '../module-registry/NodeModule';
 import { createBundlerHarness, installEvalGlobals, type BundlerHarness } from './bundlerHarness';
@@ -58,7 +58,11 @@ async function seedCoreJsStubs(h: BundlerHarness): Promise<void> {
   });
   const stub = { c: 'module.exports = {};', d: [], t: false };
   const files: Record<string, typeof stub> = {
-    'package.json': { c: JSON.stringify({ name: 'core-js', version: '3.22.7', main: 'index.js' }), d: [], t: false },
+    'package.json': {
+      c: JSON.stringify({ name: 'core-js', version: PLATFORM_CORE_JS_VERSION, main: 'index.js' }),
+      d: [],
+      t: false,
+    },
     'index.js': stub,
   };
   for (const dep of dependencies) {
@@ -66,7 +70,7 @@ async function seedCoreJsStubs(h: BundlerHarness): Promise<void> {
       files[dep.slice('core-js/'.length)] = stub;
     }
   }
-  h.bundler.moduleRegistry.modules.set('core-js', new NodeModule('core-js', '3.22.7', files, []));
+  h.bundler.moduleRegistry.modules.set('core-js', new NodeModule('core-js', PLATFORM_CORE_JS_VERSION, files, []));
 }
 
 const testGlobals = globalThis as Record<string, unknown>;

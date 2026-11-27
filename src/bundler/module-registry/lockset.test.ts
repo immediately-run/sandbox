@@ -11,7 +11,7 @@ import { ModuleRegistry } from '.';
 import { Bundler } from '../bundler';
 import { depMapsEqual, locksetClosureValid, locksetEchoContextFor, validateLockset } from './lockset';
 import { CDN_VERSION, fetchManifest } from './module-cdn';
-import { computeInputDepMap, rootRuntimeDependencies } from '@immediately-run/transpiler';
+import { computeInputDepMap, PLATFORM_CORE_JS_VERSION, rootRuntimeDependencies } from '@immediately-run/transpiler';
 
 jest.mock('./module-cdn', () => ({
   ...jest.requireActual('./module-cdn'),
@@ -25,7 +25,7 @@ const mockedFetchManifest = fetchManifest as jest.MockedFunction<typeof fetchMan
 // now enforces this completeness on the lockset path too — a lockset missing a
 // declared dep is the silent-drop bug it guards against), plus a transitive.
 const RESOLVED = [
-  { n: 'core-js', v: '3.22.7', d: 0 },
+  { n: 'core-js', v: PLATFORM_CORE_JS_VERSION, d: 0 },
   { n: 'react', v: '18.3.1', d: 0 },
   { n: 'react-error-boundary', v: '6.1.0', d: 0 },
   { n: 'react-refresh', v: '0.11.0', d: 0 },
@@ -35,7 +35,7 @@ const RESOLVED = [
 // The input DepMap as loadNodeModules computes it for { react: ^18.2.0 } under
 // the react preset (augmented; no build deps present).
 const DEPS = {
-  'core-js': '3.22.7',
+  'core-js': PLATFORM_CORE_JS_VERSION,
   react: '^18.2.0',
   'react-error-boundary': '^6.1.0',
   'react-refresh': '^0.11.0',
@@ -230,7 +230,7 @@ describe("R3-844 — a git-library consumer's lockset applies (echo parity)", ()
 
   it('a git-pinned AUGMENTED name is kept in the manifest — the runtime still requests it (round-1 blocking)', async () => {
     // An app git-pins core-js (a fork). Augmentation overwrites the value on
-    // BOTH sides (echo and runtime input get '3.22.7'), so the echo matches and
+    // BOTH sides (echo and runtime input get PLATFORM_CORE_JS_VERSION), so the echo matches and
     // the naive git-drop would remove core-js from the manifest while the input
     // still requests it — the completeness assert dies on a package.json that
     // boots fine live. The drop is scoped to names ABSENT from the input.
@@ -238,7 +238,7 @@ describe("R3-844 — a git-library consumer's lockset applies (echo parity)", ()
     const forkCtx = locksetEchoContextFor(rootRuntimeDependencies(FORK_PKG as never));
     // Augmentation replaced the git value in the echo map…
     expect(forkCtx.gitNames.has('core-js')).toBe(true);
-    expect(forkCtx.echoMap['core-js']).toBe('3.22.7');
+    expect(forkCtx.echoMap['core-js']).toBe(PLATFORM_CORE_JS_VERSION);
     // …so the runtime input still requests it (it is NOT stripped by name).
     const forkInput = Object.fromEntries(
       Object.entries(forkCtx.echoMap).filter(([n]) => !forkCtx.gitNames.has(n) || n === 'core-js'),
