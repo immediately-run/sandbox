@@ -216,7 +216,7 @@ describe('R3-1318 — SDK peers and the sidecar lockset', () => {
     };
     sidecar.lockset.dependencies['react-dom'] = '^19.2.5';
     // The recording predates R3-1399's platform core-js pin, and a CLI writing it today
-    // echoes the current one; left at the recorded 3.22.7 the echo mismatches for a
+    // echoes the current one; left at the recorded pin the echo mismatches for a
     // reason this case is not about.
     sidecar.lockset.dependencies['core-js'] = PLATFORM_CORE_JS_VERSION;
     sidecar.lockset.resolved = sidecar.lockset.resolved.map((r) =>
